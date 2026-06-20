@@ -16,7 +16,6 @@ dependencies = [
     "httpx",
     "typer",
     "rich",
-    "python-dotenv",
     "pyyaml",
 ]
 

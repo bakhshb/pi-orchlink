@@ -594,7 +594,6 @@ pydantic-settings
 httpx
 typer
 rich
-python-dotenv
 pyyaml
 pytest
 

@@ -1,15 +1,7 @@
 from functools import lru_cache
-from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
-def _default_env_file() -> str:
-    for parent in Path(__file__).resolve().parents:
-        if (parent / "pyproject.toml").is_file():
-            return str(parent / ".env")
-    return ".env"
 
 
 class Settings(BaseSettings):
@@ -20,7 +12,6 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="ORCHLINK_LOG_LEVEL")
 
     model_config = SettingsConfigDict(
-        env_file=_default_env_file(),
         extra="ignore",
         populate_by_name=True,
     )
