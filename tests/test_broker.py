@@ -52,6 +52,34 @@ def test_register_agent():
     assert response.json() == {"status": "registered", "agent_id": "worker-backend"}
 
 
+def test_send_message_queues_without_waiting():
+    client = make_client()
+    message = {
+        "protocol": "orch-a2a-v1",
+        "message_id": "msg-0001",
+        "correlation_id": "req-0001",
+        "project_id": "test",
+        "conversation_id": "test-default",
+        "task_id": "T001",
+        "from_agent": "test.lead",
+        "to_agent": "test.work",
+        "type": "TASK",
+        "status": "PENDING",
+        "turn": 1,
+        "max_turns": 6,
+        "requires_reply": True,
+        "timeout_seconds": 1800,
+        "payload": {"intent": "Return PLAN only."},
+    }
+
+    response = client.post("/v1/messages/send", headers=auth_headers(), json=message)
+    next_response = client.get("/v1/agents/test.work/next?wait_seconds=1", headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "queued", "message_id": "msg-0001"}
+    assert next_response.json()["status"] == "message"
+
+
 def test_get_next_returns_empty_when_no_message_arrives():
     client = make_client()
 

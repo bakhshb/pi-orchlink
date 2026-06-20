@@ -48,6 +48,25 @@ def test_ask_command_prints_reply(monkeypatch, tmp_path):
     assert '"type": "PLAN"' in result.output
 
 
+def test_project_ask_defaults_to_no_wait(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    def fake_project_ask_worker_sync(**kwargs):
+        assert kwargs["worker"] == "work"
+        assert kwargs["task_id"] == "T001"
+        assert kwargs["wait"] is False
+        return {"status": "queued", "message_id": "msg-1"}
+
+    monkeypatch.setattr(cli_main, "project_ask_worker_sync", fake_project_ask_worker_sync)
+
+    result = runner.invoke(cli_main.app, ["ask", "work", "-t", "T001", "-m", "Return PLAN only."])
+
+    assert result.exit_code == 0
+    assert '"status": "queued"' in result.output
+
+
 def test_start_orchestrator_prints_guidance(monkeypatch, tmp_path):
     config_dir = tmp_path / "config"
     config_dir.mkdir()

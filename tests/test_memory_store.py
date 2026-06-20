@@ -89,7 +89,7 @@ def test_get_next_message_returns_none_after_wait_timeout():
 def test_reply_resolves_pending_waiter():
     async def run():
         store = MemoryMessageStore()
-        await store.enqueue_message(task_message())
+        await store.enqueue_message(task_message(), create_waiter=True)
         waiter = asyncio.create_task(store.wait_for_reply("req-0001", timeout_seconds=1))
         await store.save_reply("msg-0001", reply_message())
 
@@ -98,6 +98,21 @@ def test_reply_resolves_pending_waiter():
         assert result["status"] == "completed"
         assert result["correlation_id"] == "req-0001"
         assert result["reply"]["type"] == "PLAN"
+
+    asyncio.run(run())
+
+
+def test_save_reply_queues_reply_for_lead_inbox():
+    async def run():
+        store = MemoryMessageStore()
+        await store.enqueue_message(task_message())
+        await store.save_reply("msg-0001", reply_message())
+
+        delivered = await store.get_next_message("orchestrator", wait_seconds=1)
+
+        assert delivered is not None
+        assert delivered["type"] == "PLAN"
+        assert delivered["to_agent"] == "orchestrator"
 
     asyncio.run(run())
 

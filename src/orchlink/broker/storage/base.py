@@ -8,7 +8,11 @@ class MessageStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def enqueue_message(self, message: dict[str, Any]) -> dict[str, Any]:
+    async def enqueue_message(
+        self,
+        message: dict[str, Any],
+        create_waiter: bool = False,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod

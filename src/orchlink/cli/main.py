@@ -357,6 +357,7 @@ def ask(
     message: Annotated[str, typer.Option("--msg", "--message", "-m")],
     config_dir: Annotated[Path | None, typer.Option("--config-dir")] = None,
     timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
+    wait: Annotated[bool, typer.Option("--wait/--no-wait", help="Wait in this shell for the reply. Default sends and returns immediately.")] = False,
 ) -> None:
     if config_dir is not None:
         config = load_role_config("orchestrator", config_dir)
@@ -379,6 +380,7 @@ def ask(
                 task_id=task_id,
                 message=message,
                 timeout_seconds=timeout_seconds,
+                wait=wait,
             )
         except (RuntimeError, httpx.HTTPError) as exc:
             console.print(f"[Orch] {exc}")

@@ -93,7 +93,7 @@ def test_build_reply_turns_command_failure_into_blocker():
 def test_process_one_message_runs_command_and_replies_to_broker():
     async def run():
         store = MemoryMessageStore()
-        await store.enqueue_message(task_message())
+        await store.enqueue_message(task_message(), create_waiter=True)
         app = create_app(store=store, settings=Settings(api_key="test-key"))
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:

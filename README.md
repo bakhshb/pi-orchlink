@@ -73,6 +73,8 @@ Send a task from the lead session, or from any shell in the same project:
 orch ask work -t T001 -m "Inspect the project and return PLAN only."
 ```
 
+`orch ask` queues the task and returns immediately. The worker reply appears in the lead Pi chat. If you want the shell command to block until the reply arrives, add `--wait`.
+
 Watch broker events if you want a third terminal:
 
 ```bash
@@ -111,7 +113,8 @@ The default project id comes from the folder name. The default agent ids are:
 | `orch lead` | Start the visible lead Pi session. |
 | `orch work` | Start the visible worker Pi session. |
 | `orch work --no-pi` | Run the worker listener without opening Pi. |
-| `orch ask work -t T001 -m "..."` | Send a task to the worker and wait for the reply. |
+| `orch ask work -t T001 -m "..."` | Queue a task for the worker. |
+| `orch ask work --wait -t T001 -m "..."` | Send a task and block until the reply arrives. |
 | `orch watch` | Show queued tasks, delivered tasks, replies, and timeouts. |
 | `orch stop` | Stop the project broker and worker listener. |
 | `orch doctor` | Check local setup. |

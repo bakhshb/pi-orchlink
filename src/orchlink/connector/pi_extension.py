@@ -74,6 +74,26 @@ RECOMMENDED_NEXT_STEP:
 `;
 }
 
+function renderLeadPrompt(message: OrchMessage): string {
+  const payload = message.payload || {};
+  const summary = payload.summary || payload.stdout || "";
+  return `You received a worker reply through Orchlink.
+
+TASK ID:
+${message.task_id || ""}
+
+FROM:
+${message.from_agent || "work"}
+
+TYPE:
+${message.type || "RESULT"}
+
+SUMMARY:
+${summary}
+
+Review the worker reply and decide the next step.`;
+}
+
 function messageText(message: any): string {
   const content = message?.content;
   if (typeof content === "string") return content;
@@ -168,32 +188,43 @@ export default function (pi: ExtensionAPI) {
   }
 
   function schedule(delayMs = 0) {
-    if (stopped || role !== "work") return;
+    if (stopped || !["lead", "work"].includes(role)) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => void poll(), delayMs);
   }
 
   async function poll() {
-    if (stopped || role !== "work" || currentTask) return;
+    if (stopped || !["lead", "work"].includes(role)) return;
+    if (role === "work" && currentTask) return;
     try {
       const body = await getJson(`/v1/agents/${encodeURIComponent(agentId)}/next?wait_seconds=${pollWaitSeconds}`);
       if (body.status === "message") {
-        currentTask = body.message;
-        const taskId = currentTask?.task_id || "task";
-        pi.sendMessage({
-          customType: "orchlink",
-          content: `Orchlink received TASK ${taskId} from ${currentTask?.from_agent || "lead"}`,
-          display: true,
-          details: currentTask,
-        }, { deliverAs: "nextTurn" });
-        const prompt = renderWorkerPrompt(currentTask);
-        pi.sendUserMessage(prompt, { deliverAs: "followUp" });
+        const message = body.message;
+        const taskId = message?.task_id || "task";
+        if (role === "work") {
+          currentTask = message;
+          pi.sendMessage({
+            customType: "orchlink",
+            content: `Orchlink received TASK ${taskId} from ${message?.from_agent || "lead"}`,
+            display: true,
+            details: message,
+          }, { deliverAs: "nextTurn" });
+          pi.sendUserMessage(renderWorkerPrompt(message), { deliverAs: "followUp" });
+        } else {
+          pi.sendMessage({
+            customType: "orchlink",
+            content: `Orchlink received ${message?.type || "RESULT"} ${taskId} from ${message?.from_agent || "work"}`,
+            display: true,
+            details: message,
+          }, { deliverAs: "nextTurn" });
+          pi.sendUserMessage(renderLeadPrompt(message), { deliverAs: "followUp" });
+        }
       }
     } catch (error: any) {
       // Avoid spamming the transcript on transient broker errors.
       console.error(`[orchlink] poll failed: ${error?.message || error}`);
     } finally {
-      if (!currentTask) schedule(250);
+      if (role === "lead" || !currentTask) schedule(250);
     }
   }
 
@@ -202,7 +233,7 @@ export default function (pi: ExtensionAPI) {
     try {
       await register();
       ctx.ui.notify(`Orchlink ${role} connected as ${agentId}`, "info");
-      if (role === "work") schedule(0);
+      if (["lead", "work"].includes(role)) schedule(0);
     } catch (error: any) {
       ctx.ui.notify(`Orchlink connection failed: ${error?.message || error}`, "error");
     }

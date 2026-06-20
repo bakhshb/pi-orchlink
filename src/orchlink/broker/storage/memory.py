@@ -47,7 +47,11 @@ class MemoryMessageStore(MessageStore):
             )
             return dict(stored_agent)
 
-    async def enqueue_message(self, message: dict[str, Any]) -> dict[str, Any]:
+    async def enqueue_message(
+        self,
+        message: dict[str, Any],
+        create_waiter: bool = False,
+    ) -> dict[str, Any]:
         message_id = message["message_id"]
         to_agent = message["to_agent"]
         correlation_id = message["correlation_id"]
@@ -56,7 +60,7 @@ class MemoryMessageStore(MessageStore):
             stored_message = dict(message)
             self._active_messages[message_id] = stored_message
             inbox = self._inboxes.setdefault(to_agent, asyncio.Queue())
-            if message.get("requires_reply", False):
+            if create_waiter and message.get("requires_reply", False):
                 self._pending_replies.setdefault(
                     correlation_id,
                     asyncio.get_running_loop().create_future(),
@@ -103,10 +107,12 @@ class MemoryMessageStore(MessageStore):
 
     async def save_reply(self, message_id: str, reply: dict[str, Any]) -> dict[str, Any]:
         correlation_id = reply["correlation_id"]
+        stored_reply = dict(reply)
         async with self._lock:
             future = self._pending_replies.get(correlation_id)
             if message_id in self._active_messages:
                 self._active_messages[message_id]["status"] = reply.get("status", "COMPLETED")
+            reply_inbox = self._inboxes.setdefault(str(reply["to_agent"]), asyncio.Queue())
             self._append_event_locked(
                 "reply_received",
                 project_id=reply.get("project_id"),
@@ -120,7 +126,9 @@ class MemoryMessageStore(MessageStore):
                 payload=reply.get("payload") or {},
             )
             if future is not None and not future.done():
-                future.set_result(dict(reply))
+                future.set_result(stored_reply)
+
+        await reply_inbox.put(stored_reply)
         return {"status": "reply_received", "correlation_id": correlation_id}
 
     async def wait_for_reply(self, correlation_id: str, timeout_seconds: int) -> dict[str, Any]:

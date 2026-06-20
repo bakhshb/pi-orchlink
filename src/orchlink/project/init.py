@@ -16,6 +16,12 @@ Use this command:
 
 orch ask work --task <TASK_ID> --msg "<TASK_MESSAGE>"
 
+This command queues the task and returns immediately. The worker reply will appear in this lead chat through Orchlink.
+
+If you explicitly want to block the shell until the reply arrives, use:
+
+orch ask work --wait --task <TASK_ID> --msg "<TASK_MESSAGE>"
+
 Rules:
 - Send small tasks.
 - Ask for PLAN before risky implementation.

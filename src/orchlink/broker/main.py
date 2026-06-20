@@ -48,12 +48,19 @@ def create_app(
         stored_agent = await message_store.register_agent(agent.model_dump(mode="json"))
         return {"status": "registered", "agent_id": stored_agent["agent_id"]}
 
+    @secure_router.post("/messages/send")
+    async def send_message(
+        message: MessageEnvelope,
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, str]:
+        return await message_store.enqueue_message(envelope_to_dict(message))
+
     @secure_router.post("/messages/send-and-wait")
     async def send_and_wait(
         message: MessageEnvelope,
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
-        await message_store.enqueue_message(envelope_to_dict(message))
+        await message_store.enqueue_message(envelope_to_dict(message), create_waiter=True)
         return await message_store.wait_for_reply(
             message.correlation_id,
             message.timeout_seconds,

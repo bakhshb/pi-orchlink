@@ -57,6 +57,7 @@ async def ask_worker(
     task_id: str,
     message: str,
     timeout_seconds: int = 1800,
+    wait: bool = False,
 ) -> dict[str, Any]:
     envelope = build_task_envelope(
         config=config,
@@ -65,14 +66,18 @@ async def ask_worker(
         message=message,
         timeout_seconds=timeout_seconds,
     )
+    endpoint = "/v1/messages/send-and-wait" if wait else "/v1/messages/send"
     async with httpx.AsyncClient(base_url=broker_url(config), timeout=None) as client:
         response = await client.post(
-            "/v1/messages/send-and-wait",
+            endpoint,
             headers={"X-API-Key": broker_api_key(config)},
             json=envelope,
         )
         response.raise_for_status()
-        return response.json()
+        body = response.json()
+        if wait:
+            return body
+        return {**body, "correlation_id": envelope["correlation_id"], "to_agent": envelope["to_agent"]}
 
 
 def ask_worker_sync(
@@ -81,6 +86,7 @@ def ask_worker_sync(
     task_id: str,
     message: str,
     timeout_seconds: int = 1800,
+    wait: bool = False,
 ) -> dict[str, Any]:
     return asyncio.run(
         ask_worker(
@@ -89,5 +95,6 @@ def ask_worker_sync(
             task_id=task_id,
             message=message,
             timeout_seconds=timeout_seconds,
+            wait=wait,
         )
     )
