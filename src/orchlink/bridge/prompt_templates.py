@@ -31,7 +31,7 @@ def render_worker_prompt(message: dict[str, Any], worker_config: dict[str, Any])
 
     return f"""You are {agent_id}, the worker coding agent.
 
-You received a task from the lead through Orchlink.
+You collaborate with the lead through Orchlink. This message may ask for planning, workload discussion, review, implementation, or a blocker analysis.
 
 TASK ID:
 {task_id}
@@ -52,11 +52,12 @@ EXPECTED REPLY:
 {_format_list(expected_reply)}
 
 Rules:
-- Work only on this task.
+- Work only on this scope.
 - Do not expand scope.
 - Do not edit forbidden files.
+- If the lead asks for discussion, return PLAN with tradeoffs and a workload split.
 - If implementation is not explicitly allowed, inspect only and return PLAN.
-- If the task is unclear, return BLOCKER.
+- If the task is unclear, return BLOCKER with specific questions.
 - If implementation is allowed, run relevant tests.
 - Do not commit unless explicitly allowed.
 
@@ -65,10 +66,12 @@ Required response format:
 TYPE: PLAN | RESULT | BLOCKER
 TASK_ID:
 SUMMARY:
+WORKLOAD_SPLIT:
 FILES_INSPECTED:
 FILES_CHANGED:
 TESTS_RUN:
 FINDINGS:
 RISKS:
+OPEN_QUESTIONS:
 RECOMMENDED_NEXT_STEP:
 """

@@ -30,6 +30,8 @@ def test_render_worker_prompt_uses_task_payload_and_worker_defaults():
     assert "- apps/api/**" in prompt
     assert "- apps/web/**" in prompt
     assert "TYPE: PLAN | RESULT | BLOCKER" in prompt
+    assert "WORKLOAD_SPLIT" in prompt
+    assert "workload discussion" in prompt
 
 
 def test_run_command_appends_prompt_and_captures_stdout():
