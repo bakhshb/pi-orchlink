@@ -124,6 +124,34 @@ def test_work_command_starts_visible_pi(monkeypatch, tmp_path):
     assert "posted directly into this Pi chat" in result.output
 
 
+def test_work_new_uses_fresh_pi_session_id(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main.time, "strftime", lambda fmt: "20260621-010203")
+    calls = []
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+        def run_work(self):
+            calls.append(self.config["work"]["session_id"])
+            return 0
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "register_project_role_sync", lambda config, role: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+
+    result = runner.invoke(cli_main.app, ["work", "--new"])
+
+    assert result.exit_code == 0
+    assert calls == ["work-20260621-010203"]
+    assert "New Pi worker session: work-20260621-010203" in result.output
+
+
 def test_status_command_prints_status(monkeypatch):
     monkeypatch.setattr(
         cli_main,

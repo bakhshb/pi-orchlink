@@ -242,6 +242,14 @@ def start_background_worker_listener(config: dict[str, Any]) -> None:
         raise RuntimeError(f"Worker listener exited during startup. See {log_path}")
 
 
+def with_new_pi_session(config: dict[str, Any], role: str) -> tuple[dict[str, Any], str]:
+    session_id = f"{role}-{time.strftime('%Y%m%d-%H%M%S')}"
+    updated = dict(config)
+    updated[role] = dict(config.get(role) or {})
+    updated[role]["session_id"] = session_id
+    return updated, session_id
+
+
 def stop_pid_file(path: Path, label: str) -> None:
     if not path.is_file():
         console.print(f"[Orch] No {label} PID file found for this project.")
@@ -295,6 +303,7 @@ def init_command(
 @app.command()
 def lead(
     no_pi: Annotated[bool, typer.Option("--no-pi", help="Prepare/register but do not launch Pi.")] = False,
+    new: Annotated[bool, typer.Option("--new", help="Start a new Pi lead session instead of reopening the saved lead session.")] = False,
 ) -> None:
     config = load_project_or_exit()
     try:
@@ -302,6 +311,9 @@ def lead(
         console.print("[Orch] Broker online")
         register_project_role_sync(config, "lead")
         console.print(f"[Orch] Registered: {role_agent_id(config, 'lead')}")
+        if new:
+            config, session_id = with_new_pi_session(config, "lead")
+            console.print(f"[Orch] New Pi lead session: {session_id}")
         console.print("[Orch] Worker available: work")
         console.print("[Orch] Starting Pi lead session...")
         if no_pi:
@@ -317,6 +329,7 @@ def lead(
 def work(
     once: Annotated[bool, typer.Option("--once", help="Process at most one poll/message then exit without launching Pi.")] = False,
     no_pi: Annotated[bool, typer.Option("--no-pi", help="Run only the task listener; do not launch the visible Pi session.")] = False,
+    new: Annotated[bool, typer.Option("--new", help="Start a new Pi worker session instead of reopening the saved worker session.")] = False,
 ) -> None:
     config = load_project_or_exit()
     try:
@@ -324,6 +337,9 @@ def work(
         console.print("[Orch] Broker online")
         register_project_role_sync(config, "worker")
         console.print(f"[Orch] Registered: {role_agent_id(config, 'work')}")
+        if new:
+            config, session_id = with_new_pi_session(config, "work")
+            console.print(f"[Orch] New Pi worker session: {session_id}")
 
         if once or no_pi:
             console.print("[Orch] Waiting for tasks...")

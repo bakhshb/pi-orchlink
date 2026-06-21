@@ -128,8 +128,10 @@ The default project id comes from the folder name. The default agent ids are:
 | Command | Purpose |
 | --- | --- |
 | `orch init` | Create `.orch/` config and role instructions. |
-| `orch lead` | Start the visible lead Pi session. |
-| `orch work` | Start the visible worker Pi session. |
+| `orch lead` | Start the visible lead Pi session. Reopens the saved `lead` Pi session. |
+| `orch lead --new` | Start a new visible lead Pi session. |
+| `orch work` | Start the visible worker Pi session. Reopens the saved `work` Pi session. |
+| `orch work --new` | Start a new visible worker Pi session. |
 | `orch work --no-pi` | Run the worker listener without opening Pi. |
 | `orch ask work -t T001 -m "..."` | Queue a task for the worker. |
 | `orch ask work --wait -t T001 -m "..."` | Send a task and block until the reply arrives. |
