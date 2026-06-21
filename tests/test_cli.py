@@ -463,6 +463,28 @@ def test_update_runs_git_and_reinstalls_package(monkeypatch, tmp_path):
     assert "orch work --new" in result.output
 
 
+def test_doctor_reports_stale_project_skills(monkeypatch, tmp_path):
+    paths = init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "broker_health", lambda url: False)
+
+    current = runner.invoke(cli_main.app, ["doctor"])
+
+    assert current.exit_code == 0
+    assert "lead.md: current" in current.output
+    assert "work.md: current" in current.output
+    assert "Project .orch files: current" in current.output
+
+    paths["lead_skill"].write_text("old lead\n", encoding="utf-8")
+
+    stale = runner.invoke(cli_main.app, ["doctor"])
+
+    assert stale.exit_code == 0
+    assert "lead.md: stale" in stale.output
+    assert "Project .orch files: stale" in stale.output
+    assert "Run: orch init --refresh-skills" in stale.output
+
+
 def test_status_command_prints_status(monkeypatch):
     monkeypatch.setattr(
         cli_main,

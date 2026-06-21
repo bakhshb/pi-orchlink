@@ -38,7 +38,7 @@ from orchlink.project.config import (
     role_agent_id,
     run_dir,
 )
-from orchlink.project.init import init_project
+from orchlink.project.init import LEAD_SKILL, WORK_SKILL, init_project
 
 
 def discover_project_root() -> Path:
@@ -908,9 +908,24 @@ def doctor(
         console.print(f"Broker reachable: {'yes' if broker_health(broker_url(config)) else 'no'}")
         console.print("API key configured: yes")
         console.print(f"Pi command: {connector.pi_command()} ({'found' if connector.check_available() else 'missing'})")
-        for skill_name in ("lead.md", "work.md"):
+        stale = False
+        missing = False
+        for skill_name, expected in (("lead.md", LEAD_SKILL), ("work.md", WORK_SKILL)):
             path = project_root(config) / ".orch" / "skills" / skill_name
-            console.print(f"{skill_name}: {'found' if path.is_file() else 'missing'}")
+            if not path.is_file():
+                status_text = "missing"
+                missing = True
+            elif path.read_text(encoding="utf-8") != expected:
+                status_text = "stale"
+                stale = True
+            else:
+                status_text = "current"
+            console.print(f"{skill_name}: {status_text}")
+        if stale or missing:
+            console.print("Project .orch files: stale")
+            console.print("Run: orch init --refresh-skills")
+        else:
+            console.print("Project .orch files: current")
 
     console.print("Global CLI symlink: ~/.local/bin/orch -> <orchlink-repo>/.venv/bin/orch")
     console.print("Legacy CLI symlink: ~/.local/bin/orchlink -> <orchlink-repo>/.venv/bin/orchlink")
