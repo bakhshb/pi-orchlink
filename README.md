@@ -110,6 +110,12 @@ orch stop
 .orch/run/
 ```
 
+Refresh the role instructions without changing project config:
+
+```bash
+orch init --refresh-skills
+```
+
 The default project id comes from the folder name. The default agent ids are:
 
 ```text

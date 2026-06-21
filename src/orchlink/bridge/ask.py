@@ -9,10 +9,17 @@ from orchlink.project.config import broker_api_key, broker_url, resolve_agent_id
 
 
 DEFAULT_EXPECTED_REPLY = [
+    "type",
+    "mode",
     "summary",
+    "workload split",
+    "decision needed",
     "files inspected",
+    "files changed",
+    "tests run",
     "findings",
     "risks",
+    "open questions",
     "recommended next step",
 ]
 

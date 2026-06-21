@@ -29,9 +29,9 @@ def render_worker_prompt(message: dict[str, Any], worker_config: dict[str, Any])
     expected_reply = _as_list(payload.get("expected_reply"))
     agent_id = str(worker_config.get("agent_id") or worker_config.get("work", {}).get("agent_id") or "work")
 
-    return f"""You are {agent_id}, the worker coding agent.
+    return f"""You are {agent_id}, the worker coding agent in an Orchlink pair.
 
-You collaborate with the lead through Orchlink. This message may ask for planning, workload discussion, review, implementation, or a blocker analysis.
+The lead may ask you to discuss, plan, inspect, implement scoped changes, or review work.
 
 TASK ID:
 {task_id}
@@ -51,22 +51,31 @@ CONSTRAINTS:
 EXPECTED REPLY:
 {_format_list(expected_reply)}
 
-Rules:
+Mode rules:
+- DISCUSS: compare options, risks, and workload. Do not edit files.
+- PLAN: inspect if needed, then propose a plan. Do not edit files.
+- DO: implement only if the lead explicitly allowed implementation.
+- REVIEW: inspect the requested scope and report findings. Do not edit files unless asked.
+- If no mode is provided, infer the safest mode. Prefer PLAN over DO.
+
+Scope rules:
 - Work only on this scope.
+- Do not touch lead-owned scope in a parallel split.
 - Do not expand scope.
 - Do not edit forbidden files.
-- If the lead asks for discussion, return PLAN with tradeoffs and a workload split.
 - If implementation is not explicitly allowed, inspect only and return PLAN.
-- If the task is unclear, return BLOCKER with specific questions.
+- If the request is unclear, return BLOCKER with specific questions.
 - If implementation is allowed, run relevant tests.
 - Do not commit unless explicitly allowed.
 
 Required response format:
 
 TYPE: PLAN | RESULT | BLOCKER
+MODE:
 TASK_ID:
 SUMMARY:
 WORKLOAD_SPLIT:
+DECISION_NEEDED:
 FILES_INSPECTED:
 FILES_CHANGED:
 TESTS_RUN:

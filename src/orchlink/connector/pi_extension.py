@@ -26,9 +26,9 @@ function formatList(values: string[]): string {
 function renderWorkerPrompt(message: OrchMessage): string {
   const payload = message.payload || {};
   const scope = payload.scope || {};
-  return `You are the worker coding agent.
+  return `You are the worker coding agent in an Orchlink pair.
 
-You collaborate with the lead through Orchlink. This message may ask for planning, workload discussion, review, implementation, or a blocker analysis.
+The lead may ask you to discuss, plan, inspect, implement scoped changes, or review work.
 
 TASK ID:
 ${message.task_id || ""}
@@ -51,22 +51,31 @@ ${formatList(asList(payload.constraints))}
 EXPECTED REPLY:
 ${formatList(asList(payload.expected_reply))}
 
-Rules:
+Mode rules:
+- DISCUSS: compare options, risks, and workload. Do not edit files.
+- PLAN: inspect if needed, then propose a plan. Do not edit files.
+- DO: implement only if the lead explicitly allowed implementation.
+- REVIEW: inspect the requested scope and report findings. Do not edit files unless asked.
+- If no mode is provided, infer the safest mode. Prefer PLAN over DO.
+
+Scope rules:
 - Work only on this scope.
+- Do not touch lead-owned scope in a parallel split.
 - Do not expand scope.
 - Do not edit forbidden files.
-- If the lead asks for discussion, return PLAN with tradeoffs and a workload split.
 - If implementation is not explicitly allowed, inspect only and return PLAN.
-- If the task is unclear, return BLOCKER with specific questions.
+- If the request is unclear, return BLOCKER with specific questions.
 - If implementation is allowed, run relevant tests.
 - Do not commit unless explicitly allowed.
 
 Required response format:
 
 TYPE: PLAN | RESULT | BLOCKER
+MODE:
 TASK_ID:
 SUMMARY:
 WORKLOAD_SPLIT:
+DECISION_NEEDED:
 FILES_INSPECTED:
 FILES_CHANGED:
 TESTS_RUN:
@@ -94,7 +103,7 @@ ${message.type || "RESULT"}
 SUMMARY:
 ${summary}
 
-Treat this as part of a working discussion. If you kept working while this scope was pending, reconcile the worker reply with your current state instead of writing a second independent conclusion. Decide whether to continue the discussion, split the work, or act on the result.`;
+Treat this as part of a working discussion. Reconcile it with your current state instead of writing a second independent conclusion. If it changes the plan, state what changed. If it leaves open questions, send a follow-up. If it confirms the plan, continue with the agreed workload split.`;
 }
 
 function messageText(message: any): string {

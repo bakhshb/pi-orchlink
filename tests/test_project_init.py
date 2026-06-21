@@ -27,14 +27,29 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert data["broker"]["auto_start"] is True
     lead_skill = paths["lead_skill"].read_text(encoding="utf-8")
     work_skill = paths["work_skill"].read_text(encoding="utf-8")
-    assert "not only a task delegate" in lead_skill
-    assert "Use normal `orch ask`" in lead_skill
-    assert "Use `orch ask --wait`" in lead_skill
-    assert "mark that scope as pending" in lead_skill
-    assert "Do not do the same scope yourself" in lead_skill
-    assert "split the scope explicitly" in lead_skill
-    assert "workload split" in work_skill
+    assert "not just delegate" in lead_skill
+    assert "Message checklist" in lead_skill
+    assert "Use `--wait`" in lead_skill
+    assert "treat that scope as pending" in lead_skill
+    assert "Do not duplicate the worker scope" in lead_skill
+    assert "MODE: DISCUSS | PLAN | DO | REVIEW" in lead_skill
+    assert "Interpret the mode" in work_skill
+    assert "Prefer PLAN over DO" in work_skill
+    assert "DECISION_NEEDED" in work_skill
     assert "WORKLOAD_SPLIT" in work_skill
+
+
+def test_refresh_skills_keeps_existing_project_config(tmp_path):
+    paths = init_project(tmp_path, project_id="demo")
+    paths["config"].write_text("project_id: custom\n", encoding="utf-8")
+    paths["lead_skill"].write_text("old lead", encoding="utf-8")
+    paths["work_skill"].write_text("old work", encoding="utf-8")
+
+    refreshed = init_project(tmp_path, refresh_skills=True)
+
+    assert refreshed["config"].read_text(encoding="utf-8") == "project_id: custom\n"
+    assert "Message checklist" in refreshed["lead_skill"].read_text(encoding="utf-8")
+    assert "Interpret the mode" in refreshed["work_skill"].read_text(encoding="utf-8")
 
 
 def test_cli_init_uses_current_folder_name_by_default(monkeypatch, tmp_path):

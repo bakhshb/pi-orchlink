@@ -282,9 +282,10 @@ def broker_run(
 @app.command("init")
 def init_command(
     project_id: Annotated[str | None, typer.Option("--project-id")] = None,
-    force: Annotated[bool, typer.Option("--force")] = False,
+    force: Annotated[bool, typer.Option("--force", help="Overwrite config and skills.")] = False,
+    refresh_skills: Annotated[bool, typer.Option("--refresh-skills", help="Rewrite lead/work skills without changing project config.")] = False,
 ) -> None:
-    paths = init_project(Path.cwd(), project_id=project_id, force=force)
+    paths = init_project(Path.cwd(), project_id=project_id, force=force, refresh_skills=refresh_skills)
     console.print(f"[Orch] Initialized {paths['orch_dir']}")
     console.print(f"[Orch] Config: {paths['config']}")
     console.print(f"[Orch] Lead skill: {paths['lead_skill']}")
