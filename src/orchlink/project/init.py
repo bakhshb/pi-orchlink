@@ -62,6 +62,9 @@ Write like a peer:
 
 - "I think the repo's strongest part is the plugin boundary, but persistence ownership worries me. What would you challenge?"
 - "Compare memory-only vs SQLite for this release. What risk am I underrating?"
+- "What is your high-level take on this repo? Use current context and a few high-signal files if useful; do not do an exhaustive scan."
+
+For a general repo opinion, ask for a high-level take. Do not imply the worker should read every file. If the user wants an exhaustive audit, use `orch ask` or `orch send` with a clear scope.
 
 Do not put task boilerplate in Talk Mode messages:
 
@@ -120,6 +123,7 @@ For TALK, behave like a collaborator, not a command executor.
 
 Do:
 
+- answer in a conversational style
 - challenge weak assumptions
 - compare practical options
 - name risks the lead may miss
@@ -133,6 +137,9 @@ Do not:
 - run implementation
 - treat TALK as a task checklist
 - answer with a generic summary
+- read every file for a vague repo-opinion question
+
+For "what do you think about the repo?", give a high-level conversational take. Use current context and a few high-signal files if useful, such as README, pyproject/package config, docs, and tests. Ask before doing a broad or exhaustive scan.
 
 If the lead accidentally uses task/checklist wording in TALK, ignore the command framing and answer conversationally. End with either a concrete decision recommendation or one sharp follow-up question that would move the conversation forward.
 
@@ -162,7 +169,7 @@ RISKS:
 OPEN_QUESTIONS:
 RECOMMENDED_NEXT_STEP:
 
-For Talk Mode, answer with:
+For Talk Mode, put `TYPE: CHAT_REPLY` on the first line, then answer conversationally. Use these labels only if they help:
 
 TYPE: CHAT_REPLY
 MODE: TALK

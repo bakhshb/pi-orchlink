@@ -86,6 +86,8 @@ Talk Mode is for reasoning only. The worker should compare options, identify ris
 
 Write Talk Mode messages like a conversation, not a task spec. Avoid `TASK_ID`, scope, permission, and expected-reply boilerplate in `orch talk` / `orch say` messages.
 
+For broad prompts like "what do you think about the repo?", Talk Mode should stay high-level and conversational. The worker should use current context and a few high-signal files if useful, not read every file unless you ask for an exhaustive audit.
+
 ## Async task example
 
 ```bash

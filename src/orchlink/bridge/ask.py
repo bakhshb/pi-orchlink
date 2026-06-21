@@ -128,9 +128,11 @@ def build_chat_envelope(
             "message": message,
             "transcript_preview": transcript_preview,
             "constraints": [
+                "Reply conversationally.",
                 "Do not edit files.",
                 "Challenge weak assumptions.",
                 "Recommend a practical decision.",
+                "Do not read every file for a vague repo-opinion question; use high-signal files or ask before a broad scan.",
             ],
             "expected_reply": TALK_EXPECTED_REPLY,
         },

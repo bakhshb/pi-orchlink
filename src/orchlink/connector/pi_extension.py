@@ -48,8 +48,8 @@ ${payload.message || payload.intent || ""}
 Transcript preview:
 ${payload.transcript_preview || ""}
 
-Rules:
-- Reply like a collaborator, not a command executor.
+Guidance:
+- Reply in a conversational style.
 - Challenge weak assumptions.
 - Compare options.
 - Identify risks.
@@ -57,20 +57,13 @@ Rules:
 - Do not edit files.
 - Do not run implementation.
 - Do not expand scope.
+- If asked for a repo opinion, do not read every file. Use current context and a few high-signal files if useful. Ask before doing a broad scan.
 - Keep the answer useful and direct.
 - End with either a concrete decision recommendation or one sharp follow-up question that would move the conversation forward.
 
-Reply using this format:
+Put this routing line first, then answer conversationally:
 
 TYPE: CHAT_REPLY
-MODE: TALK
-CONVERSATION_ID:
-POSITION:
-REASONING:
-RISKS:
-COUNTERPOINT:
-RECOMMENDATION:
-NEXT_QUESTION_OR_DECISION:
 `;
 }
 
