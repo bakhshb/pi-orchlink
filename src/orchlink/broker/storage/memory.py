@@ -91,6 +91,9 @@ class MemoryMessageStore(MessageStore):
             return None
 
         async with self._lock:
+            message_id = message.get("message_id")
+            if message_id in self._active_messages:
+                self._active_messages[str(message_id)]["status"] = "IN_PROGRESS"
             self._append_event_locked(
                 "message_delivered",
                 project_id=message.get("project_id"),

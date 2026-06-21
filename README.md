@@ -78,6 +78,7 @@ Use these most of the time:
 | `orch lead` | Open the lead Pi session. |
 | `orch work` | Open the worker Pi session. |
 | `orch ask work -t T001 -m "..."` | Queue a message for the worker. |
+| `orch task T001` | Check whether a task is queued, in progress, or complete. |
 | `orch stop` | Stop the project broker. |
 
 ## How `orch ask` works
@@ -89,6 +90,12 @@ orch ask work -t T001 -m "Inspect auth and return PLAN."
 ```
 
 Use this when the lead can work on a different scope while the worker thinks. The lead should treat the worker's scope as pending until the reply arrives.
+
+Check progress without sleeping or guessing:
+
+```bash
+orch task T001
+```
 
 Use `--wait` when the next lead decision depends on the worker reply:
 

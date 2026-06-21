@@ -390,6 +390,7 @@ def work_listen(
 def print_async_ask_guidance(config: dict[str, Any], worker_id: str, task_id: str) -> None:
     console.print(f"[Orch] Queued {task_id} for {resolve_agent_id(config, worker_id)}")
     console.print("[Orch] Async mode: treat this scope as pending until the worker reply arrives.")
+    console.print(f"[Orch] Check progress with: orch task {task_id}")
     console.print("[Orch] Continue only on unrelated scope, or use --wait when the next decision depends on the worker.")
 
 
@@ -431,6 +432,48 @@ def ask(
     if config_dir is None and not wait:
         print_async_ask_guidance(config, worker_id, task_id)
     console.print_json(json.dumps(response))
+
+
+@app.command()
+def task(task_id: str) -> None:
+    config = load_project_or_exit()
+    try:
+        ensure_broker_running(config)
+        status_body = fetch_status_sync(broker_url(config), broker_api_key(config))
+        events_body = fetch_events_sync(broker_url(config), broker_api_key(config), limit=500)
+    except (RuntimeError, httpx.HTTPError) as exc:
+        console.print(f"[Orch] {exc}")
+        raise typer.Exit(1) from exc
+
+    messages = [item for item in status_body.get("active_messages", []) if item.get("task_id") == task_id]
+    events = [item for item in events_body.get("events", []) if item.get("task_id") == task_id]
+    if not messages and not events:
+        console.print(f"[Orch] No broker record found for task {task_id}.")
+        return
+
+    latest_message = messages[-1] if messages else {}
+    status_text = str(latest_message.get("status") or "UNKNOWN")
+    console.print(f"[Orch] Task {task_id}: {status_text}")
+    console.print(f"[Orch] Route: {latest_message.get('from_agent', '-')} → {latest_message.get('to_agent', '-')}")
+
+    reply_events = [item for item in events if item.get("type") == "reply_received"]
+    if reply_events:
+        reply = reply_events[-1]
+        console.print(
+            f"[Orch] Reply: {reply.get('message_type', 'RESULT')} "
+            f"from {reply.get('from_agent', 'work')} to {reply.get('to_agent', 'lead')}"
+        )
+        preview = str(reply.get("preview") or "").strip()
+        if preview:
+            console.print(preview)
+        return
+
+    delivered_events = [item for item in events if item.get("type") == "message_delivered"]
+    if delivered_events:
+        delivered = delivered_events[-1]
+        console.print(f"[Orch] Delivered to {delivered.get('to_agent', 'worker')}. Worker is still in progress.")
+    else:
+        console.print("[Orch] Queued. Waiting for worker pickup.")
 
 
 @app.command()

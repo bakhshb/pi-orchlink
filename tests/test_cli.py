@@ -68,6 +68,46 @@ def test_project_ask_defaults_to_no_wait(monkeypatch, tmp_path):
     assert '"status": "queued"' in result.output
     assert "Async mode" in result.output
     assert "pending" in result.output
+    assert "orch task T001" in result.output
+
+
+def test_task_command_reports_in_progress(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "fetch_status_sync",
+        lambda broker_url, api_key: {
+            "active_messages": [
+                {
+                    "task_id": "T001",
+                    "status": "IN_PROGRESS",
+                    "from_agent": "demo.lead",
+                    "to_agent": "demo.work",
+                }
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "fetch_events_sync",
+        lambda broker_url, api_key, limit=500: {
+            "events": [
+                {
+                    "task_id": "T001",
+                    "type": "message_delivered",
+                    "to_agent": "demo.work",
+                }
+            ]
+        },
+    )
+
+    result = runner.invoke(cli_main.app, ["task", "T001"])
+
+    assert result.exit_code == 0
+    assert "Task T001: IN_PROGRESS" in result.output
+    assert "Worker is still in progress" in result.output
 
 
 def test_start_orchestrator_prints_guidance(monkeypatch, tmp_path):

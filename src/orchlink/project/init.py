@@ -24,6 +24,10 @@ Blocking, when your next decision depends on the reply:
 
 orch ask work --wait --task <TASK_ID> --msg "<MESSAGE>"
 
+Check progress without waiting in a sleep loop:
+
+orch task <TASK_ID>
+
 ## Choose async or wait
 
 Use async when you can work on unrelated scope while the worker thinks.

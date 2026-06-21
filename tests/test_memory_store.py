@@ -69,8 +69,13 @@ def test_enqueue_then_get_next_message():
         queued = await store.enqueue_message(message)
         received = await store.get_next_message("worker-backend", wait_seconds=1)
 
+        active_messages = await store.list_active_messages()
+
         assert queued == {"status": "queued", "message_id": "msg-0001"}
-        assert received == message
+        assert received is not None
+        assert received["message_id"] == message["message_id"]
+        assert received["status"] == "IN_PROGRESS"
+        assert active_messages[0]["status"] == "IN_PROGRESS"
 
     asyncio.run(run())
 
