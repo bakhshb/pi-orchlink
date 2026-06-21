@@ -147,6 +147,7 @@ The default project id comes from the folder name. The default agent ids are:
 | Command | Purpose |
 | --- | --- |
 | `orch init` | Create `.orch/` config and role instructions. |
+| `orch init --refresh-skills` | Refresh lead/work instructions without changing `.orch/project.yaml`. |
 | `orch lead` | Start the visible lead Pi session. Reopens the saved `lead` Pi session. |
 | `orch lead --new` | Start a new visible lead Pi session. |
 | `orch work` | Start the visible worker Pi session. Reopens the saved `work` Pi session. |
