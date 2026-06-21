@@ -245,9 +245,13 @@ def test_save_reply_queues_reply_for_lead_inbox():
 
         delivered = await store.get_next_message("orchestrator", wait_seconds=1)
 
+        jobs = await store.list_jobs()
+
         assert delivered is not None
         assert delivered["type"] == "PLAN"
         assert delivered["to_agent"] == "orchestrator"
+        assert jobs[0]["task_id"] == "TEST-001"
+        assert jobs[0]["status"] == "DONE"
 
     asyncio.run(run())
 

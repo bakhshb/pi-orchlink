@@ -271,7 +271,7 @@ class MemoryMessageStore(MessageStore):
                 delivered["status"] = "DELIVERED"
             if message_id in self._active_messages:
                 self._active_messages[message_id]["status"] = delivered["status"]
-            if delivered.get("task_id"):
+            if delivered.get("task_id") and delivered.get("type") == "TASK":
                 self._upsert_task_locked(delivered, delivered["status"])
             self._touch_conversation_locked(delivered)
             self._append_event_locked(
