@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
@@ -150,6 +151,28 @@ def test_work_new_uses_fresh_pi_session_id(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert calls == ["work-20260621-010203"]
     assert "New Pi worker session: work-20260621-010203" in result.output
+
+
+def test_update_runs_git_and_reinstalls_package(monkeypatch, tmp_path):
+    (tmp_path / ".git").mkdir()
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main.sys, "executable", "/venv/bin/python")
+
+    result = runner.invoke(cli_main.app, ["update", "--ref", "main"])
+
+    assert result.exit_code == 0
+    assert ["git", "-C", str(tmp_path), "fetch", "--tags", "--prune", "origin"] in calls
+    assert ["git", "-C", str(tmp_path), "checkout", "main"] in calls
+    assert ["git", "-C", str(tmp_path), "pull", "--ff-only", "origin", "main"] in calls
+    assert ["/venv/bin/python", "-m", "pip", "install", "-e", str(tmp_path)] in calls
+    assert "Update complete" in result.output
 
 
 def test_status_command_prints_status(monkeypatch):

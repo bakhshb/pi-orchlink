@@ -30,6 +30,7 @@ def test_cli_imports_from_installable_package_and_exposes_required_commands():
     assert "monitor" in result.output
     assert "status" in result.output
     assert "doctor" in result.output
+    assert "update" in result.output
 
 
 def test_broker_run_command_is_registered_without_starting_server(monkeypatch):

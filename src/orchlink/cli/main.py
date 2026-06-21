@@ -129,6 +129,26 @@ def fetch_events_sync(url: str, api_key: str, since: int = 0, limit: int = 50) -
     return asyncio.run(fetch_events(url, api_key, since=since, limit=limit))
 
 
+def run_update(ref: str, reinstall_only: bool = False) -> None:
+    root = PROJECT_ROOT
+    if not (root / ".git").is_dir():
+        raise RuntimeError("This Orchlink install is not a git checkout. Re-run the install script to update.")
+
+    if not reinstall_only:
+        subprocess.run(["git", "-C", str(root), "fetch", "--tags", "--prune", "origin"], check=True)
+        subprocess.run(["git", "-C", str(root), "checkout", ref], check=True)
+        remote_branch = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--verify", f"origin/{ref}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if remote_branch.returncode == 0:
+            subprocess.run(["git", "-C", str(root), "pull", "--ff-only", "origin", ref], check=True)
+
+    subprocess.run([sys.executable, "-m", "pip", "install", "-e", str(root)], check=True)
+
+
 def broker_health(url: str) -> bool:
     try:
         response = httpx.get(f"{url.rstrip('/')}/health", timeout=0.5)
@@ -411,6 +431,23 @@ def ask(
     if config_dir is None and not wait:
         print_async_ask_guidance(config, worker_id, task_id)
     console.print_json(json.dumps(response))
+
+
+@app.command()
+def update(
+    ref: Annotated[str, typer.Option("--ref", help="Git branch, tag, or commit to update to.")] = "main",
+    reinstall_only: Annotated[bool, typer.Option("--reinstall-only", help="Only reinstall the current checkout into the venv.")] = False,
+) -> None:
+    console.print(f"[Orch] Updating Orchlink in {PROJECT_ROOT}")
+    try:
+        run_update(ref=ref, reinstall_only=reinstall_only)
+    except FileNotFoundError as exc:
+        console.print(f"[Orch] Missing command: {exc.filename}")
+        raise typer.Exit(1) from exc
+    except (RuntimeError, subprocess.CalledProcessError) as exc:
+        console.print(f"[Orch] Update failed: {exc}")
+        raise typer.Exit(1) from exc
+    console.print("[Orch] Update complete. Restart any running orch lead/work sessions.")
 
 
 @app.command()

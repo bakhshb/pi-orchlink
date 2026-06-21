@@ -47,6 +47,18 @@ curl -fsSL "$INSTALL_URL" | bash -s -- --dir ~/.local/share/orchlink --bin-dir ~
 curl -fsSL "$INSTALL_URL" | bash -s -- --uninstall
 ```
 
+Update later:
+
+```bash
+orch update
+```
+
+Use a specific branch, tag, or commit:
+
+```bash
+orch update --ref main
+```
+
 ## Quick start
 
 Run these commands inside the project where you want the two Pi sessions to work.
@@ -145,6 +157,7 @@ The default project id comes from the folder name. The default agent ids are:
 | `orch watch` | Show queued tasks, delivered tasks, replies, and timeouts. |
 | `orch stop` | Stop the project broker and worker listener. |
 | `orch doctor` | Check local setup. |
+| `orch update` | Pull the latest Orchlink code and reinstall it into the venv. |
 
 For broker debugging:
 
