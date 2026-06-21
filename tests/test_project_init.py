@@ -35,7 +35,7 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "orch say C001" in lead_skill
     assert "orch close C001" in lead_skill
     assert "Talk Mode is a conversation" in lead_skill
-    assert "do not summarize after the first worker reply" in lead_skill
+    assert "Do not summarize after the first worker reply" in lead_skill
     assert "no TASK_ID" in lead_skill
     assert "MODE: DISCUSS | PLAN | DO | REVIEW" in lead_skill
     assert "## Modes" in work_skill
