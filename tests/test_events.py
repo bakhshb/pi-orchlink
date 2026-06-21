@@ -5,6 +5,7 @@ import httpx
 from orchlink.broker.main import create_app
 from orchlink.broker.settings import Settings
 from orchlink.broker.storage.memory import MemoryMessageStore
+from orchlink.bridge.monitor import format_event
 
 
 HEADERS = {"X-API-Key": "test-key"}
@@ -48,6 +49,35 @@ def reply_message():
         "timeout_seconds": 1,
         "payload": {"summary": "Plan ready."},
     }
+
+
+def test_format_event_includes_chat_and_task_context():
+    chat = format_event(
+        {
+            "time": "2026-06-20T10:12:01+00:00",
+            "from_agent": "demo.lead",
+            "to_agent": "demo.work",
+            "message_type": "CHAT_START",
+            "conversation_id": "C001",
+            "preview": "Should we add SQLite now?",
+        }
+    )
+    task = format_event(
+        {
+            "time": "2026-06-20T10:20:01+00:00",
+            "from_agent": "demo.lead",
+            "to_agent": "demo.work",
+            "message_type": "TASK",
+            "task_id": "T002",
+            "mode": "PLAN",
+            "delivery": "async",
+            "preview": "Inspect test coverage.",
+        }
+    )
+
+    assert "lead → work CHAT_START C001" in chat
+    assert "Should we add SQLite" in chat
+    assert "lead → work TASK T002 PLAN ASYNC" in task
 
 
 def test_events_endpoint_shows_request_reply_flow():

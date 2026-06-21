@@ -7,8 +7,34 @@ PROTOCOL_VERSION = "orch-a2a-v1"
 LEGACY_PROTOCOL_VERSION = "orchlink-a2a-v1"
 SUPPORTED_PROTOCOL_VERSIONS = {PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION}
 
-MessageType = Literal["TASK", "PLAN", "RESULT", "BLOCKER", "REVIEW", "CLOSE", "STOP"]
-MessageStatus = Literal["PENDING", "IN_PROGRESS", "COMPLETED", "FAILED", "TIMEOUT"]
+MessageType = Literal[
+    "TASK",
+    "PLAN",
+    "RESULT",
+    "BLOCKER",
+    "REVIEW",
+    "CLOSE",
+    "STOP",
+    "CHAT_START",
+    "CHAT_TURN",
+    "CHAT_REPLY",
+    "CHAT_CLOSE",
+]
+MessageStatus = Literal[
+    "PENDING",
+    "QUEUED",
+    "DELIVERED",
+    "RUNNING",
+    "IN_PROGRESS",
+    "DONE",
+    "COMPLETED",
+    "FAILED",
+    "TIMEOUT",
+    "CANCELLED",
+    "CLOSED",
+]
+MessageMode = Literal["DISCUSS", "PLAN", "DO", "REVIEW", "TALK"]
+DeliveryMode = Literal["blocking", "async", "conversation"]
 AgentRole = Literal["lead", "worker", "orchestrator"]
 
 
@@ -22,7 +48,11 @@ class Scope(BaseModel):
 class MessagePayload(BaseModel):
     model_config = ConfigDict(extra="allow")
 
+    mode: MessageMode | None = None
     intent: str | None = None
+    topic: str | None = None
+    message: str | None = None
+    transcript_preview: str | None = None
     scope: Scope | None = None
     constraints: list[str] = Field(default_factory=list)
     expected_reply: list[str] = Field(default_factory=list)
@@ -46,7 +76,7 @@ class MessageEnvelope(BaseModel):
     correlation_id: str
     project_id: str = "default"
     conversation_id: str
-    task_id: str
+    task_id: str | None = None
     from_agent: str
     to_agent: str
     type: MessageType
@@ -55,6 +85,7 @@ class MessageEnvelope(BaseModel):
     max_turns: int = Field(default=6, ge=1, le=12)
     requires_reply: bool = True
     timeout_seconds: int = Field(default=1800, gt=0)
+    delivery: DeliveryMode = "async"
     payload: MessagePayload = Field(default_factory=MessagePayload)
 
     @field_validator("protocol")
@@ -65,9 +96,16 @@ class MessageEnvelope(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def turn_must_not_exceed_max_turns(self) -> "MessageEnvelope":
+    def validate_turns_and_chat_fields(self) -> "MessageEnvelope":
         if self.turn > self.max_turns:
             raise ValueError("turn cannot exceed max_turns")
+        if self.type.startswith("CHAT_"):
+            if self.delivery != "conversation":
+                raise ValueError("chat messages must use conversation delivery")
+            if self.payload.mode != "TALK":
+                raise ValueError("chat messages must use TALK mode")
+        elif self.delivery == "conversation":
+            raise ValueError("conversation delivery requires a chat message type")
         return self
 
 

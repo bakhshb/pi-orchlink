@@ -49,7 +49,7 @@ def test_ask_command_prints_reply(monkeypatch, tmp_path):
     assert '"type": "PLAN"' in result.output
 
 
-def test_project_ask_defaults_to_no_wait(monkeypatch, tmp_path):
+def test_project_ask_defaults_to_wait(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
@@ -57,18 +57,149 @@ def test_project_ask_defaults_to_no_wait(monkeypatch, tmp_path):
     def fake_project_ask_worker_sync(**kwargs):
         assert kwargs["worker"] == "work"
         assert kwargs["task_id"] == "T001"
-        assert kwargs["wait"] is False
-        return {"status": "queued", "message_id": "msg-1"}
+        assert kwargs["wait"] is True
+        return {"status": "completed", "reply": {"type": "PLAN"}}
 
     monkeypatch.setattr(cli_main, "project_ask_worker_sync", fake_project_ask_worker_sync)
 
     result = runner.invoke(cli_main.app, ["ask", "work", "-t", "T001", "-m", "Return PLAN only."])
 
     assert result.exit_code == 0
-    assert '"status": "queued"' in result.output
+    assert '"status": "completed"' in result.output
+    assert "Async mode" not in result.output
+
+
+def test_project_ask_wait_option_blocks(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    def fake_project_ask_worker_sync(**kwargs):
+        assert kwargs["wait"] is True
+        return {"status": "completed", "reply": {"type": "PLAN"}}
+
+    monkeypatch.setattr(cli_main, "project_ask_worker_sync", fake_project_ask_worker_sync)
+
+    result = runner.invoke(cli_main.app, ["ask", "work", "--wait", "-t", "T001", "-m", "Return PLAN only."])
+
+    assert result.exit_code == 0
+    assert '"status": "completed"' in result.output
+
+
+def test_send_queues_async_task(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    def fake_send_worker_sync(**kwargs):
+        assert kwargs["worker"] == "work"
+        assert kwargs["task_id"] == "T002"
+        assert kwargs["message"] == "Inspect tests."
+        return {"status": "queued", "message_id": "msg-2"}
+
+    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
+
+    result = runner.invoke(cli_main.app, ["send", "work", "-t", "T002", "-m", "Inspect tests."])
+
+    assert result.exit_code == 0
+    assert "Sent T002" in result.output
     assert "Async mode" in result.output
-    assert "pending" in result.output
-    assert "orch task T001" in result.output
+    assert "orch wait T002" in result.output
+
+
+def test_talk_creates_conversation(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "next_conversation_id", lambda config: "C001")
+
+    def fake_start_talk_sync(**kwargs):
+        assert kwargs["conversation_id"] == "C001"
+        assert kwargs["worker"] == "work"
+        assert kwargs["message"] == "Memory or SQLite?"
+        assert kwargs["max_turns"] == 6
+        return {"status": "queued", "conversation_id": "C001"}
+
+    monkeypatch.setattr(cli_main, "start_talk_sync", fake_start_talk_sync)
+
+    result = runner.invoke(cli_main.app, ["talk", "work", "-m", "Memory or SQLite?", "-r", "6"])
+
+    assert result.exit_code == 0
+    assert "Started conversation C001" in result.output
+    assert "Waiting for worker reply" in result.output
+
+
+def test_say_sends_chat_turn(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "conversation_state",
+        lambda config, conversation_id: {"conversation_id": "C001", "status": "OPEN", "turn": 2, "max_turns": 6},
+    )
+
+    def fake_say_talk_sync(**kwargs):
+        assert kwargs["conversation_id"] == "C001"
+        assert kwargs["turn"] == 3
+        assert kwargs["max_turns"] == 6
+        return {"status": "queued"}
+
+    monkeypatch.setattr(cli_main, "say_talk_sync", fake_say_talk_sync)
+
+    result = runner.invoke(cli_main.app, ["say", "C001", "-m", "Challenge restart risk."])
+
+    assert result.exit_code == 0
+    assert "Sent turn 3/6" in result.output
+
+
+def test_close_sends_chat_close(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "conversation_state",
+        lambda config, conversation_id: {"conversation_id": "C001", "status": "OPEN", "turn": 2, "max_turns": 6},
+    )
+
+    def fake_close_talk_sync(**kwargs):
+        assert kwargs["conversation_id"] == "C001"
+        assert kwargs["message"] == "Decision made."
+        return {"status": "queued"}
+
+    monkeypatch.setattr(cli_main, "close_talk_sync", fake_close_talk_sync)
+
+    result = runner.invoke(cli_main.app, ["close", "C001", "-m", "Decision made."])
+
+    assert result.exit_code == 0
+    assert "Closed conversation C001" in result.output
+
+
+def test_jobs_get_and_wait_commands(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    def fake_broker_get_sync(config, path):
+        if path.startswith("/v1/jobs"):
+            return {"jobs": [{"task_id": "T010", "mode": "PLAN", "status": "DONE", "from_agent": "demo.lead", "to_agent": "demo.work", "created_at": "now", "preview": "Inspect tests."}]}
+        if path.startswith("/v1/tasks/T010/wait") or path == "/v1/tasks/T010":
+            return {"status": "DONE", "task_id": "T010", "reply": {"type": "RESULT", "payload": {"summary": "Done."}}}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+
+    jobs_result = runner.invoke(cli_main.app, ["jobs"])
+    get_result = runner.invoke(cli_main.app, ["get", "T010"])
+    wait_result = runner.invoke(cli_main.app, ["wait", "T010", "--timeout-seconds", "1"])
+
+    assert jobs_result.exit_code == 0
+    assert "T010" in jobs_result.output
+    assert get_result.exit_code == 0
+    assert "Done." in get_result.output
+    assert wait_result.exit_code == 0
+    assert "Done." in wait_result.output
 
 
 def test_task_command_reports_in_progress(monkeypatch, tmp_path):

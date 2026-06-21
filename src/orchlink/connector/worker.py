@@ -14,7 +14,7 @@ def worker_registration(config: dict[str, Any]) -> dict[str, Any]:
         "agent_id": role_agent_id(config, "work"),
         "role": "worker",
         "display_name": "Worker",
-        "capabilities": ["inspection", "implementation", "tests"],
+        "capabilities": ["inspection", "implementation", "tests", "talk"],
     }
 
 

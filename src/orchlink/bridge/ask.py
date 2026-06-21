@@ -1,4 +1,5 @@
 import asyncio
+import re
 import uuid
 from typing import Any
 
@@ -23,6 +24,40 @@ DEFAULT_EXPECTED_REPLY = [
     "recommended next step",
 ]
 
+TALK_EXPECTED_REPLY = [
+    "position",
+    "reasoning",
+    "risks",
+    "counterpoint",
+    "recommendation",
+]
+
+VALID_TASK_MODES = {"DISCUSS", "PLAN", "DO", "REVIEW"}
+
+
+def infer_task_mode(message: str, default: str = "PLAN") -> str:
+    match = re.search(r"(?im)^\s*MODE\s*:\s*(DISCUSS|PLAN|DO|REVIEW)\b", message)
+    if match:
+        return match.group(1).upper()
+    return default
+
+
+def _base_envelope(config: dict[str, Any], to_agent: str, timeout_seconds: int) -> dict[str, Any]:
+    project_id = str(config.get("project_id") or "default")
+    return {
+        "protocol": PROTOCOL_VERSION,
+        "message_id": f"msg-{uuid.uuid4()}",
+        "correlation_id": f"req-{uuid.uuid4()}",
+        "project_id": project_id,
+        "from_agent": role_agent_id(config, "lead"),
+        "to_agent": to_agent,
+        "status": "PENDING",
+        "turn": 1,
+        "max_turns": 6,
+        "requires_reply": True,
+        "timeout_seconds": timeout_seconds,
+    }
+
 
 def build_task_envelope(
     config: dict[str, Any],
@@ -30,26 +65,23 @@ def build_task_envelope(
     task_id: str,
     message: str,
     timeout_seconds: int = 1800,
+    delivery: str = "async",
+    mode: str | None = None,
 ) -> dict[str, Any]:
     project_id = str(config.get("project_id") or "default")
-    correlation_id = f"req-{uuid.uuid4()}"
     scope = config.get("scope") or {"allowed": ["**/*"], "forbidden": []}
+    selected_mode = (mode or infer_task_mode(message)).upper()
+    if selected_mode not in VALID_TASK_MODES:
+        selected_mode = "PLAN"
+    envelope = _base_envelope(config, resolve_agent_id(config, worker), timeout_seconds)
     return {
-        "protocol": PROTOCOL_VERSION,
-        "message_id": f"msg-{uuid.uuid4()}",
-        "correlation_id": correlation_id,
-        "project_id": project_id,
-        "conversation_id": f"{project_id}-default",
+        **envelope,
+        "conversation_id": f"{project_id}-tasks",
         "task_id": task_id,
-        "from_agent": role_agent_id(config, "lead"),
-        "to_agent": resolve_agent_id(config, worker),
         "type": "TASK",
-        "status": "PENDING",
-        "turn": 1,
-        "max_turns": 6,
-        "requires_reply": True,
-        "timeout_seconds": timeout_seconds,
+        "delivery": delivery,
         "payload": {
+            "mode": selected_mode,
             "intent": message,
             "scope": scope,
             "constraints": [],
@@ -58,21 +90,46 @@ def build_task_envelope(
     }
 
 
-async def ask_worker(
+def build_chat_envelope(
     config: dict[str, Any],
     worker: str,
-    task_id: str,
+    conversation_id: str,
     message: str,
+    message_type: str = "CHAT_START",
+    turn: int = 1,
+    max_turns: int = 6,
     timeout_seconds: int = 1800,
-    wait: bool = False,
+    transcript_preview: str = "",
+    requires_reply: bool | None = None,
 ) -> dict[str, Any]:
-    envelope = build_task_envelope(
-        config=config,
-        worker=worker,
-        task_id=task_id,
-        message=message,
-        timeout_seconds=timeout_seconds,
-    )
+    envelope = _base_envelope(config, resolve_agent_id(config, worker), timeout_seconds)
+    if requires_reply is None:
+        requires_reply = message_type != "CHAT_CLOSE"
+    return {
+        **envelope,
+        "conversation_id": conversation_id,
+        "task_id": None,
+        "type": message_type,
+        "turn": turn,
+        "max_turns": max_turns,
+        "requires_reply": requires_reply,
+        "delivery": "conversation",
+        "payload": {
+            "mode": "TALK",
+            "topic": message if message_type == "CHAT_START" else "",
+            "message": message,
+            "transcript_preview": transcript_preview,
+            "constraints": [
+                "Do not edit files.",
+                "Challenge weak assumptions.",
+                "Recommend a practical decision.",
+            ],
+            "expected_reply": TALK_EXPECTED_REPLY,
+        },
+    }
+
+
+async def post_envelope(config: dict[str, Any], envelope: dict[str, Any], wait: bool = False) -> dict[str, Any]:
     endpoint = "/v1/messages/send-and-wait" if wait else "/v1/messages/send"
     async with httpx.AsyncClient(base_url=broker_url(config), timeout=None) as client:
         response = await client.post(
@@ -84,7 +141,117 @@ async def ask_worker(
         body = response.json()
         if wait:
             return body
-        return {**body, "correlation_id": envelope["correlation_id"], "to_agent": envelope["to_agent"]}
+        return {
+            **body,
+            "correlation_id": envelope["correlation_id"],
+            "conversation_id": envelope["conversation_id"],
+            "task_id": envelope.get("task_id"),
+            "to_agent": envelope["to_agent"],
+        }
+
+
+async def ask_worker(
+    config: dict[str, Any],
+    worker: str,
+    task_id: str,
+    message: str,
+    timeout_seconds: int = 1800,
+    wait: bool = True,
+) -> dict[str, Any]:
+    envelope = build_task_envelope(
+        config=config,
+        worker=worker,
+        task_id=task_id,
+        message=message,
+        timeout_seconds=timeout_seconds,
+        delivery="blocking" if wait else "async",
+    )
+    return await post_envelope(config, envelope, wait=wait)
+
+
+async def send_worker(
+    config: dict[str, Any],
+    worker: str,
+    task_id: str,
+    message: str,
+    timeout_seconds: int = 1800,
+) -> dict[str, Any]:
+    envelope = build_task_envelope(
+        config=config,
+        worker=worker,
+        task_id=task_id,
+        message=message,
+        timeout_seconds=timeout_seconds,
+        delivery="async",
+    )
+    return await post_envelope(config, envelope, wait=False)
+
+
+async def start_talk(
+    config: dict[str, Any],
+    worker: str,
+    conversation_id: str,
+    message: str,
+    max_turns: int = 6,
+    timeout_seconds: int = 1800,
+    wait: bool = False,
+) -> dict[str, Any]:
+    envelope = build_chat_envelope(
+        config=config,
+        worker=worker,
+        conversation_id=conversation_id,
+        message=message,
+        message_type="CHAT_START",
+        turn=1,
+        max_turns=max_turns,
+        timeout_seconds=timeout_seconds,
+    )
+    return await post_envelope(config, envelope, wait=wait)
+
+
+async def say_talk(
+    config: dict[str, Any],
+    worker: str,
+    conversation_id: str,
+    message: str,
+    turn: int,
+    max_turns: int,
+    timeout_seconds: int = 1800,
+) -> dict[str, Any]:
+    envelope = build_chat_envelope(
+        config=config,
+        worker=worker,
+        conversation_id=conversation_id,
+        message=message,
+        message_type="CHAT_TURN",
+        turn=turn,
+        max_turns=max_turns,
+        timeout_seconds=timeout_seconds,
+    )
+    return await post_envelope(config, envelope, wait=False)
+
+
+async def close_talk(
+    config: dict[str, Any],
+    worker: str,
+    conversation_id: str,
+    message: str,
+    turn: int,
+    max_turns: int,
+    timeout_seconds: int = 1800,
+) -> dict[str, Any]:
+    envelope = build_chat_envelope(
+        config=config,
+        worker=worker,
+        conversation_id=conversation_id,
+        message=message,
+        message_type="CHAT_CLOSE",
+        turn=turn,
+        max_turns=max_turns,
+        timeout_seconds=timeout_seconds,
+        requires_reply=False,
+    )
+    return await post_envelope(config, envelope, wait=False)
 
 
 def ask_worker_sync(
@@ -93,7 +260,7 @@ def ask_worker_sync(
     task_id: str,
     message: str,
     timeout_seconds: int = 1800,
-    wait: bool = False,
+    wait: bool = True,
 ) -> dict[str, Any]:
     return asyncio.run(
         ask_worker(
@@ -105,3 +272,49 @@ def ask_worker_sync(
             wait=wait,
         )
     )
+
+
+def send_worker_sync(
+    config: dict[str, Any],
+    worker: str,
+    task_id: str,
+    message: str,
+    timeout_seconds: int = 1800,
+) -> dict[str, Any]:
+    return asyncio.run(send_worker(config, worker, task_id, message, timeout_seconds))
+
+
+def start_talk_sync(
+    config: dict[str, Any],
+    worker: str,
+    conversation_id: str,
+    message: str,
+    max_turns: int = 6,
+    timeout_seconds: int = 1800,
+    wait: bool = False,
+) -> dict[str, Any]:
+    return asyncio.run(start_talk(config, worker, conversation_id, message, max_turns, timeout_seconds, wait=wait))
+
+
+def say_talk_sync(
+    config: dict[str, Any],
+    worker: str,
+    conversation_id: str,
+    message: str,
+    turn: int,
+    max_turns: int,
+    timeout_seconds: int = 1800,
+) -> dict[str, Any]:
+    return asyncio.run(say_talk(config, worker, conversation_id, message, turn, max_turns, timeout_seconds))
+
+
+def close_talk_sync(
+    config: dict[str, Any],
+    worker: str,
+    conversation_id: str,
+    message: str,
+    turn: int,
+    max_turns: int,
+    timeout_seconds: int = 1800,
+) -> dict[str, Any]:
+    return asyncio.run(close_talk(config, worker, conversation_id, message, turn, max_turns, timeout_seconds))

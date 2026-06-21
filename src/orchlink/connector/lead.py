@@ -14,7 +14,7 @@ def lead_registration(config: dict[str, Any]) -> dict[str, Any]:
         "agent_id": role_agent_id(config, "lead"),
         "role": "lead",
         "display_name": "Lead",
-        "capabilities": ["delegation", "review"],
+        "capabilities": ["delegation", "review", "talk"],
     }
 
 

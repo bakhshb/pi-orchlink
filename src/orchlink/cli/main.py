@@ -14,7 +14,13 @@ import uvicorn
 import yaml
 from rich.console import Console
 
-from orchlink.bridge.ask import ask_worker_sync as project_ask_worker_sync
+from orchlink.bridge.ask import (
+    ask_worker_sync as project_ask_worker_sync,
+    close_talk_sync,
+    send_worker_sync,
+    say_talk_sync,
+    start_talk_sync,
+)
 from orchlink.bridge.listener import run_worker_loop
 from orchlink.bridge.monitor import fetch_events, fetch_status, format_event
 from orchlink.bridge.orchestrator_bridge import ask_worker_sync
@@ -28,7 +34,6 @@ from orchlink.project.config import (
     broker_url,
     load_project_config,
     project_root,
-    resolve_agent_id,
     role_agent_id,
     run_dir,
 )
@@ -100,7 +105,7 @@ async def register_project_role(config: dict[str, Any], role: str) -> dict[str, 
     role_key = "work" if role == "worker" else role
     role_config = config.get(role_key) or {}
     display_name = "Worker" if role == "worker" else "Lead"
-    capabilities = ["inspection", "implementation", "tests"] if role == "worker" else ["delegation", "review"]
+    capabilities = ["inspection", "implementation", "tests", "talk"] if role == "worker" else ["delegation", "review", "talk"]
     async with httpx.AsyncClient(base_url=broker_url(config)) as client:
         response = await client.post(
             "/v1/agents/register",
@@ -127,6 +132,34 @@ def fetch_status_sync(url: str, api_key: str) -> dict[str, Any]:
 
 def fetch_events_sync(url: str, api_key: str, since: int = 0, limit: int = 50) -> dict[str, Any]:
     return asyncio.run(fetch_events(url, api_key, since=since, limit=limit))
+
+
+def broker_get_sync(config: dict[str, Any], path: str) -> dict[str, Any]:
+    with httpx.Client(base_url=broker_url(config), timeout=None) as client:
+        response = client.get(path, headers={"X-API-Key": broker_api_key(config)})
+        response.raise_for_status()
+        return response.json()
+
+
+def next_conversation_id(config: dict[str, Any]) -> str:
+    try:
+        body = broker_get_sync(config, "/v1/jobs?limit=500")
+    except httpx.HTTPError:
+        return "C001"
+    highest = 0
+    for job in body.get("jobs", []):
+        value = str(job.get("conversation_id") or "")
+        if len(value) == 4 and value.startswith("C") and value[1:].isdigit():
+            highest = max(highest, int(value[1:]))
+    return f"C{highest + 1:03d}"
+
+
+def conversation_state(config: dict[str, Any], conversation_id: str) -> dict[str, Any] | None:
+    body = broker_get_sync(config, "/v1/jobs?limit=500")
+    for job in body.get("jobs", []):
+        if job.get("conversation_id") == conversation_id:
+            return job
+    return None
 
 
 def run_update(ref: str, reinstall_only: bool = False) -> None:
@@ -336,6 +369,7 @@ def lead(
             console.print(f"[Orch] New Pi lead session: {session_id}")
         console.print("[Orch] Worker available: work")
         console.print("[Orch] Starting Pi lead session...")
+        console.print("[Orch] Lead will listen for worker replies and talk messages.")
         if no_pi:
             return
         exit_code = PiConnector(config).run_lead()
@@ -370,7 +404,7 @@ def work(
         if not connector.check_available():
             raise PiConnectorError(f"Pi command not found: {connector.pi_command()}")
         console.print("[Orch] Starting Pi worker session...")
-        console.print("[Orch] Tasks will be posted directly into this Pi chat.")
+        console.print("[Orch] Tasks and talk turns will be posted directly into this Pi chat.")
         exit_code = connector.run_work()
     except (RuntimeError, PiConnectorError, httpx.HTTPError) as exc:
         console.print(f"[Orch] {exc}")
@@ -387,11 +421,12 @@ def work_listen(
     asyncio.run(run_worker_loop(config, once=once, console=None, register=True))
 
 
-def print_async_ask_guidance(config: dict[str, Any], worker_id: str, task_id: str) -> None:
-    console.print(f"[Orch] Queued {task_id} for {resolve_agent_id(config, worker_id)}")
-    console.print("[Orch] Async mode: treat this scope as pending until the worker reply arrives.")
-    console.print(f"[Orch] Check progress with: orch task {task_id}")
-    console.print("[Orch] Continue only on unrelated scope, or use --wait when the next decision depends on the worker.")
+def print_async_guidance(config: dict[str, Any], worker_id: str, task_id: str) -> None:
+    console.print(f"[Orch] Sent {task_id} to {worker_id}.")
+    console.print("[Orch] Async mode: worker scope is pending.")
+    console.print("[Orch] Check status: orch jobs")
+    console.print(f"[Orch] Wait: orch wait {task_id}")
+    console.print(f"[Orch] Read result: orch get {task_id}")
 
 
 @app.command()
@@ -401,7 +436,7 @@ def ask(
     message: Annotated[str, typer.Option("--msg", "--message", "-m")],
     config_dir: Annotated[Path | None, typer.Option("--config-dir")] = None,
     timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
-    wait: Annotated[bool, typer.Option("--wait/--no-wait", help="Wait in this shell for the reply. Default sends and returns immediately.")] = False,
+    wait: Annotated[bool, typer.Option("--wait/--no-wait", help="Wait in this shell for the reply. Use orch send for async tasks.")] = True,
 ) -> None:
     if config_dir is not None:
         config = load_role_config("orchestrator", config_dir)
@@ -430,8 +465,31 @@ def ask(
             console.print(f"[Orch] {exc}")
             raise typer.Exit(1) from exc
     if config_dir is None and not wait:
-        print_async_ask_guidance(config, worker_id, task_id)
+        print_async_guidance(config, worker_id, task_id)
     console.print_json(json.dumps(response))
+
+
+@app.command()
+def send(
+    worker_id: str,
+    task_id: Annotated[str, typer.Option("--task", "--task-id", "-t")],
+    message: Annotated[str, typer.Option("--msg", "--message", "-m")],
+    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
+) -> None:
+    config = load_project_or_exit()
+    try:
+        ensure_broker_running(config)
+        send_worker_sync(
+            config=config,
+            worker=worker_id,
+            task_id=task_id,
+            message=message,
+            timeout_seconds=timeout_seconds,
+        )
+    except (RuntimeError, httpx.HTTPError) as exc:
+        console.print(f"[Orch] {exc}")
+        raise typer.Exit(1) from exc
+    print_async_guidance(config, worker_id, task_id)
 
 
 @app.command()
@@ -474,6 +532,169 @@ def task(task_id: str) -> None:
         console.print(f"[Orch] Delivered to {delivered.get('to_agent', 'worker')}. Worker is still in progress.")
     else:
         console.print("[Orch] Queued. Waiting for worker pickup.")
+
+
+def _print_task_body(body: dict[str, Any]) -> None:
+    task_id = str(body.get("task_id") or "")
+    status_text = str(body.get("status") or "UNKNOWN")
+    console.print(f"[Orch] Task {task_id}: {status_text}")
+    reply = body.get("reply") or {}
+    if reply:
+        console.print(f"[Orch] Type: {reply.get('type', 'RESULT')}")
+        payload = reply.get("payload") or {}
+        summary = str(payload.get("summary") or payload.get("stdout") or "").strip()
+        if summary:
+            console.print(summary)
+    elif body.get("job"):
+        job = body["job"]
+        console.print(f"[Orch] Route: {job.get('from_agent', '-')} → {job.get('to_agent', '-')}")
+        preview = str(job.get("preview") or "").strip()
+        if preview:
+            console.print(preview)
+    elif body.get("error"):
+        console.print(str(body["error"]))
+
+
+@app.command()
+def talk(
+    worker_id: str,
+    message: Annotated[str, typer.Option("--msg", "--message", "-m")],
+    rounds: Annotated[int, typer.Option("--rounds", "-r", min=1, max=12)] = 6,
+    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
+) -> None:
+    config = load_project_or_exit()
+    try:
+        ensure_broker_running(config)
+        conversation_id = next_conversation_id(config)
+        start_talk_sync(
+            config=config,
+            worker=worker_id,
+            conversation_id=conversation_id,
+            message=message,
+            max_turns=rounds,
+            timeout_seconds=timeout_seconds,
+            wait=False,
+        )
+    except (RuntimeError, httpx.HTTPError) as exc:
+        console.print(f"[Orch] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(f"[Orch] Started conversation {conversation_id} with {worker_id}.")
+    console.print(f"[Orch] Max turns: {rounds}")
+    console.print("[Orch] Waiting for worker reply in the lead Pi chat...")
+
+
+@app.command()
+def say(
+    conversation_id: str,
+    message: Annotated[str, typer.Option("--msg", "--message", "-m")],
+    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
+) -> None:
+    config = load_project_or_exit()
+    try:
+        ensure_broker_running(config)
+        state = conversation_state(config, conversation_id)
+        if state is None:
+            console.print(f"[Orch] Conversation not found: {conversation_id}")
+            raise typer.Exit(1)
+        if state.get("status") != "OPEN":
+            console.print(f"[Orch] Conversation {conversation_id} is {state.get('status')}.")
+            raise typer.Exit(1)
+        turn = int(state.get("turn") or 1) + 1
+        max_turns = int(state.get("max_turns") or 6)
+        if turn > max_turns:
+            console.print(f"[Orch] Conversation {conversation_id} reached max turns ({max_turns}).")
+            raise typer.Exit(1)
+        say_talk_sync(
+            config=config,
+            worker="work",
+            conversation_id=conversation_id,
+            message=message,
+            turn=turn,
+            max_turns=max_turns,
+            timeout_seconds=timeout_seconds,
+        )
+    except (RuntimeError, httpx.HTTPError) as exc:
+        console.print(f"[Orch] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(f"[Orch] Sent turn {turn}/{max_turns} to work for {conversation_id}.")
+    console.print("[Orch] Waiting for worker reply in the lead Pi chat...")
+
+
+@app.command()
+def close(
+    conversation_id: str,
+    message: Annotated[str, typer.Option("--msg", "--message", "-m")] = "",
+    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
+) -> None:
+    config = load_project_or_exit()
+    try:
+        ensure_broker_running(config)
+        state = conversation_state(config, conversation_id)
+        if state is None:
+            console.print(f"[Orch] Conversation not found: {conversation_id}")
+            raise typer.Exit(1)
+        turn = min(int(state.get("turn") or 1) + 1, int(state.get("max_turns") or 6))
+        max_turns = int(state.get("max_turns") or 6)
+        close_talk_sync(
+            config=config,
+            worker="work",
+            conversation_id=conversation_id,
+            message=message,
+            turn=turn,
+            max_turns=max_turns,
+            timeout_seconds=timeout_seconds,
+        )
+    except (RuntimeError, httpx.HTTPError) as exc:
+        console.print(f"[Orch] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(f"[Orch] Closed conversation {conversation_id}.")
+    if message:
+        console.print(message)
+
+
+@app.command()
+def jobs(limit: Annotated[int, typer.Option("--limit")] = 50) -> None:
+    config = load_project_or_exit()
+    try:
+        ensure_broker_running(config)
+        body = broker_get_sync(config, f"/v1/jobs?limit={limit}")
+    except (RuntimeError, httpx.HTTPError) as exc:
+        console.print(f"[Orch] {exc}")
+        raise typer.Exit(1) from exc
+    for job in body.get("jobs", []):
+        job_id = job.get("task_id") or job.get("conversation_id") or "-"
+        preview = str(job.get("preview") or job.get("last_message_preview") or "")
+        console.print(
+            f"{job_id}\t{job.get('mode', '-')}\t{job.get('status', '-')}\t"
+            f"{job.get('from_agent', '-')} → {job.get('to_agent', '-')}\t{job.get('created_at', '-')}\t{preview}"
+        )
+
+
+@app.command("get")
+def get_command(task_id: str) -> None:
+    config = load_project_or_exit()
+    try:
+        ensure_broker_running(config)
+        body = broker_get_sync(config, f"/v1/tasks/{task_id}")
+    except (RuntimeError, httpx.HTTPError) as exc:
+        console.print(f"[Orch] {exc}")
+        raise typer.Exit(1) from exc
+    _print_task_body(body)
+
+
+@app.command("wait")
+def wait_command(
+    task_id: str,
+    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
+) -> None:
+    config = load_project_or_exit()
+    try:
+        ensure_broker_running(config)
+        body = broker_get_sync(config, f"/v1/tasks/{task_id}/wait?timeout_seconds={timeout_seconds}")
+    except (RuntimeError, httpx.HTTPError) as exc:
+        console.print(f"[Orch] {exc}")
+        raise typer.Exit(1) from exc
+    _print_task_body(body)
 
 
 @app.command()

@@ -23,18 +23,64 @@ function formatList(values: string[]): string {
   return values.length ? values.map((value) => `- ${value}`).join("\n") : "- None";
 }
 
-function renderWorkerPrompt(message: OrchMessage): string {
+function isChatRequest(message: OrchMessage): boolean {
+  return ["CHAT_START", "CHAT_TURN"].includes(String(message?.type || ""));
+}
+
+function renderWorkerTalkPrompt(message: OrchMessage): string {
+  const payload = message.payload || {};
+  return `You are the worker coding agent in a Talk Mode conversation with the lead.
+
+Conversation ID:
+${message.conversation_id || ""}
+
+Turn:
+${message.turn || 1}/${message.max_turns || 6}
+
+Topic:
+${payload.topic || ""}
+
+Lead message:
+${payload.message || payload.intent || ""}
+
+Transcript preview:
+${payload.transcript_preview || ""}
+
+Rules:
+- Discuss like a collaborator.
+- Challenge weak assumptions.
+- Compare options.
+- Identify risks.
+- Recommend a practical decision.
+- Do not edit files.
+- Do not run implementation.
+- Do not expand scope.
+- Keep the answer useful and direct.
+
+Reply using this format:
+
+TYPE: CHAT_REPLY
+MODE: TALK
+CONVERSATION_ID:
+POSITION:
+REASONING:
+RISKS:
+COUNTERPOINT:
+RECOMMENDATION:
+NEXT_QUESTION_OR_DECISION:
+`;
+}
+
+function renderWorkerTaskPrompt(message: OrchMessage): string {
   const payload = message.payload || {};
   const scope = payload.scope || {};
   return `You are the worker coding agent in an Orchlink pair.
 
-The lead may ask you to discuss, plan, inspect, implement scoped changes, or review work.
+MODE:
+${payload.mode || "PLAN"}
 
-TASK ID:
+TASK_ID:
 ${message.task_id || ""}
-
-FROM:
-${message.from_agent || "lead"}
 
 INTENT:
 ${payload.intent || payload.summary || ""}
@@ -51,21 +97,16 @@ ${formatList(asList(payload.constraints))}
 EXPECTED REPLY:
 ${formatList(asList(payload.expected_reply))}
 
-Mode rules:
-- DISCUSS: compare options, risks, and workload. Do not edit files.
-- PLAN: inspect if needed, then propose a plan. Do not edit files.
-- DO: implement only if the lead explicitly allowed implementation.
-- REVIEW: inspect the requested scope and report findings. Do not edit files unless asked.
-- If no mode is provided, infer the safest mode. Prefer PLAN over DO.
+DELIVERY:
+${message.delivery || "async"}
 
-Scope rules:
-- Work only on this scope.
-- Do not touch lead-owned scope in a parallel split.
+Rules:
+- Work only on this task.
 - Do not expand scope.
 - Do not edit forbidden files.
-- If implementation is not explicitly allowed, inspect only and return PLAN.
-- If the request is unclear, return BLOCKER with specific questions.
-- If implementation is allowed, run relevant tests.
+- If MODE is PLAN, inspect/propose only.
+- If MODE is REVIEW, inspect/report only.
+- If MODE is DO, implement only inside allowed scope.
 - Do not commit unless explicitly allowed.
 
 Required response format:
@@ -74,8 +115,6 @@ TYPE: PLAN | RESULT | BLOCKER
 MODE:
 TASK_ID:
 SUMMARY:
-WORKLOAD_SPLIT:
-DECISION_NEEDED:
 FILES_INSPECTED:
 FILES_CHANGED:
 TESTS_RUN:
@@ -86,24 +125,45 @@ RECOMMENDED_NEXT_STEP:
 `;
 }
 
+function renderWorkerPrompt(message: OrchMessage): string {
+  if (isChatRequest(message)) return renderWorkerTalkPrompt(message);
+  return renderWorkerTaskPrompt(message);
+}
+
 function renderLeadPrompt(message: OrchMessage): string {
   const payload = message.payload || {};
-  const summary = payload.summary || payload.stdout || "";
-  return `You received a worker reply through Orchlink.
+  const summary = payload.summary || payload.stdout || payload.message || "";
+  const type = message.type || "RESULT";
+  if (type === "CHAT_REPLY") {
+    return `[Orchlink] Message from ${message.from_agent || "work"}
 
-TASK ID:
-${message.task_id || ""}
+Conversation: ${message.conversation_id || ""}
+Type: CHAT_REPLY
+Turn: ${message.turn || "?"}/${message.max_turns || "?"}
 
-FROM:
-${message.from_agent || "work"}
-
-TYPE:
-${message.type || "RESULT"}
-
-SUMMARY:
+Worker says:
 ${summary}
 
-Treat this as part of a working discussion. Reconcile it with your current state instead of writing a second independent conclusion. If it changes the plan, state what changed. If it leaves open questions, send a follow-up. If it confirms the plan, continue with the agreed workload split.`;
+You can continue with:
+orch say ${message.conversation_id || "<conversation_id>"} -m "<your reply>"
+
+Or close with:
+orch close ${message.conversation_id || "<conversation_id>"} -m "<final decision>"
+
+Do not automatically continue the conversation. Use orch say only when another turn is needed.`;
+  }
+
+  return `[Orchlink] Result from ${message.from_agent || "work"}
+
+Task: ${message.task_id || ""}
+Mode: ${payload.mode || type}
+Status: ${message.status || "DONE"}
+
+Worker result:
+${summary}
+
+Recommended next step:
+Reconcile this with your current state. If it changes the plan, state what changed. If it leaves open questions, ask a follow-up. If it confirms the plan, continue with the agreed workload split.`;
 }
 
 function messageText(message: any): string {
@@ -131,22 +191,26 @@ function detectReplyType(output: string): string {
 function replyEnvelope(task: OrchMessage, assistantMessage: any): OrchMessage {
   const output = messageText(assistantMessage);
   const failed = assistantMessage?.stopReason === "error" || assistantMessage?.stopReason === "aborted";
+  const chat = isChatRequest(task);
+  const replyType = chat ? "CHAT_REPLY" : (failed ? "BLOCKER" : detectReplyType(output));
   return {
     protocol: task.protocol || "orch-a2a-v1",
     message_id: `reply-${crypto.randomUUID()}`,
     correlation_id: task.correlation_id,
     project_id: task.project_id || env("ORCHLINK_PROJECT_ID", "default"),
     conversation_id: task.conversation_id || `${env("ORCHLINK_PROJECT_ID", "default")}-default`,
-    task_id: task.task_id,
+    task_id: task.task_id || null,
     from_agent: env("ORCHLINK_AGENT_ID", task.to_agent || "work"),
     to_agent: task.from_agent,
-    type: failed ? "BLOCKER" : detectReplyType(output),
-    status: failed ? "FAILED" : "COMPLETED",
+    type: replyType,
+    status: failed ? "FAILED" : "DONE",
     turn: Math.min(Number(task.turn || 1) + 1, Number(task.max_turns || 6)),
     max_turns: task.max_turns || 6,
     requires_reply: false,
     timeout_seconds: 1,
+    delivery: chat ? "conversation" : (task.delivery || "async"),
     payload: {
+      mode: chat ? "TALK" : (task.payload || {}).mode,
       summary: output,
       stdout: output,
       stderr: failed ? assistantMessage?.errorMessage || "Pi assistant stopped before completing the task." : "",
@@ -195,7 +259,7 @@ export default function (pi: ExtensionAPI) {
       agent_id: agentId,
       role: role === "work" ? "worker" : role,
       display_name: role === "work" ? "Worker" : "Lead",
-      capabilities: role === "work" ? ["inspection", "implementation", "tests"] : ["delegation", "review"],
+      capabilities: role === "work" ? ["inspection", "implementation", "tests", "talk"] : ["delegation", "review", "talk"],
     });
   }
 
@@ -212,20 +276,23 @@ export default function (pi: ExtensionAPI) {
       const body = await getJson(`/v1/agents/${encodeURIComponent(agentId)}/next?wait_seconds=${pollWaitSeconds}`);
       if (body.status === "message") {
         const message = body.message;
-        const taskId = message?.task_id || "task";
+        const label = message?.task_id || message?.conversation_id || "message";
         if (role === "work") {
-          currentTask = message;
           pi.sendMessage({
             customType: "orchlink",
-            content: `Orchlink received TASK ${taskId} from ${message?.from_agent || "lead"}`,
+            content: `Orchlink received ${message?.type || "MESSAGE"} ${label} from ${message?.from_agent || "lead"}`,
             display: true,
             details: message,
           }, { deliverAs: "nextTurn" });
+          if (message?.type === "CHAT_CLOSE") {
+            return;
+          }
+          currentTask = message;
           pi.sendUserMessage(renderWorkerPrompt(message), { deliverAs: "followUp" });
         } else {
           pi.sendMessage({
             customType: "orchlink",
-            content: `Orchlink received ${message?.type || "RESULT"} ${taskId} from ${message?.from_agent || "work"}`,
+            content: `Orchlink received ${message?.type || "RESULT"} ${label} from ${message?.from_agent || "work"}`,
             display: true,
             details: message,
           }, { deliverAs: "nextTurn" });
@@ -261,10 +328,11 @@ export default function (pi: ExtensionAPI) {
     try {
       const reply = replyEnvelope(task, event.message);
       await postJson(`/v1/messages/${encodeURIComponent(task.message_id)}/reply`, reply);
-      ctx.ui.notify(`Orchlink reply sent for ${task.task_id}`, "info");
+      const label = task.task_id || task.conversation_id;
+      ctx.ui.notify(`Orchlink reply sent for ${label}`, "info");
       pi.sendMessage({
         customType: "orchlink",
-        content: `Orchlink sent ${reply.type} for ${task.task_id} to ${task.from_agent}`,
+        content: `Orchlink sent ${reply.type} for ${label} to ${task.from_agent}`,
         display: true,
         details: reply,
       }, { deliverAs: "nextTurn" });

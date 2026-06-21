@@ -27,10 +27,23 @@ def test_cli_imports_from_installable_package_and_exposes_required_commands():
     assert "broker" in result.output
     assert "start" in result.output
     assert "ask" in result.output
+    assert "send" in result.output
+    assert "talk" in result.output
+    assert "say" in result.output
+    assert "close" in result.output
+    assert "jobs" in result.output
     assert "monitor" in result.output
     assert "status" in result.output
     assert "doctor" in result.output
     assert "update" in result.output
+
+
+def test_pi_extension_uses_valid_record_type():
+    from orchlink.connector.pi_extension import ORCHLINK_PI_EXTENSION
+
+    assert "type OrchMessage = Record<string, any>;" in ORCHLINK_PI_EXTENSION
+    assert "type OrchMessage = Record;" not in ORCHLINK_PI_EXTENSION
+    assert "TYPE: CHAT_REPLY" in ORCHLINK_PI_EXTENSION
 
 
 def test_broker_run_command_is_registered_without_starting_server(monkeypatch):

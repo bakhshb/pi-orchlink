@@ -24,7 +24,23 @@ class MessageStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def close_conversation(self, conversation_id: str, message: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
     async def wait_for_reply(self, correlation_id: str, timeout_seconds: int) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def wait_for_task(self, task_id: str, timeout_seconds: int) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_task_result(self, task_id: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
         raise NotImplementedError
 
     @abstractmethod
@@ -33,6 +49,10 @@ class MessageStore(ABC):
 
     @abstractmethod
     async def list_active_messages(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_conversations(self) -> list[dict[str, Any]]:
         raise NotImplementedError
 
     @abstractmethod

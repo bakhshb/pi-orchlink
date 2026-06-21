@@ -11,6 +11,7 @@ from orchlink.project.config import broker_api_key, broker_url, role_agent_id
 
 
 REPLY_TYPES = {"PLAN", "RESULT", "BLOCKER"}
+CHAT_REQUEST_TYPES = {"CHAT_START", "CHAT_TURN"}
 
 
 def _is_project_config(config: dict[str, Any]) -> bool:
@@ -61,8 +62,9 @@ def build_reply(
 ) -> dict[str, Any]:
     worker_config = _worker_config(config)
     failed = not run_result.succeeded
-    reply_type = "BLOCKER" if failed else detect_reply_type(run_result.stdout)
-    status = "FAILED" if failed else "COMPLETED"
+    is_chat = message.get("type") in CHAT_REQUEST_TYPES
+    reply_type = "CHAT_REPLY" if is_chat else ("BLOCKER" if failed else detect_reply_type(run_result.stdout))
+    status = "FAILED" if failed else "DONE"
     turn = min(int(message.get("turn", 1)) + 1, int(message.get("max_turns", 6)))
 
     return {
@@ -71,7 +73,7 @@ def build_reply(
         "correlation_id": message["correlation_id"],
         "project_id": message.get("project_id", config.get("project_id", "default")),
         "conversation_id": message.get("conversation_id", "orchlink"),
-        "task_id": message["task_id"],
+        "task_id": message.get("task_id"),
         "from_agent": worker_config.get("agent_id", "work"),
         "to_agent": message["from_agent"],
         "type": reply_type,
@@ -80,7 +82,9 @@ def build_reply(
         "max_turns": message.get("max_turns", 6),
         "requires_reply": False,
         "timeout_seconds": 1,
+        "delivery": "conversation" if is_chat else message.get("delivery", "async"),
         "payload": {
+            "mode": "TALK" if is_chat else (message.get("payload") or {}).get("mode"),
             "summary": run_result.stdout.strip() or run_result.stderr.strip(),
             "stdout": run_result.stdout,
             "stderr": run_result.stderr,

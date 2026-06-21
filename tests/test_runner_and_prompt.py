@@ -25,15 +25,31 @@ def test_render_worker_prompt_uses_task_payload_and_worker_defaults():
     prompt = render_worker_prompt(message, worker_config)
 
     assert "You are worker-backend" in prompt
-    assert "TASK ID:\nTEST-001" in prompt
+    assert "TASK_ID:\nTEST-001" in prompt
     assert "Inspect backend duplication" in prompt
     assert "- apps/api/**" in prompt
     assert "- apps/web/**" in prompt
     assert "TYPE: PLAN | RESULT | BLOCKER" in prompt
-    assert "WORKLOAD_SPLIT" in prompt
-    assert "DECISION_NEEDED" in prompt
-    assert "Mode rules" in prompt
-    assert "Prefer PLAN over DO" in prompt
+    assert "FILES_INSPECTED" in prompt
+    assert "DELIVERY:" in prompt
+    assert "If MODE is PLAN" in prompt
+
+
+def test_render_worker_prompt_uses_talk_shape():
+    message = {
+        "type": "CHAT_START",
+        "conversation_id": "C001",
+        "turn": 1,
+        "max_turns": 6,
+        "payload": {"mode": "TALK", "topic": "SQLite?", "message": "Challenge memory-only."},
+    }
+
+    prompt = render_worker_prompt(message, {"agent_id": "worker-backend"})
+
+    assert "Talk Mode conversation" in prompt
+    assert "Conversation ID:\nC001" in prompt
+    assert "Challenge weak assumptions" in prompt
+    assert "TYPE: CHAT_REPLY" in prompt
 
 
 def test_run_command_appends_prompt_and_captures_stdout():

@@ -1,15 +1,15 @@
 # Orchlink
 
-Orchlink lets two visible Pi coding-agent sessions talk to each other through a local broker.
-
-You use two terminals:
+Orchlink lets two visible Pi coding-agent sessions talk through a local broker.
 
 ```text
-Terminal 1: lead Pi session
-Terminal 2: worker Pi session
+Terminal 1: visible lead Pi session
+Terminal 2: visible worker Pi session
 ```
 
-You talk to the lead. The lead can send messages to the worker. The worker receives those messages inside its own Pi chat and replies back to the lead chat.
+You talk mainly to the lead. The lead can ask, send, or talk to the worker. The worker receives messages inside its own Pi chat and replies back into the lead chat.
+
+No tmux, database, Redis, or dashboard is required.
 
 ## Requirements
 
@@ -23,9 +23,9 @@ You talk to the lead. The lead can send messages to the worker. The worker recei
 curl -fsSL https://raw.githubusercontent.com/bakhshb/orchlink/main/install.sh | bash
 ```
 
-The installer creates its own venv in `~/.local/share/orchlink` and links `orch` into `~/.local/bin`.
+The installer creates a venv in `~/.local/share/orchlink` and links `orch` into `~/.local/bin`.
 
-If your shell cannot find `orch`, add this to your shell profile:
+If your shell cannot find `orch`:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
@@ -33,7 +33,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## First run
 
-Go to the project where you want the two Pi sessions to work:
+Run this in the project where the two Pi sessions should work:
 
 ```bash
 cd /path/to/your/project
@@ -52,67 +52,51 @@ Start the worker in terminal 2:
 orch work
 ```
 
-Now talk to the lead Pi session. Ask it to collaborate with the worker when useful.
+Both sessions listen through the broker. Worker task results and Talk Mode replies appear in the lead Pi chat.
 
-Example message to the lead:
-
-```text
-Inspect this project. Discuss the workload with the worker first, then propose a plan.
-```
-
-The lead can send the worker a message with:
-
-```bash
-orch ask work -t PLAN-001 -m "Review the workload, identify risks, and propose how lead and worker should split this. Return PLAN only."
-```
-
-The worker reply appears back in the lead Pi chat.
-
-## Daily commands
-
-Use these most of the time:
+## Command model
 
 | Command | Use |
 | --- | --- |
-| `orch init` | Set up Orchlink in the current project. Run once. |
-| `orch lead` | Open the lead Pi session. |
-| `orch work` | Open the worker Pi session. |
-| `orch ask work -t T001 -m "..."` | Queue a message for the worker. |
-| `orch task T001` | Check whether a task is queued, in progress, or complete. |
-| `orch stop` | Stop the project broker. |
+| `orch talk work -m "..." -r 6` | Think together. The worker can challenge assumptions and recommend a decision. No file edits. |
+| `orch ask work --wait -t T001 -m "..."` | Blocking decision gate. Use when the lead cannot continue without the worker answer. |
+| `orch send work -t T002 -m "..."` | Async worker task. Use when the lead can continue elsewhere. |
+| `orch say C001 -m "..."` | Send the next turn in an open Talk Mode conversation. |
+| `orch close C001 -m "..."` | Close a conversation with a final decision. |
+| `orch jobs` | List recent tasks and conversations. |
+| `orch get T002` | Read an async task result if ready. |
+| `orch wait T002` | Block until an async task finishes or times out. |
+| `orch watch` | Observe task and chat events. |
 
-## How `orch ask` works
-
-Default mode is async:
-
-```bash
-orch ask work -t T001 -m "Inspect auth and return PLAN."
-```
-
-Use this when the lead can work on a different scope while the worker thinks. The lead should treat the worker's scope as pending until the reply arrives.
-
-Check progress without sleeping or guessing:
+## Talk Mode example
 
 ```bash
-orch task T001
+orch lead
+orch work
+orch talk work -m "Should we add SQLite now or later?" -r 6
+orch say C001 -m "Challenge the restart risk."
+orch close C001 -m "Decision: memory only for MVP, SQLite later behind MessageStore."
 ```
 
-Use `--wait` when the next lead decision depends on the worker reply:
+Talk Mode is for reasoning only. The worker should compare options, identify risks, disagree when useful, and recommend a practical decision. It must not edit files.
+
+## Async task example
 
 ```bash
-orch ask work --wait -t T001 -m "Inspect auth and return PLAN."
+orch send work -t T010 -m "MODE: PLAN. Inspect tests. Do not edit files."
+orch jobs
+orch get T010
 ```
 
-## Fresh Pi sessions
+Use `orch wait T010` when you want the shell to block until the result arrives.
 
-By default, `orch lead` and `orch work` reopen the saved Pi histories named `lead` and `work`.
-
-Start clean histories when needed:
+## Blocking ask example
 
 ```bash
-orch lead --new
-orch work --new
+orch ask work --wait -t T001 -m "Review this plan and tell me whether to proceed."
 ```
+
+Use this for decision gates. Use `orch send` for independent work.
 
 ## Skills and project files
 
@@ -127,19 +111,30 @@ orch work --new
 
 You do not run the skill files. Orchlink loads them into Pi so the lead and worker know their roles.
 
-Refresh the role instructions without changing project config:
+Refresh role instructions without changing project config:
 
 ```bash
 orch init --refresh-skills
+```
+
+## Fresh Pi sessions
+
+By default, `orch lead` and `orch work` reopen saved Pi histories named `lead` and `work`.
+
+Start clean histories when needed:
+
+```bash
+orch lead --new
+orch work --new
 ```
 
 ## Other useful commands
 
 | Command | Use |
 | --- | --- |
-| `orch watch` | Show broker events in a third terminal. |
+| `orch stop` | Stop the project broker. |
 | `orch doctor` | Check setup. |
-| `orch update` | Pull the latest Orchlink code and reinstall it. |
+| `orch update` | Pull latest Orchlink code and reinstall it. |
 | `orch work --no-pi` | Run the worker listener without opening Pi. Debug only. |
 | `orch broker run --host 127.0.0.1 --port 8787` | Run the broker manually. Debug only. |
 

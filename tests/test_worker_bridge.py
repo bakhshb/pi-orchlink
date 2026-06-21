@@ -28,6 +28,21 @@ def task_message():
     }
 
 
+def chat_message():
+    message = task_message()
+    message.update(
+        {
+            "message_id": "msg-chat",
+            "conversation_id": "C001",
+            "task_id": None,
+            "type": "CHAT_START",
+            "delivery": "conversation",
+            "payload": {"mode": "TALK", "topic": "SQLite?", "message": "Challenge memory-only."},
+        }
+    )
+    return message
+
+
 def worker_config():
     return {
         "agent_id": "worker-backend",
@@ -69,8 +84,26 @@ def test_build_reply_turns_successful_output_into_plan_reply():
     assert reply["from_agent"] == "worker-backend"
     assert reply["to_agent"] == "orchestrator"
     assert reply["type"] == "PLAN"
-    assert reply["status"] == "COMPLETED"
+    assert reply["status"] == "DONE"
     assert reply["payload"]["stdout"] == "TYPE: PLAN\nSUMMARY: done\n"
+
+
+def test_build_reply_turns_chat_start_into_chat_reply():
+    from orchlink.bridge.agent_runner import AgentRunResult
+
+    result = AgentRunResult(
+        stdout="TYPE: CHAT_REPLY\nPOSITION: memory first\n",
+        stderr="",
+        exit_code=0,
+        timed_out=False,
+    )
+
+    reply = build_reply(chat_message(), worker_config(), result)
+
+    assert reply["type"] == "CHAT_REPLY"
+    assert reply["task_id"] is None
+    assert reply["delivery"] == "conversation"
+    assert reply["payload"]["mode"] == "TALK"
 
 
 def test_build_reply_turns_command_failure_into_blocker():
@@ -88,6 +121,39 @@ def test_build_reply_turns_command_failure_into_blocker():
     assert reply["type"] == "BLOCKER"
     assert reply["status"] == "FAILED"
     assert reply["payload"]["stderr"] == "command failed"
+
+
+def test_process_one_message_handles_chat_start():
+    from orchlink.bridge.agent_runner import AgentRunResult
+
+    class FakeConnector:
+        async def run_worker_prompt(self, prompt, timeout_seconds):
+            assert "Talk Mode conversation" in prompt
+            return AgentRunResult(
+                stdout="TYPE: CHAT_REPLY\nPOSITION: memory first\n",
+                stderr="",
+                exit_code=0,
+                timed_out=False,
+            )
+
+    async def run():
+        store = MemoryMessageStore()
+        await store.enqueue_message(chat_message())
+        app = create_app(store=store, settings=Settings(api_key="test-key"))
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            response = await client.get(
+                "/v1/agents/worker-backend/next?wait_seconds=1",
+                headers={"X-API-Key": "test-key"},
+            )
+            message = response.json()["message"]
+            reply_response = await process_one_message(client, worker_config(), message, connector=FakeConnector())
+
+        assert reply_response["status"] == "reply_received"
+        delivered = await store.get_next_message("orchestrator", wait_seconds=1)
+        assert delivered["type"] == "CHAT_REPLY"
+
+    asyncio.run(run())
 
 
 def test_process_one_message_runs_command_and_replies_to_broker():

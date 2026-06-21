@@ -29,14 +29,16 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     work_skill = paths["work_skill"].read_text(encoding="utf-8")
     assert "not just delegate" in lead_skill
     assert "Message checklist" in lead_skill
-    assert "Use `--wait`" in lead_skill
-    assert "treat that scope as pending" in lead_skill
-    assert "Do not duplicate the worker scope" in lead_skill
+    assert "orch talk work" in lead_skill
+    assert "orch ask work --wait" in lead_skill
+    assert "orch send work" in lead_skill
+    assert "orch say C001" in lead_skill
+    assert "orch close C001" in lead_skill
     assert "MODE: DISCUSS | PLAN | DO | REVIEW" in lead_skill
-    assert "Interpret the mode" in work_skill
-    assert "Prefer PLAN over DO" in work_skill
-    assert "DECISION_NEEDED" in work_skill
-    assert "WORKLOAD_SPLIT" in work_skill
+    assert "## Modes" in work_skill
+    assert "TALK: discuss" in work_skill
+    assert "For TALK, behave like a collaborator" in work_skill
+    assert "TYPE: CHAT_REPLY" in work_skill
 
 
 def test_refresh_skills_keeps_existing_project_config(tmp_path):
@@ -49,7 +51,7 @@ def test_refresh_skills_keeps_existing_project_config(tmp_path):
 
     assert refreshed["config"].read_text(encoding="utf-8") == "project_id: custom\n"
     assert "Message checklist" in refreshed["lead_skill"].read_text(encoding="utf-8")
-    assert "Interpret the mode" in refreshed["work_skill"].read_text(encoding="utf-8")
+    assert "## Modes" in refreshed["work_skill"].read_text(encoding="utf-8")
 
 
 def test_cli_init_uses_current_folder_name_by_default(monkeypatch, tmp_path):
@@ -77,4 +79,6 @@ def test_project_ask_envelope_resolves_work_alias(tmp_path):
     assert envelope["from_agent"] == "demo.lead"
     assert envelope["to_agent"] == "demo.work"
     assert envelope["task_id"] == "T001"
+    assert envelope["delivery"] == "async"
+    assert envelope["payload"]["mode"] == "PLAN"
     assert envelope["payload"]["scope"]["forbidden"] == [".git/**", ".orch/**", "node_modules/**", ".venv/**"]

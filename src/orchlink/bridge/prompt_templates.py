@@ -1,6 +1,9 @@
 from typing import Any
 
 
+CHAT_TYPES = {"CHAT_START", "CHAT_TURN"}
+
+
 def _as_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -15,25 +18,72 @@ def _format_list(values: list[str]) -> str:
     return "\n".join(f"- {value}" for value in values)
 
 
-def render_worker_prompt(message: dict[str, Any], worker_config: dict[str, Any]) -> str:
+def render_worker_talk_prompt(message: dict[str, Any]) -> str:
+    payload = message.get("payload") or {}
+    return f"""You are the worker coding agent in a Talk Mode conversation with the lead.
+
+Conversation ID:
+{message.get('conversation_id') or ''}
+
+Turn:
+{message.get('turn') or 1}/{message.get('max_turns') or 6}
+
+Topic:
+{payload.get('topic') or ''}
+
+Lead message:
+{payload.get('message') or payload.get('intent') or ''}
+
+Transcript preview:
+{payload.get('transcript_preview') or ''}
+
+Rules:
+- Discuss like a collaborator.
+- Challenge weak assumptions.
+- Compare options.
+- Identify risks.
+- Recommend a practical decision.
+- Do not edit files.
+- Do not run implementation.
+- Do not expand scope.
+- Keep the answer useful and direct.
+
+Reply using this format:
+
+TYPE: CHAT_REPLY
+MODE: TALK
+CONVERSATION_ID:
+POSITION:
+REASONING:
+RISKS:
+COUNTERPOINT:
+RECOMMENDATION:
+NEXT_QUESTION_OR_DECISION:
+"""
+
+
+def render_worker_task_prompt(message: dict[str, Any], worker_config: dict[str, Any]) -> str:
     payload = message.get("payload") or {}
     payload_scope = payload.get("scope") or {}
     config_scope = worker_config.get("scope") or {}
     scope = payload_scope or config_scope
 
+    mode = str(payload.get("mode") or "PLAN")
     task_id = str(message.get("task_id", ""))
     intent = str(payload.get("intent") or payload.get("summary") or "")
     allowed_scope = _as_list(scope.get("allowed"))
     forbidden_scope = _as_list(scope.get("forbidden"))
     constraints = _as_list(payload.get("constraints"))
     expected_reply = _as_list(payload.get("expected_reply"))
+    delivery = str(message.get("delivery") or "async")
     agent_id = str(worker_config.get("agent_id") or worker_config.get("work", {}).get("agent_id") or "work")
 
     return f"""You are {agent_id}, the worker coding agent in an Orchlink pair.
 
-The lead may ask you to discuss, plan, inspect, implement scoped changes, or review work.
+MODE:
+{mode}
 
-TASK ID:
+TASK_ID:
 {task_id}
 
 INTENT:
@@ -51,22 +101,19 @@ CONSTRAINTS:
 EXPECTED REPLY:
 {_format_list(expected_reply)}
 
-Mode rules:
-- DISCUSS: compare options, risks, and workload. Do not edit files.
-- PLAN: inspect if needed, then propose a plan. Do not edit files.
-- DO: implement only if the lead explicitly allowed implementation.
-- REVIEW: inspect the requested scope and report findings. Do not edit files unless asked.
-- If no mode is provided, infer the safest mode. Prefer PLAN over DO.
+DELIVERY:
+{delivery}
 
-Scope rules:
-- Work only on this scope.
-- Do not touch lead-owned scope in a parallel split.
+Rules:
+- Work only on this task.
 - Do not expand scope.
 - Do not edit forbidden files.
-- If implementation is not explicitly allowed, inspect only and return PLAN.
+- If MODE is PLAN, inspect/propose only.
+- If MODE is REVIEW, inspect/report only.
+- If MODE is DO, implement only inside allowed scope.
+- Do not commit unless explicitly allowed.
 - If the request is unclear, return BLOCKER with specific questions.
 - If implementation is allowed, run relevant tests.
-- Do not commit unless explicitly allowed.
 
 Required response format:
 
@@ -74,8 +121,6 @@ TYPE: PLAN | RESULT | BLOCKER
 MODE:
 TASK_ID:
 SUMMARY:
-WORKLOAD_SPLIT:
-DECISION_NEEDED:
 FILES_INSPECTED:
 FILES_CHANGED:
 TESTS_RUN:
@@ -84,3 +129,9 @@ RISKS:
 OPEN_QUESTIONS:
 RECOMMENDED_NEXT_STEP:
 """
+
+
+def render_worker_prompt(message: dict[str, Any], worker_config: dict[str, Any]) -> str:
+    if message.get("type") in CHAT_TYPES:
+        return render_worker_talk_prompt(message)
+    return render_worker_task_prompt(message, worker_config)

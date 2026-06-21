@@ -74,8 +74,8 @@ def test_enqueue_then_get_next_message():
         assert queued == {"status": "queued", "message_id": "msg-0001"}
         assert received is not None
         assert received["message_id"] == message["message_id"]
-        assert received["status"] == "IN_PROGRESS"
-        assert active_messages[0]["status"] == "IN_PROGRESS"
+        assert received["status"] == "DELIVERED"
+        assert active_messages[0]["status"] == "DELIVERED"
 
     asyncio.run(run())
 
@@ -87,6 +87,32 @@ def test_get_next_message_returns_none_after_wait_timeout():
         received = await store.get_next_message("worker-backend", wait_seconds=0)
 
         assert received is None
+
+    asyncio.run(run())
+
+
+def test_chat_start_tracks_conversation():
+    async def run():
+        store = MemoryMessageStore()
+        message = task_message()
+        message.update(
+            {
+                "message_id": "msg-chat",
+                "conversation_id": "C001",
+                "task_id": None,
+                "type": "CHAT_START",
+                "delivery": "conversation",
+                "payload": {"mode": "TALK", "topic": "SQLite?", "message": "Challenge memory-only."},
+            }
+        )
+
+        await store.enqueue_message(message)
+        conversations = await store.list_conversations()
+        jobs = await store.list_jobs()
+
+        assert conversations[0]["conversation_id"] == "C001"
+        assert conversations[0]["status"] == "OPEN"
+        assert jobs[0]["conversation_id"] == "C001"
 
     asyncio.run(run())
 
@@ -103,6 +129,45 @@ def test_reply_resolves_pending_waiter():
         assert result["status"] == "completed"
         assert result["correlation_id"] == "req-0001"
         assert result["reply"]["type"] == "PLAN"
+
+    asyncio.run(run())
+
+
+def test_chat_reply_queues_reply_for_lead_inbox():
+    async def run():
+        store = MemoryMessageStore()
+        message = task_message()
+        message.update(
+            {
+                "message_id": "msg-chat",
+                "conversation_id": "C001",
+                "task_id": None,
+                "type": "CHAT_START",
+                "delivery": "conversation",
+                "payload": {"mode": "TALK", "topic": "SQLite?", "message": "Challenge memory-only."},
+            }
+        )
+        reply = reply_message()
+        reply.update(
+            {
+                "message_id": "reply-chat",
+                "conversation_id": "C001",
+                "task_id": None,
+                "type": "CHAT_REPLY",
+                "status": "DONE",
+                "delivery": "conversation",
+                "payload": {"mode": "TALK", "summary": "Memory first."},
+            }
+        )
+
+        await store.enqueue_message(message)
+        await store.save_reply("msg-chat", reply)
+
+        delivered = await store.get_next_message("orchestrator", wait_seconds=1)
+
+        assert delivered is not None
+        assert delivered["type"] == "CHAT_REPLY"
+        assert delivered["conversation_id"] == "C001"
 
     asyncio.run(run())
 

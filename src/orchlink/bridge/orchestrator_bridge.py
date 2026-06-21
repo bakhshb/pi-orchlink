@@ -25,7 +25,7 @@ def build_task_envelope(
     timeout_seconds: int = 1800,
 ) -> dict[str, Any]:
     config = _legacy_config("http://127.0.0.1:8787", "change-me", from_agent)
-    return build_project_task_envelope(config, worker_id, task_id, message, timeout_seconds)
+    return build_project_task_envelope(config, worker_id, task_id, message, timeout_seconds, delivery="blocking")
 
 
 async def ask_worker(
@@ -43,6 +43,7 @@ async def ask_worker(
         task_id,
         message,
         timeout_seconds,
+        delivery="blocking",
     )
     async with httpx.AsyncClient(base_url=broker_url, timeout=None) as client:
         response = await client.post(

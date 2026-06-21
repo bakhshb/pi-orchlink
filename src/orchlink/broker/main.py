@@ -53,14 +53,20 @@ def create_app(
         message: MessageEnvelope,
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, str]:
-        return await message_store.enqueue_message(envelope_to_dict(message))
+        try:
+            return await message_store.enqueue_message(envelope_to_dict(message))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @secure_router.post("/messages/send-and-wait")
     async def send_and_wait(
         message: MessageEnvelope,
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
-        await message_store.enqueue_message(envelope_to_dict(message), create_waiter=True)
+        try:
+            await message_store.enqueue_message(envelope_to_dict(message), create_waiter=True)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return await message_store.wait_for_reply(
             message.correlation_id,
             message.timeout_seconds,
@@ -85,6 +91,18 @@ def create_app(
     ) -> dict[str, str]:
         return await message_store.save_reply(message_id, envelope_to_dict(reply))
 
+    @secure_router.post("/conversations/{conversation_id}/close")
+    async def close_conversation(
+        conversation_id: str,
+        message: MessageEnvelope,
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, str]:
+        try:
+            result = await message_store.close_conversation(conversation_id, envelope_to_dict(message))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return result
+
     @secure_router.get("/events")
     async def events(
         since: int = Query(default=0, ge=0),
@@ -94,10 +112,34 @@ def create_app(
         recent_events = await message_store.list_events(since=since, limit=limit)
         return {"events": recent_events, "last_event_id": recent_events[-1]["id"] if recent_events else since}
 
+    @secure_router.get("/jobs")
+    async def jobs(
+        limit: int = Query(default=50, ge=1, le=500),
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        return {"jobs": await message_store.list_jobs(limit=limit)}
+
+    @secure_router.get("/tasks/{task_id}")
+    async def get_task(
+        task_id: str,
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        return await message_store.get_task_result(task_id)
+
+    @secure_router.get("/tasks/{task_id}/wait")
+    async def wait_task(
+        task_id: str,
+        timeout_seconds: int = Query(default=1800, ge=1),
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        return await message_store.wait_for_task(task_id, timeout_seconds)
+
     @secure_router.get("/status")
     async def status(message_store: MessageStore = Depends(get_store)) -> dict[str, Any]:
         agents = await message_store.list_agents()
         active_messages = await message_store.list_active_messages()
+        conversations = await message_store.list_conversations()
+        jobs = await message_store.list_jobs(limit=20)
         events = await message_store.list_events(limit=20)
         pending_reply_count = 0
         count_pending = getattr(message_store, "pending_reply_count", None)
@@ -109,6 +151,10 @@ def create_app(
             "agents": agents,
             "active_message_count": len(active_messages),
             "active_messages": active_messages,
+            "conversation_count": len(conversations),
+            "conversations": conversations,
+            "job_count": len(jobs),
+            "jobs": jobs,
             "pending_reply_count": pending_reply_count,
             "recent_events": events,
         }

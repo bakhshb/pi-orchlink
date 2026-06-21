@@ -42,9 +42,48 @@ def test_valid_message_envelope_parses():
     assert envelope.payload.scope.allowed == ["apps/api/**"]
 
 
+def test_chat_message_types_parse():
+    for message_type in ["CHAT_START", "CHAT_TURN", "CHAT_REPLY", "CHAT_CLOSE"]:
+        envelope = MessageEnvelope.model_validate(
+            sample_envelope(
+                type=message_type,
+                task_id=None,
+                delivery="conversation",
+                payload={"mode": "TALK", "message": "Discuss tradeoffs."},
+            )
+        )
+
+        assert envelope.type == message_type
+        assert envelope.payload.mode == "TALK"
+
+
+def test_payload_modes_parse():
+    for mode in ["DISCUSS", "PLAN", "DO", "REVIEW", "TALK"]:
+        payload = {"mode": mode, "intent": "x"} if mode != "TALK" else {"mode": mode, "message": "x"}
+        delivery = "conversation" if mode == "TALK" else "async"
+        message_type = "CHAT_START" if mode == "TALK" else "TASK"
+        envelope = MessageEnvelope.model_validate(
+            sample_envelope(type=message_type, task_id=None if mode == "TALK" else "TEST-001", delivery=delivery, payload=payload)
+        )
+
+        assert envelope.payload.mode == mode
+
+
+def test_chat_message_requires_talk_mode():
+    with pytest.raises(ValidationError):
+        MessageEnvelope.model_validate(
+            sample_envelope(type="CHAT_START", task_id=None, delivery="conversation", payload={"mode": "PLAN"})
+        )
+
+
 def test_unknown_message_type_is_rejected():
     with pytest.raises(ValidationError):
         MessageEnvelope.model_validate(sample_envelope(type="UNKNOWN"))
+
+
+def test_unknown_payload_mode_is_rejected():
+    with pytest.raises(ValidationError):
+        MessageEnvelope.model_validate(sample_envelope(payload={"mode": "BUILD"}))
 
 
 def test_turn_cannot_exceed_max_turns():
