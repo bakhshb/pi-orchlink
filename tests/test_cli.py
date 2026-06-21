@@ -458,6 +458,9 @@ def test_update_runs_git_and_reinstalls_package(monkeypatch, tmp_path):
     assert ["git", "-C", str(tmp_path), "pull", "--ff-only", "origin", "main"] in calls
     assert ["/venv/bin/python", "-m", "pip", "install", "-e", str(tmp_path)] in calls
     assert "Update complete" in result.output
+    assert "orch init --refresh-skills" in result.output
+    assert "orch lead --new" in result.output
+    assert "orch work --new" in result.output
 
 
 def test_status_command_prints_status(monkeypatch):

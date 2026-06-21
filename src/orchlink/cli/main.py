@@ -792,7 +792,12 @@ def update(
     except (RuntimeError, subprocess.CalledProcessError) as exc:
         console.print(f"[Orch] Update failed: {exc}")
         raise typer.Exit(1) from exc
-    console.print("[Orch] Update complete. Restart any running orch lead/work sessions.")
+    console.print("[Orch] Update complete.")
+    console.print("[Orch] In each Orchlink project, refresh .orch files and restart sessions:")
+    console.print("[Orch]   orch init --refresh-skills")
+    console.print("[Orch]   orch stop")
+    console.print("[Orch]   orch lead --new")
+    console.print("[Orch]   orch work --new")
 
 
 @app.command()
