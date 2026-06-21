@@ -107,6 +107,42 @@ def test_send_queues_async_task(monkeypatch, tmp_path):
     assert "orch wait T002" in result.output
 
 
+def test_send_rejects_review_gate_by_default(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+
+    def fake_send_worker_sync(**kwargs):
+        raise AssertionError("send should not be called for a review gate")
+
+    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
+
+    result = runner.invoke(cli_main.app, ["send", "work", "-t", "R001", "-m", "MODE: REVIEW. Review my changes."])
+
+    assert result.exit_code == 1
+    assert "REVIEW is a gate" in result.output
+    assert "orch ask work --wait" in result.output
+
+
+def test_send_allows_async_review_when_explicit(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    def fake_send_worker_sync(**kwargs):
+        assert kwargs["task_id"] == "R002"
+        return {"status": "queued", "message_id": "msg-r2"}
+
+    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
+
+    result = runner.invoke(
+        cli_main.app,
+        ["send", "work", "-t", "R002", "-m", "MODE: REVIEW. Async review of unrelated docs.", "--allow-async-review"],
+    )
+
+    assert result.exit_code == 0
+    assert "Sent R002" in result.output
+
+
 def test_talk_creates_conversation(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)

@@ -117,6 +117,8 @@ orch ask work --wait -t T001 -m "Review this plan and tell me whether to proceed
 
 Use this for decision gates. Use `orch send` for independent work.
 
+Worker REVIEW is a gate by default. If a review can change the next action, use `orch ask --wait`; do not start full tests or release steps until the review result arrives. `orch send` rejects `MODE: REVIEW` unless you pass `--allow-async-review` for an unrelated, non-gating review.
+
 ## Skills and project files
 
 `orch init` creates:

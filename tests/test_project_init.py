@@ -32,6 +32,8 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "orch talk work" in lead_skill
     assert "orch ask work --wait" in lead_skill
     assert "orch send work" in lead_skill
+    assert "Do not use `orch send` for review gates" in lead_skill
+    assert "Do not run dependent full tests" in lead_skill
     assert "orch say C001" in lead_skill
     assert "orch close C001" in lead_skill
     assert "`C001` is a conversation ID" in lead_skill

@@ -17,6 +17,7 @@ from rich.console import Console
 from orchlink.bridge.ask import (
     ask_worker_sync as project_ask_worker_sync,
     close_talk_sync,
+    infer_task_mode,
     send_worker_sync,
     say_talk_sync,
     start_talk_sync,
@@ -475,7 +476,15 @@ def send(
     task_id: Annotated[str, typer.Option("--task", "--task-id", "-t")],
     message: Annotated[str, typer.Option("--msg", "--message", "-m")],
     timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
+    allow_async_review: Annotated[bool, typer.Option("--allow-async-review", help="Allow REVIEW through async send. Use only when review is not a gate.")] = False,
 ) -> None:
+    mode = infer_task_mode(message)
+    if mode == "REVIEW" and not allow_async_review:
+        console.print("[Orch] REVIEW is a gate by default.")
+        console.print(f"[Orch] Use blocking review: orch ask work --wait -t {task_id} -m \"MODE: REVIEW...\"")
+        console.print("[Orch] Or pass --allow-async-review only if lead will not act on the review result.")
+        raise typer.Exit(1)
+
     config = load_project_or_exit()
     try:
         ensure_broker_running(config)

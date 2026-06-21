@@ -26,6 +26,10 @@ Use `orch send` when the worker can work while you continue on a different scope
 
 orch send work -t T002 -m "MODE: PLAN. Inspect tests. Do not edit files."
 
+Do not use `orch send` for review gates. If the worker review can change your next action, use blocking ask:
+
+orch ask work --wait -t R001 -m "MODE: REVIEW. Review my changes. Do not edit files. Tell me if I should proceed to full tests."
+
 Use `orch say` for the next turn in an open Talk Mode conversation. Replace `C001` with the conversation ID printed by `orch talk`:
 
 orch say C001 -m "You said memory-only is fine. What restart or lost-state risk am I underrating?"
@@ -102,6 +106,20 @@ Do not put task boilerplate in Talk Mode messages:
 - no expected reply checklist
 - no "I will wait" line
 
+## Review gates and expensive steps
+
+Treat worker REVIEW as a gate when it can change your next action.
+
+Do not start full tests, final summary, packaging, release notes, or cleanup that depends on worker review until the review result arrives.
+
+If the next step depends on review, use:
+
+orch ask work --wait -t R001 -m "MODE: REVIEW. Review my changes. Do not edit files. Tell me if I should proceed."
+
+Only use async review with `orch send --allow-async-review` when you will work on unrelated scope and will not act on the review until it returns.
+
+Before a long full-test run, check that no blocking review is pending. If review is pending, wait for it first.
+
 ## Task message checklist
 
 Every `orch ask` or `orch send` task should include:
@@ -120,6 +138,7 @@ Every `orch ask` or `orch send` task should include:
 - Do not send vague tasks.
 - Ask for PLAN before risky implementation.
 - Do not work on the same scope as async worker work.
+- Do not run dependent full tests before worker review returns.
 - Use Talk Mode to challenge assumptions and compare options.
 - Close discussions with a clear decision.
 - Start with DISCUSS or PLAN when scope, risk, or workload is unclear.
