@@ -17,7 +17,13 @@ Think of it like this:
 you → lead Pi → work Pi → lead Pi → you
 ```
 
-You do not need tmux, Redis, a database, or a dashboard.
+## Demo
+
+This demo video is baked at 1.5x speed. GitHub README videos cannot force playback speed by setting an attribute.
+
+<video src="media-1.5x.mp4" controls muted></video>
+
+If the video does not show in your browser, open it here: [media-1.5x.mp4](media-1.5x.mp4).
 
 ## What you need to know
 
