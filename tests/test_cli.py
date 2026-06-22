@@ -143,6 +143,13 @@ def test_send_allows_async_review_when_explicit(monkeypatch, tmp_path):
     assert "Sent R002" in result.output
 
 
+def test_talk_rejects_empty_message():
+    result = runner.invoke(cli_main.app, ["talk", "work", "-m", "   "])
+
+    assert result.exit_code == 1
+    assert "Talk message cannot be empty" in result.output
+
+
 def test_talk_creates_conversation(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
@@ -164,6 +171,13 @@ def test_talk_creates_conversation(monkeypatch, tmp_path):
     assert "Started conversation C001" in result.output
     assert "Waiting for worker reply" in result.output
     assert "not a final answer" in result.output
+
+
+def test_say_rejects_empty_message():
+    result = runner.invoke(cli_main.app, ["say", "C001", "-m", ""])
+
+    assert result.exit_code == 1
+    assert "Say message cannot be empty" in result.output
 
 
 def test_say_sends_chat_turn(monkeypatch, tmp_path):

@@ -142,7 +142,7 @@ Turn: ${message.turn || "?"}/${message.max_turns || "?"}
 Worker says:
 ${summary}
 
-Next: if worker asked a direct question, answer it first with orch say ${message.conversation_id || "<conversation_id>"}. Otherwise continue only if useful, or close with orch close ${message.conversation_id || "<conversation_id>"} after a clear decision.`;
+Next: if worker asked a direct question, answer it first with orch say ${message.conversation_id || "<conversation_id>"} -m "<your answer>". Otherwise continue only if useful, or close with orch close ${message.conversation_id || "<conversation_id>"} -m "Decision: ..." after a clear decision.`;
   }
 
   return `[Orchlink] Result from ${message.from_agent || "work"}
@@ -243,6 +243,7 @@ export default function (pi: ExtensionAPI) {
   const pollWaitSeconds = Number(env("ORCHLINK_POLL_WAIT_SECONDS", "5"));
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let pendingTask: OrchMessage | undefined;
   let currentTask: OrchMessage | undefined;
 
   async function register() {
@@ -264,24 +265,23 @@ export default function (pi: ExtensionAPI) {
 
   async function poll() {
     if (stopped || !["lead", "work"].includes(role)) return;
-    if (role === "work" && currentTask) return;
+    if (role === "work" && (pendingTask || currentTask)) return;
     try {
       const body = await getJson(`/v1/agents/${encodeURIComponent(agentId)}/next?wait_seconds=${pollWaitSeconds}`);
       if (body.status === "message") {
         const message = body.message;
         const label = message?.task_id || message?.conversation_id || "message";
         if (role === "work") {
-          pi.sendMessage({
-            customType: "orchlink",
-            content: `Orchlink received ${message?.type || "MESSAGE"} ${label} from ${message?.from_agent || "lead"}`,
-            display: true,
-            details: message,
-          }, { deliverAs: "steer" });
           if (message?.type === "CHAT_CLOSE") {
             return;
           }
-          currentTask = message;
-          pi.sendUserMessage(renderWorkerPrompt(message), { deliverAs: "followUp" });
+          pendingTask = message;
+          try {
+            pi.sendUserMessage(renderWorkerPrompt(message), { deliverAs: "followUp" });
+          } catch (error) {
+            pendingTask = undefined;
+            throw error;
+          }
         } else {
           pi.sendMessage({
             customType: "orchlink",
@@ -311,6 +311,14 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  pi.on("input", async (event) => {
+    if (role !== "work" || !pendingTask) return;
+    if (event.source !== "extension") return;
+    if (!String(event.text || "").startsWith("You are the worker coding agent in")) return;
+    currentTask = pendingTask;
+    pendingTask = undefined;
+  });
+
   pi.on("message_end", async (event, ctx) => {
     if (role !== "work" || !currentTask) return;
     if (event.message.role !== "assistant") return;
@@ -323,12 +331,6 @@ export default function (pi: ExtensionAPI) {
       await postJson(`/v1/messages/${encodeURIComponent(task.message_id)}/reply`, reply);
       const label = task.task_id || task.conversation_id;
       ctx.ui.notify(`Orchlink reply sent for ${label}`, "info");
-      pi.sendMessage({
-        customType: "orchlink",
-        content: `Orchlink sent ${reply.type} for ${label} to ${task.from_agent}`,
-        display: true,
-        details: reply,
-      }, { deliverAs: "steer" });
     } catch (error: any) {
       ctx.ui.notify(`Orchlink reply failed: ${error?.message || error}`, "error");
     } finally {

@@ -50,7 +50,11 @@ def test_pi_extension_uses_valid_record_type():
     assert "No big paragraph" in ORCHLINK_PI_EXTENSION
     assert "too broad" in ORCHLINK_PI_EXTENSION
     assert "stripChatReplyMarker" in ORCHLINK_PI_EXTENSION
+    assert "pendingTask" in ORCHLINK_PI_EXTENSION
+    assert "pi.on(\"input\"" in ORCHLINK_PI_EXTENSION
+    assert "currentTask = pendingTask" in ORCHLINK_PI_EXTENSION
     assert "Next: if worker asked a direct question" in ORCHLINK_PI_EXTENSION
+    assert "-m \"<your answer>\"" in ORCHLINK_PI_EXTENSION
     assert "Talk Mode should stop only when" not in ORCHLINK_PI_EXTENSION
     assert "renderLeadPrompt(message), { deliverAs: \"steer\" }" in ORCHLINK_PI_EXTENSION
     assert "deliverAs: \"nextTurn\"" not in ORCHLINK_PI_EXTENSION

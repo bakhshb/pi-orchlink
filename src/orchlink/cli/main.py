@@ -591,6 +591,13 @@ def _print_task_body(body: dict[str, Any]) -> None:
         console.print(str(body["error"]))
 
 
+def require_nonempty_talk_message(message: str, command_name: str) -> None:
+    if message.strip():
+        return
+    console.print(f"[Orch] {command_name} message cannot be empty. Use -m \"your question or reply\".")
+    raise typer.Exit(1)
+
+
 def _print_conversation_body(conversation: dict[str, Any]) -> None:
     conversation_id = str(conversation.get("conversation_id") or "")
     console.print(f"[Orch] Conversation {conversation_id}: {conversation.get('status', 'UNKNOWN')}")
@@ -610,6 +617,7 @@ def talk(
     rounds: Annotated[int, typer.Option("--rounds", "-r", min=1, max=12)] = 6,
     timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
 ) -> None:
+    require_nonempty_talk_message(message, "Talk")
     config = load_project_or_exit()
     try:
         ensure_broker_running(config)
@@ -639,6 +647,7 @@ def say(
     message: Annotated[str, typer.Option("--msg", "--message", "-m")],
     timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
 ) -> None:
+    require_nonempty_talk_message(message, "Say")
     config = load_project_or_exit()
     try:
         ensure_broker_running(config)
