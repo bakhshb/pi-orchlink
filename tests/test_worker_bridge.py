@@ -104,6 +104,8 @@ def test_build_reply_turns_chat_start_into_chat_reply():
     assert reply["task_id"] is None
     assert reply["delivery"] == "conversation"
     assert reply["payload"]["mode"] == "TALK"
+    assert reply["payload"]["summary"] == "POSITION: memory first"
+    assert reply["payload"]["stdout"] == "TYPE: CHAT_REPLY\nPOSITION: memory first\n"
 
 
 def test_build_reply_turns_command_failure_into_blocker():

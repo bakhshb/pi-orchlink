@@ -55,6 +55,13 @@ def detect_reply_type(output: str) -> str:
     return "RESULT"
 
 
+def strip_chat_reply_marker(output: str) -> str:
+    lines = output.strip().splitlines()
+    if lines and lines[0].strip().upper() == "TYPE: CHAT_REPLY":
+        return "\n".join(lines[1:]).strip()
+    return output.strip()
+
+
 def build_reply(
     message: dict[str, Any],
     config: dict[str, Any],
@@ -66,6 +73,10 @@ def build_reply(
     reply_type = "CHAT_REPLY" if is_chat else ("BLOCKER" if failed else detect_reply_type(run_result.stdout))
     status = "FAILED" if failed else "DONE"
     turn = min(int(message.get("turn", 1)) + 1, int(message.get("max_turns", 6)))
+
+    summary = run_result.stdout.strip() or run_result.stderr.strip()
+    if is_chat:
+        summary = strip_chat_reply_marker(summary)
 
     return {
         "protocol": message.get("protocol", "orch-a2a-v1"),
@@ -85,7 +96,7 @@ def build_reply(
         "delivery": "conversation" if is_chat else message.get("delivery", "async"),
         "payload": {
             "mode": "TALK" if is_chat else (message.get("payload") or {}).get("mode"),
-            "summary": run_result.stdout.strip() or run_result.stderr.strip(),
+            "summary": summary,
             "stdout": run_result.stdout,
             "stderr": run_result.stderr,
             "exit_code": run_result.exit_code,

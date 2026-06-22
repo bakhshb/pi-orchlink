@@ -124,33 +124,25 @@ function renderWorkerPrompt(message: OrchMessage): string {
   return renderWorkerTaskPrompt(message);
 }
 
+function stripChatReplyMarker(value: any): string {
+  return String(value || "").replace(/^\s*TYPE:\s*CHAT_REPLY\s*\r?\n?/i, "").trim();
+}
+
 function renderLeadPrompt(message: OrchMessage): string {
   const payload = message.payload || {};
-  const summary = payload.summary || payload.stdout || payload.message || "";
+  const rawSummary = payload.summary || payload.stdout || payload.message || "";
   const type = message.type || "RESULT";
+  const summary = type === "CHAT_REPLY" ? stripChatReplyMarker(rawSummary) : rawSummary;
   if (type === "CHAT_REPLY") {
     return `[Orchlink] Message from ${message.from_agent || "work"}
 
 Conversation: ${message.conversation_id || ""}
-Type: CHAT_REPLY
 Turn: ${message.turn || "?"}/${message.max_turns || "?"}
 
 Worker says:
 ${summary}
 
-Talk Mode should stop only when it has produced one of these: clear decision, next task, blocker, max rounds, timeout, or no new value.
-
-Be a critical thinker. Decide whether to accept, reject, or challenge the worker's point. Do not agree just to move on.
-
-If the worker asked a direct question, answer it explicitly in your next orch say before moving to another point. Do not ignore worker questions or close before answering.
-
-If a stop condition has not been reached and Turn is less than Max turns, send a short follow-up, one question or one idea:
-orch say ${message.conversation_id || "<conversation_id>"} -m "<answer the worker question, then one short follow-up>"
-
-If a stop condition has been reached, close it explicitly with a compact record:
-orch close ${message.conversation_id || "<conversation_id>"} -m "Decision: ... Rationale: ... Dissent/risk accepted: ... Next step: ... Owner: ... Human approval needed: yes/no"
-
-Only summarize to the user after you close the conversation or have a clear reason not to continue.`;
+Next: if worker asked a direct question, answer it first with orch say ${message.conversation_id || "<conversation_id>"}. Otherwise continue only if useful, or close with orch close ${message.conversation_id || "<conversation_id>"} after a clear decision.`;
   }
 
   return `[Orchlink] Result from ${message.from_agent || "work"}
@@ -193,6 +185,7 @@ function replyEnvelope(task: OrchMessage, assistantMessage: any): OrchMessage {
   const failed = assistantMessage?.stopReason === "error" || assistantMessage?.stopReason === "aborted";
   const chat = isChatRequest(task);
   const replyType = chat ? "CHAT_REPLY" : (failed ? "BLOCKER" : detectReplyType(output));
+  const summary = chat ? stripChatReplyMarker(output) : output;
   return {
     protocol: task.protocol || "orch-a2a-v1",
     message_id: `reply-${crypto.randomUUID()}`,
@@ -211,7 +204,7 @@ function replyEnvelope(task: OrchMessage, assistantMessage: any): OrchMessage {
     delivery: chat ? "conversation" : (task.delivery || "async"),
     payload: {
       mode: chat ? "TALK" : (task.payload || {}).mode,
-      summary: output,
+      summary,
       stdout: output,
       stderr: failed ? assistantMessage?.errorMessage || "Pi assistant stopped before completing the task." : "",
       exit_code: failed ? 1 : 0,
