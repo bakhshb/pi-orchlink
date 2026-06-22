@@ -31,6 +31,7 @@ def test_cli_imports_from_installable_package_and_exposes_required_commands():
     assert "talk" in result.output
     assert "say" in result.output
     assert "close" in result.output
+    assert "cancel" in result.output
     assert "jobs" in result.output
     assert "idle" in result.output
     assert "monitor" in result.output
@@ -53,6 +54,8 @@ def test_pi_extension_uses_valid_record_type():
     assert "pendingTask" in ORCHLINK_PI_EXTENSION
     assert "pi.on(\"input\"" in ORCHLINK_PI_EXTENSION
     assert "currentTask = pendingTask" in ORCHLINK_PI_EXTENSION
+    assert "markMessageStatus" in ORCHLINK_PI_EXTENSION
+    assert "RUNNING" in ORCHLINK_PI_EXTENSION
     assert "Next: if worker asked a direct question" in ORCHLINK_PI_EXTENSION
     assert "-m \"<your answer>\"" in ORCHLINK_PI_EXTENSION
     assert "Talk Mode should stop only when" not in ORCHLINK_PI_EXTENSION

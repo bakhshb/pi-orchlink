@@ -261,6 +261,26 @@ def test_get_conversation_id_prints_conversation_guidance(monkeypatch, tmp_path)
     assert "Continue: orch say C001" in result.output
 
 
+def test_cancel_command_posts_cancel(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    called = {}
+
+    def fake_broker_post_sync(config, path, body=None):
+        called.update({"path": path, "body": body})
+        return {"status": "cancelled", "item_id": "T010", "cancelled": ["msg-010"]}
+
+    monkeypatch.setattr(cli_main, "broker_post_sync", fake_broker_post_sync)
+
+    result = runner.invoke(cli_main.app, ["cancel", "T010", "-m", "Wrong scope."])
+
+    assert result.exit_code == 0
+    assert called == {"path": "/v1/jobs/T010/cancel", "body": {"reason": "Wrong scope."}}
+    assert "Cancelled T010" in result.output
+
+
 def test_jobs_get_and_wait_commands(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)

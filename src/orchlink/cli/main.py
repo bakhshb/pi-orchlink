@@ -162,6 +162,13 @@ def broker_get_sync(config: dict[str, Any], path: str) -> dict[str, Any]:
         return response.json()
 
 
+def broker_post_sync(config: dict[str, Any], path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    with httpx.Client(base_url=broker_url(config), timeout=None) as client:
+        response = client.post(path, headers={"X-API-Key": broker_api_key(config)}, json=body or {})
+        response.raise_for_status()
+        return response.json()
+
+
 def next_conversation_id(config: dict[str, Any]) -> str:
     try:
         body = broker_get_sync(config, "/v1/jobs?limit=500")
@@ -573,6 +580,11 @@ def task(task_id: str) -> None:
 def _print_task_body(body: dict[str, Any]) -> None:
     task_id = str(body.get("task_id") or "")
     status_text = str(body.get("status") or "UNKNOWN")
+    if status_text == "WAIT_TIMEOUT":
+        console.print(f"[Orch] Wait for task {task_id}: timed out, but the task is still pending unless cancelled or task timeout expires.")
+        if body.get("error"):
+            console.print(str(body["error"]))
+        return
     console.print(f"[Orch] Task {task_id}: {status_text}")
     reply = body.get("reply") or {}
     if reply:
@@ -785,6 +797,24 @@ def wait_command(
         console.print(f"[Orch] {exc}")
         raise typer.Exit(1) from exc
     _print_task_body(body)
+
+
+@app.command()
+def cancel(
+    item_id: str,
+    reason: Annotated[str, typer.Option("--reason", "-m")] = "Cancelled by lead.",
+) -> None:
+    config = load_project_or_exit()
+    try:
+        ensure_broker_running(config)
+        body = broker_post_sync(config, f"/v1/jobs/{item_id}/cancel", {"reason": reason})
+    except (RuntimeError, httpx.HTTPError) as exc:
+        console.print(f"[Orch] {exc}")
+        raise typer.Exit(1) from exc
+    console.print(f"[Orch] Cancelled {item_id}.")
+    cancelled = body.get("cancelled") or []
+    if cancelled:
+        console.print(f"[Orch] Messages: {', '.join(str(item) for item in cancelled)}")
 
 
 @app.command()

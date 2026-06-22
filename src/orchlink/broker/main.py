@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, Security
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request, Security
 from fastapi.security import APIKeyHeader
 
 from orchlink.broker.protocol import AgentRegistration, MessageEnvelope, envelope_to_dict
@@ -94,6 +94,28 @@ def create_app(
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, str]:
         return await message_store.save_reply(message_id, envelope_to_dict(reply))
+
+    @secure_router.post("/messages/{message_id}/status")
+    async def update_message_status(
+        message_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        try:
+            return await message_store.update_message_status(message_id, str(body.get("status") or ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @secure_router.post("/jobs/{item_id}/cancel")
+    async def cancel_work(
+        item_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        try:
+            return await message_store.cancel_work(item_id, str(body.get("reason") or ""))
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @secure_router.post("/conversations/{conversation_id}/close")
     async def close_conversation(

@@ -32,6 +32,8 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "orch talk work" in lead_skill
     assert "orch ask work --wait" in lead_skill
     assert "orch send work" in lead_skill
+    assert "orch cancel T002" in lead_skill
+    assert "wait timeout does not cancel" in lead_skill
     assert "Do not use `orch send` for review gates" in lead_skill
     assert "orch idle" in lead_skill
     assert "Do not run dependent full tests" in lead_skill

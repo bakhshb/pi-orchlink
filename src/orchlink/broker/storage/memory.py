@@ -7,6 +7,7 @@ from orchlink.broker.storage.base import MessageStore, MessageStoreBusy
 
 FAILED_STATUSES = {"FAILED", "TIMEOUT", "CANCELLED"}
 BUSY_MESSAGE_STATUSES = {"PENDING", "QUEUED", "DELIVERED", "RUNNING", "IN_PROGRESS"}
+TERMINAL_MESSAGE_STATUSES = {"DONE", "COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "CLOSED"}
 WORKER_BOUND_TYPES = {"TASK", "CHAT_START", "CHAT_TURN", "CHAT_CLOSE"}
 
 
@@ -26,6 +27,17 @@ class MemoryMessageStore(MessageStore):
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
+
+    def _parse_time(self, value: Any) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
 
     def _payload_preview(self, payload: dict[str, Any]) -> str:
         for key in ("message", "intent", "topic", "summary", "stdout"):
@@ -53,6 +65,53 @@ class MemoryMessageStore(MessageStore):
         self._events.append(event)
         if len(self._events) > 1000:
             self._events = self._events[-1000:]
+
+    def _expire_timed_out_messages_locked(self) -> None:
+        now = datetime.now(timezone.utc)
+        for message in list(self._active_messages.values()):
+            status = str(message.get("status") or "").upper()
+            if status not in BUSY_MESSAGE_STATUSES:
+                continue
+            try:
+                timeout_seconds = int(message.get("timeout_seconds") or 0)
+            except (TypeError, ValueError):
+                timeout_seconds = 0
+            if timeout_seconds <= 0:
+                continue
+            started_at = self._parse_time(message.get("created_at") or message.get("queued_at"))
+            if started_at is None:
+                continue
+            if (now - started_at).total_seconds() < timeout_seconds:
+                continue
+
+            message["status"] = "TIMEOUT"
+            message["updated_at"] = self._now()
+            task_id = message.get("task_id")
+            if task_id:
+                result = {
+                    "status": "TIMEOUT",
+                    "task_id": str(task_id),
+                    "error": "Task exceeded its timeout_seconds before the worker replied.",
+                    "job": dict(message),
+                }
+                self._results_by_task[str(task_id)] = result
+                self._upsert_task_locked(message, "TIMEOUT")
+                self._resolve_task_waiters_locked(str(task_id), result)
+            if str(message.get("type") or "").startswith("CHAT_"):
+                self._touch_conversation_locked(message, status="TIMEOUT")
+            future = self._pending_replies.get(str(message.get("correlation_id") or ""))
+            if future is not None and not future.done():
+                future.set_result({
+                    "type": "BLOCKER",
+                    "status": "TIMEOUT",
+                    "correlation_id": message.get("correlation_id"),
+                    "payload": {"summary": "Worker did not reply before timeout_seconds."},
+                })
+            self._append_event_locked(
+                "timeout",
+                **self._event_fields(message, status="TIMEOUT"),
+                preview="Work exceeded timeout_seconds before the worker replied.",
+            )
 
     def _job_mode(self, message: dict[str, Any]) -> str:
         payload = message.get("payload") or {}
@@ -117,7 +176,7 @@ class MemoryMessageStore(MessageStore):
         next_status = status or existing.get("status") or "OPEN"
         if message_type == "CHAT_CLOSE":
             next_status = "CLOSED"
-        elif next_status not in {"CLOSED", "TIMEOUT", "FAILED"}:
+        elif next_status not in {"CLOSED", "TIMEOUT", "FAILED", "CANCELLED"}:
             next_status = "OPEN"
         turn = int(message.get("turn") or existing.get("turn") or 1)
         max_turns = int(message.get("max_turns") or existing.get("max_turns") or 6)
@@ -230,10 +289,15 @@ class MemoryMessageStore(MessageStore):
         correlation_id = message["correlation_id"]
 
         async with self._lock:
+            self._expire_timed_out_messages_locked()
             self._assert_conversation_can_receive_locked(message)
             self._assert_worker_lane_free_locked(message)
             stored_message = dict(message)
+            now = self._now()
             stored_message["status"] = "CLOSED" if message.get("type") == "CHAT_CLOSE" else "QUEUED"
+            stored_message.setdefault("created_at", now)
+            stored_message["queued_at"] = now
+            stored_message["updated_at"] = now
             self._active_messages[message_id] = stored_message
             if stored_message.get("type") == "CHAT_CLOSE":
                 self._touch_conversation_locked(stored_message, status="CLOSED")
@@ -257,28 +321,42 @@ class MemoryMessageStore(MessageStore):
 
     async def get_next_message(self, agent_id: str, wait_seconds: int) -> dict[str, Any] | None:
         async with self._lock:
+            self._expire_timed_out_messages_locked()
             inbox = self._inboxes.setdefault(agent_id, asyncio.Queue())
 
-        try:
-            message = await asyncio.wait_for(inbox.get(), timeout=wait_seconds)
-        except asyncio.TimeoutError:
-            return None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait_seconds
+        while True:
+            timeout = max(0, deadline - loop.time()) if wait_seconds > 0 else 0
+            try:
+                message = await asyncio.wait_for(inbox.get(), timeout=timeout)
+            except asyncio.TimeoutError:
+                return None
 
-        async with self._lock:
-            message_id = str(message.get("message_id"))
-            delivered = dict(message)
-            if delivered.get("status") != "CLOSED":
-                delivered["status"] = "DELIVERED"
-            if message_id in self._active_messages:
-                self._active_messages[message_id]["status"] = delivered["status"]
-            if delivered.get("task_id") and delivered.get("type") == "TASK":
-                self._upsert_task_locked(delivered, delivered["status"])
-            self._touch_conversation_locked(delivered)
-            self._append_event_locked(
-                "message_delivered",
-                **self._event_fields(delivered, status=delivered["status"]),
-            )
-        return delivered
+            async with self._lock:
+                self._expire_timed_out_messages_locked()
+                message_id = str(message.get("message_id"))
+                active_message = self._active_messages.get(message_id)
+                if active_message and str(active_message.get("status") or "").upper() in TERMINAL_MESSAGE_STATUSES:
+                    if wait_seconds <= 0 or loop.time() >= deadline:
+                        return None
+                    continue
+
+                delivered = dict(active_message or message)
+                if delivered.get("status") != "CLOSED":
+                    delivered["status"] = "DELIVERED"
+                delivered["updated_at"] = self._now()
+                if message_id in self._active_messages:
+                    self._active_messages[message_id]["status"] = delivered["status"]
+                    self._active_messages[message_id]["updated_at"] = delivered["updated_at"]
+                if delivered.get("task_id") and delivered.get("type") == "TASK":
+                    self._upsert_task_locked(delivered, delivered["status"])
+                self._touch_conversation_locked(delivered)
+                self._append_event_locked(
+                    "message_delivered",
+                    **self._event_fields(delivered, status=delivered["status"]),
+                )
+            return delivered
 
     async def save_reply(self, message_id: str, reply: dict[str, Any]) -> dict[str, Any]:
         correlation_id = reply["correlation_id"]
@@ -290,9 +368,20 @@ class MemoryMessageStore(MessageStore):
         task_id = stored_reply.get("task_id")
 
         async with self._lock:
+            self._expire_timed_out_messages_locked()
+            active = self._active_messages.get(message_id)
+            if active and str(active.get("status") or "").upper() in {"TIMEOUT", "CANCELLED"}:
+                self._append_event_locked(
+                    "late_reply_ignored",
+                    **self._event_fields(stored_reply, status=str(active.get("status") or "")),
+                    preview="Late worker reply ignored because the original work is no longer active.",
+                )
+                return {"status": "reply_ignored", "correlation_id": correlation_id}
+
             future = self._pending_replies.get(correlation_id)
             if message_id in self._active_messages:
                 self._active_messages[message_id]["status"] = job_status
+                self._active_messages[message_id]["updated_at"] = self._now()
             if task_id:
                 result = {"status": job_status, "task_id": str(task_id), "reply": stored_reply}
                 self._results_by_task[str(task_id)] = result
@@ -311,8 +400,94 @@ class MemoryMessageStore(MessageStore):
         await reply_inbox.put(stored_reply)
         return {"status": "reply_received", "correlation_id": correlation_id}
 
+    async def update_message_status(self, message_id: str, status: str) -> dict[str, Any]:
+        normalized_status = status.upper()
+        if normalized_status not in BUSY_MESSAGE_STATUSES | TERMINAL_MESSAGE_STATUSES:
+            raise ValueError(f"Unsupported status: {status}")
+        async with self._lock:
+            self._expire_timed_out_messages_locked()
+            message = self._active_messages.get(message_id)
+            if message is None:
+                raise ValueError(f"Message not found: {message_id}")
+            if str(message.get("status") or "").upper() in TERMINAL_MESSAGE_STATUSES:
+                return {"status": str(message.get("status")), "message_id": message_id}
+            message["status"] = normalized_status
+            message["updated_at"] = self._now()
+            if message.get("task_id") and message.get("type") == "TASK":
+                self._upsert_task_locked(message, normalized_status)
+            if str(message.get("type") or "").startswith("CHAT_"):
+                self._touch_conversation_locked(message, status=normalized_status)
+            self._append_event_locked(
+                "message_status",
+                **self._event_fields(message, status=normalized_status),
+            )
+            return {"status": normalized_status, "message_id": message_id}
+
+    async def cancel_work(self, item_id: str, reason: str = "") -> dict[str, Any]:
+        cancelled: list[str] = []
+        async with self._lock:
+            self._expire_timed_out_messages_locked()
+            targets = [
+                message
+                for message in self._active_messages.values()
+                if str(message.get("message_id") or "") == item_id
+                or str(message.get("task_id") or "") == item_id
+                or str(message.get("conversation_id") or "") == item_id
+            ]
+            targets = [message for message in targets if str(message.get("status") or "").upper() not in TERMINAL_MESSAGE_STATUSES]
+            if not targets:
+                conversation = self._conversations.get(item_id)
+                if conversation and conversation.get("status") == "OPEN":
+                    conversation["status"] = "CANCELLED"
+                    conversation["updated_at"] = self._now()
+                    self._append_event_locked(
+                        "work_cancelled",
+                        project_id=conversation.get("project_id"),
+                        conversation_id=item_id,
+                        mode="TALK",
+                        status="CANCELLED",
+                        preview=reason or "Conversation cancelled.",
+                    )
+                    return {"status": "cancelled", "item_id": item_id, "cancelled": [item_id]}
+                raise ValueError(f"No active work found: {item_id}")
+
+            for message in targets:
+                message["status"] = "CANCELLED"
+                message["updated_at"] = self._now()
+                message_id = str(message.get("message_id") or "")
+                if message_id:
+                    cancelled.append(message_id)
+                task_id = message.get("task_id")
+                if task_id:
+                    result = {
+                        "status": "CANCELLED",
+                        "task_id": str(task_id),
+                        "error": reason or "Work was cancelled.",
+                        "job": dict(message),
+                    }
+                    self._results_by_task[str(task_id)] = result
+                    self._upsert_task_locked(message, "CANCELLED")
+                    self._resolve_task_waiters_locked(str(task_id), result)
+                if str(message.get("type") or "").startswith("CHAT_"):
+                    self._touch_conversation_locked(message, status="CANCELLED")
+                future = self._pending_replies.get(str(message.get("correlation_id") or ""))
+                if future is not None and not future.done():
+                    future.set_result({
+                        "type": "BLOCKER",
+                        "status": "CANCELLED",
+                        "correlation_id": message.get("correlation_id"),
+                        "payload": {"summary": reason or "Work was cancelled."},
+                    })
+                self._append_event_locked(
+                    "work_cancelled",
+                    **self._event_fields(message, status="CANCELLED"),
+                    preview=reason or "Work was cancelled.",
+                )
+        return {"status": "cancelled", "item_id": item_id, "cancelled": cancelled}
+
     async def close_conversation(self, conversation_id: str, message: dict[str, Any]) -> dict[str, Any]:
         async with self._lock:
+            self._expire_timed_out_messages_locked()
             conversation = self._conversations.get(conversation_id)
             if conversation is None:
                 raise ValueError(f"Conversation not found: {conversation_id}")
@@ -337,6 +512,7 @@ class MemoryMessageStore(MessageStore):
 
     async def wait_for_reply(self, correlation_id: str, timeout_seconds: int) -> dict[str, Any]:
         async with self._lock:
+            self._expire_timed_out_messages_locked()
             future = self._pending_replies.setdefault(
                 correlation_id,
                 asyncio.get_running_loop().create_future(),
@@ -375,6 +551,7 @@ class MemoryMessageStore(MessageStore):
 
     async def wait_for_task(self, task_id: str, timeout_seconds: int) -> dict[str, Any]:
         async with self._lock:
+            self._expire_timed_out_messages_locked()
             if task_id in self._results_by_task:
                 return dict(self._results_by_task[task_id])
             future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
@@ -388,13 +565,11 @@ class MemoryMessageStore(MessageStore):
                 self._task_waiters[task_id] = [item for item in waiters if item is not future]
                 if not self._task_waiters[task_id]:
                     self._task_waiters.pop(task_id, None)
-                if task_id in self._tasks:
-                    self._tasks[task_id]["status"] = "TIMEOUT"
-                    self._tasks[task_id]["updated_at"] = self._now()
-            return {"status": "TIMEOUT", "task_id": task_id, "error": "Task did not finish before timeout."}
+            return {"status": "WAIT_TIMEOUT", "task_id": task_id, "error": "No task result arrived before the wait timeout."}
 
     async def get_task_result(self, task_id: str) -> dict[str, Any]:
         async with self._lock:
+            self._expire_timed_out_messages_locked()
             if task_id in self._results_by_task:
                 return dict(self._results_by_task[task_id])
             if task_id in self._tasks:
@@ -403,6 +578,7 @@ class MemoryMessageStore(MessageStore):
 
     async def list_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
         async with self._lock:
+            self._expire_timed_out_messages_locked()
             jobs = [dict(task) for task in self._tasks.values()]
             jobs.extend(dict(conversation) for conversation in self._conversations.values())
             jobs.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
@@ -414,10 +590,12 @@ class MemoryMessageStore(MessageStore):
 
     async def list_active_messages(self) -> list[dict[str, Any]]:
         async with self._lock:
+            self._expire_timed_out_messages_locked()
             return [dict(message) for message in self._active_messages.values()]
 
     async def list_conversations(self) -> list[dict[str, Any]]:
         async with self._lock:
+            self._expire_timed_out_messages_locked()
             return [dict(conversation) for conversation in self._conversations.values()]
 
     async def list_events(self, since: int = 0, limit: int = 100) -> list[dict[str, Any]]:

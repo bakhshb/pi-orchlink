@@ -256,6 +256,67 @@ def test_save_reply_queues_reply_for_lead_inbox():
     asyncio.run(run())
 
 
+def test_wait_for_task_timeout_does_not_mutate_task_status():
+    async def run():
+        store = MemoryMessageStore()
+        await store.enqueue_message(task_message())
+
+        result = await store.wait_for_task("TEST-001", timeout_seconds=0)
+        task = await store.get_task_result("TEST-001")
+
+        assert result["status"] == "WAIT_TIMEOUT"
+        assert task["status"] == "QUEUED"
+
+    asyncio.run(run())
+
+
+def test_hard_timeout_expires_active_work_and_frees_worker_lane():
+    async def run():
+        store = MemoryMessageStore()
+        stale = task_message(timeout_seconds=1, created_at="2000-01-01T00:00:00+00:00")
+        await store.enqueue_message(stale)
+
+        jobs = await store.list_jobs()
+        queued = await store.enqueue_message(task_message(message_id="msg-0002", correlation_id="req-0002", task_id="TEST-002"))
+
+        assert jobs[0]["status"] == "TIMEOUT"
+        assert queued == {"status": "queued", "message_id": "msg-0002"}
+
+    asyncio.run(run())
+
+
+def test_cancel_work_skips_queued_message_and_frees_worker_lane():
+    async def run():
+        store = MemoryMessageStore()
+        await store.enqueue_message(task_message())
+
+        cancelled = await store.cancel_work("TEST-001", "No longer needed.")
+        skipped = await store.get_next_message("worker-backend", wait_seconds=0)
+        queued = await store.enqueue_message(task_message(message_id="msg-0002", correlation_id="req-0002", task_id="TEST-002"))
+        task = await store.get_task_result("TEST-001")
+
+        assert cancelled["status"] == "cancelled"
+        assert skipped is None
+        assert queued == {"status": "queued", "message_id": "msg-0002"}
+        assert task["status"] == "CANCELLED"
+
+    asyncio.run(run())
+
+
+def test_update_message_status_marks_task_running():
+    async def run():
+        store = MemoryMessageStore()
+        await store.enqueue_message(task_message())
+
+        updated = await store.update_message_status("msg-0001", "RUNNING")
+        task = await store.get_task_result("TEST-001")
+
+        assert updated == {"status": "RUNNING", "message_id": "msg-0001"}
+        assert task["status"] == "RUNNING"
+
+    asyncio.run(run())
+
+
 def test_wait_for_reply_times_out():
     async def run():
         store = MemoryMessageStore()

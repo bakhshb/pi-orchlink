@@ -245,10 +245,17 @@ You normally do not need these. The lead agent uses them when it coordinates wit
 | `orch talk work -m "..." -r 6` | Start a short discussion with work. |
 | `orch say C001 -m "..."` | Continue a Talk Mode conversation. |
 | `orch close C001 -m "..."` | Close Talk Mode with a decision. |
+| `orch cancel T002 -m "..."` | Cancel stuck or no-longer-needed work. |
 | `orch jobs` | Show recent work. |
 | `orch idle` | Check whether work is busy. |
 | `orch get T002` | Read a task result. |
-| `orch wait T002` | Wait for a task result. |
+| `orch wait T002` | Wait for a task result. This does not cancel the task if the wait times out. |
+
+For big tasks, give work more time when sending the task:
+
+```bash
+orch send work -t T010 --timeout-seconds 7200 -m "MODE: DO. Implement chunk 1 only."
+```
 
 Debug-only commands:
 

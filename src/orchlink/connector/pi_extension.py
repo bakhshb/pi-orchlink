@@ -236,6 +236,11 @@ async function getJson(path: string): Promise<any> {
   return response.json();
 }
 
+async function markMessageStatus(messageId: string, status: string): Promise<void> {
+  if (!messageId) return;
+  await postJson(`/v1/messages/${encodeURIComponent(messageId)}/status`, { status });
+}
+
 export default function (pi: ExtensionAPI) {
   const role = env("ORCHLINK_PI_ROLE");
   const agentId = env("ORCHLINK_AGENT_ID");
@@ -317,6 +322,9 @@ export default function (pi: ExtensionAPI) {
     if (!String(event.text || "").startsWith("You are the worker coding agent in")) return;
     currentTask = pendingTask;
     pendingTask = undefined;
+    void markMessageStatus(String(currentTask.message_id || ""), "RUNNING").catch((error) => {
+      console.error(`[orchlink] status update failed: ${error?.message || error}`);
+    });
   });
 
   pi.on("message_end", async (event, ctx) => {

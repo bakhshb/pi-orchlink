@@ -182,6 +182,67 @@ def test_get_and_wait_task_result():
     assert wait_response.json()["status"] == "DONE"
 
 
+def test_update_message_status_marks_message_running():
+    client = make_client()
+    message = {
+        "protocol": "orch-a2a-v1",
+        "message_id": "msg-0001",
+        "correlation_id": "req-0001",
+        "project_id": "test",
+        "conversation_id": "test-default",
+        "task_id": "T001",
+        "from_agent": "test.lead",
+        "to_agent": "test.work",
+        "type": "TASK",
+        "status": "PENDING",
+        "turn": 1,
+        "max_turns": 6,
+        "requires_reply": True,
+        "timeout_seconds": 1800,
+        "delivery": "async",
+        "payload": {"mode": "PLAN", "intent": "Return PLAN only."},
+    }
+
+    client.post("/v1/messages/send", headers=auth_headers(), json=message)
+    response = client.post("/v1/messages/msg-0001/status", headers=auth_headers(), json={"status": "RUNNING"})
+    status_response = client.get("/v1/status", headers=auth_headers())
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "RUNNING", "message_id": "msg-0001"}
+    assert status_response.json()["active_messages"][0]["status"] == "RUNNING"
+
+
+def test_cancel_work_endpoint_unblocks_worker():
+    client = make_client()
+    message = {
+        "protocol": "orch-a2a-v1",
+        "message_id": "msg-0001",
+        "correlation_id": "req-0001",
+        "project_id": "test",
+        "conversation_id": "test-default",
+        "task_id": "T001",
+        "from_agent": "test.lead",
+        "to_agent": "test.work",
+        "type": "TASK",
+        "status": "PENDING",
+        "turn": 1,
+        "max_turns": 6,
+        "requires_reply": True,
+        "timeout_seconds": 1800,
+        "delivery": "async",
+        "payload": {"mode": "PLAN", "intent": "Return PLAN only."},
+    }
+    second = {**message, "message_id": "msg-0002", "correlation_id": "req-0002", "task_id": "T002"}
+
+    client.post("/v1/messages/send", headers=auth_headers(), json=message)
+    cancel_response = client.post("/v1/jobs/T001/cancel", headers=auth_headers(), json={"reason": "No longer needed."})
+    second_response = client.post("/v1/messages/send", headers=auth_headers(), json=second)
+
+    assert cancel_response.status_code == 200
+    assert cancel_response.json()["status"] == "cancelled"
+    assert second_response.status_code == 200
+
+
 def test_get_next_returns_empty_when_no_message_arrives():
     client = make_client()
 

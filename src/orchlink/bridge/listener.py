@@ -105,6 +105,15 @@ def build_reply(
     }
 
 
+async def mark_message_status(client: httpx.AsyncClient, config: dict[str, Any], message_id: str, status: str) -> None:
+    response = await client.post(
+        f"/v1/messages/{message_id}/status",
+        headers=auth_headers(config),
+        json={"status": status},
+    )
+    response.raise_for_status()
+
+
 async def register_worker(client: httpx.AsyncClient, config: dict[str, Any]) -> dict[str, Any]:
     worker_config = _worker_config(config)
     response = await client.post(
@@ -138,6 +147,7 @@ async def process_one_message(
         console.print(f"[Orch] Received {message.get('type')} {message.get('task_id')} from {message.get('from_agent')}")
         console.print("[Orch] Sending task to Pi worker session...")
 
+    await mark_message_status(client, config, str(message["message_id"]), "RUNNING")
     run_result: PiRunResult = await active_connector.run_worker_prompt(prompt, timeout_seconds)
     reply = build_reply(message, config, run_result)
     response = await client.post(

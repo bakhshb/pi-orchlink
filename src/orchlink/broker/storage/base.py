@@ -30,6 +30,14 @@ class MessageStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def update_message_status(self, message_id: str, status: str) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def cancel_work(self, item_id: str, reason: str = "") -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
     async def close_conversation(self, conversation_id: str, message: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
 
