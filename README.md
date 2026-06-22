@@ -19,11 +19,9 @@ you → lead Pi → work Pi → lead Pi → you
 
 ## Demo
 
-This demo video is baked at 1.5x speed. GitHub README videos cannot force playback speed by setting an attribute.
+This GIF shows the full demo at 1.5x speed.
 
-<video src="media-1.5x.mp4" controls muted></video>
-
-If the video does not show in your browser, open it here: [media-1.5x.mp4](media-1.5x.mp4).
+![Pi Orchlink demo](media-demo.gif)
 
 ## What you need to know
 
