@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 APP_NAME="orchlink"
-DEFAULT_REPO_URL="https://github.com/bakhshb/orchlink.git"
+DEFAULT_REPO_URL="https://github.com/bakhshb/pi-orchlink.git"
 DEFAULT_REF="main"
 
 INSTALL_DIR="${ORCHLINK_INSTALL_DIR:-$HOME/.local/share/orchlink}"
@@ -37,7 +37,7 @@ Orchlink installer
 
 Usage:
   install.sh [options]
-  curl -fsSL https://raw.githubusercontent.com/bakhshb/orchlink/main/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/bakhshb/pi-orchlink/main/install.sh | bash
 
 Options:
   --repo URL       Git repository to install from. Default: $DEFAULT_REPO_URL
