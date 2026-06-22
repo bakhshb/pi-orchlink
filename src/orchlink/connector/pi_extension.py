@@ -49,22 +49,16 @@ Transcript preview:
 ${payload.transcript_preview || ""}
 
 Guidance:
-- Reply in a conversational style, like a teammate in chat.
-- Keep the reply short unless the lead asks for depth.
-- Challenge weak assumptions.
-- Compare options.
-- Identify risks.
-- Recommend a practical decision.
-- Do not edit files.
-- Do not run implementation.
-- Do not expand scope.
-- If asked for a repo opinion, do not read every file. Use current context and a few high-signal files if useful. Ask before doing a broad scan.
-- Do not dump a full audit for a broad conversational prompt.
-- Talk Mode stops when it has produced one of: clear decision, next task, blocker, max rounds, timeout, or no new value.
-- If a stop condition is reached, say it plainly in conversational text.
-- Otherwise end with one sharp follow-up question that would move the conversation forward.
+- Put TYPE: CHAT_REPLY first, then answer conversationally in 2-5 short chat sentences.
+- Answer the lead's latest question first.
+- Challenge weak assumptions. Do not agree by default.
+- Name one risk, disagreement, or assumption before accepting the lead's view, unless there is truly no meaningful objection.
+- Recommend a practical decision, or ask one direct follow-up question if the decision is not ready.
+- Do not edit files, run implementation, expand scope, use headings, or write a long audit.
+- For broad repo opinions, do not read every file; use current context and a few high-signal files if useful. Ask before a broad scan.
+- If you hit a stop condition, say it plainly: clear decision, next task, blocker, max rounds, timeout, or no new value.
 
-Put this routing line first, then answer conversationally. Do not use headings or a long checklist unless the lead asked for them:
+Required first line:
 
 TYPE: CHAT_REPLY
 `;
@@ -100,12 +94,12 @@ DELIVERY:
 ${message.delivery || "async"}
 
 Rules:
-- Work only on this task.
-- Do not expand scope.
-- Do not edit forbidden files.
-- If MODE is PLAN, inspect/propose only.
-- If MODE is REVIEW, inspect/report only.
-- If MODE is DO, implement only inside allowed scope.
+- Work only on this task. Never edit forbidden files or expand scope.
+- If MODE is PLAN, inspect and propose only. No edits.
+- If MODE is REVIEW, inspect and report only. No edits unless the lead explicitly allows them.
+- If MODE is DO, implement only inside the allowed scope.
+- Return BLOCKER with specific questions if the request is unclear.
+- If implementation is allowed, run relevant tests.
 - Do not commit unless explicitly allowed.
 
 Required response format:
@@ -145,11 +139,15 @@ ${summary}
 
 Talk Mode should stop only when it has produced one of these: clear decision, next task, blocker, max rounds, timeout, or no new value.
 
-If a stop condition has not been reached and Turn is less than Max turns, send a short follow-up, one question or one idea:
-orch say ${message.conversation_id || "<conversation_id>"} -m "<one short follow-up>"
+Be a critical thinker. Decide whether to accept, reject, or challenge the worker's point. Do not agree just to move on.
 
-If a stop condition has been reached, close it explicitly:
-orch close ${message.conversation_id || "<conversation_id>"} -m "<decision, next task, blocker, or stop reason>"
+If the worker asked a direct question, answer it explicitly in your next orch say before moving to another point. Do not ignore worker questions.
+
+If a stop condition has not been reached and Turn is less than Max turns, send a short follow-up, one question or one idea:
+orch say ${message.conversation_id || "<conversation_id>"} -m "<answer the worker question, then one short follow-up>"
+
+If a stop condition has been reached, close it explicitly with a compact record:
+orch close ${message.conversation_id || "<conversation_id>"} -m "Decision: ... Rationale: ... Dissent/risk accepted: ... Next step: ... Owner: ... Human approval needed: yes/no"
 
 Only summarize to the user after you close the conversation or have a clear reason not to continue.`;
   }

@@ -40,22 +40,16 @@ Transcript preview:
 {payload.get('transcript_preview') or ''}
 
 Guidance:
-- Reply in a conversational style, like a teammate in chat.
-- Keep the reply short unless the lead asks for depth.
-- Challenge weak assumptions.
-- Compare options.
-- Identify risks.
-- Recommend a practical decision.
-- Do not edit files.
-- Do not run implementation.
-- Do not expand scope.
-- If asked for a repo opinion, do not read every file. Use current context and a few high-signal files if useful. Ask before doing a broad scan.
-- Do not dump a full audit for a broad conversational prompt.
-- Talk Mode stops when it has produced one of: clear decision, next task, blocker, max rounds, timeout, or no new value.
-- If a stop condition is reached, say it plainly in conversational text.
-- Otherwise end with one sharp follow-up question that would move the conversation forward.
+- Put TYPE: CHAT_REPLY first, then answer conversationally in 2-5 short chat sentences.
+- Answer the lead's latest question first.
+- Challenge weak assumptions. Do not agree by default.
+- Name one risk, disagreement, or assumption before accepting the lead's view, unless there is truly no meaningful objection.
+- Recommend a practical decision, or ask one direct follow-up question if the decision is not ready.
+- Do not edit files, run implementation, expand scope, use headings, or write a long audit.
+- For broad repo opinions, do not read every file; use current context and a few high-signal files if useful. Ask before a broad scan.
+- If you hit a stop condition, say it plainly: clear decision, next task, blocker, max rounds, timeout, or no new value.
 
-Put this routing line first, then answer conversationally. Do not use headings or a long checklist unless the lead asked for them:
+Required first line:
 
 TYPE: CHAT_REPLY
 """
@@ -104,15 +98,13 @@ DELIVERY:
 {delivery}
 
 Rules:
-- Work only on this task.
-- Do not expand scope.
-- Do not edit forbidden files.
-- If MODE is PLAN, inspect/propose only.
-- If MODE is REVIEW, inspect/report only.
-- If MODE is DO, implement only inside allowed scope.
-- Do not commit unless explicitly allowed.
-- If the request is unclear, return BLOCKER with specific questions.
+- Work only on this task. Never edit forbidden files or expand scope.
+- If MODE is PLAN, inspect and propose only. No edits.
+- If MODE is REVIEW, inspect and report only. No edits unless the lead explicitly allows them.
+- If MODE is DO, implement only inside the allowed scope.
+- Return BLOCKER with specific questions if the request is unclear.
 - If implementation is allowed, run relevant tests.
+- Do not commit unless explicitly allowed.
 
 Required response format:
 
