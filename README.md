@@ -245,12 +245,13 @@ You normally do not need these. The lead agent uses them when it coordinates wit
 | `orch talk work -m "..." -r 6` | Start a short discussion with work for up to 6 lead↔worker rounds. |
 | `orch say C001 -m "..."` | Continue a Talk Mode conversation. |
 | `orch close C001 -m "..."` | Close Talk Mode with a decision. |
-| `orch cancel T002 -m "..."` | Cancel stuck or no-longer-needed work. |
+| `orch cancel T002 -m "..."` | Mark stuck/no-longer-needed broker work CANCELLED. This unblocks Orchlink but cannot kill an already-running Pi tool or shell process. |
 | `orch jobs` | Show recent work. |
 | `orch idle` | Check whether work is busy; shows latest worker activity when available. |
-| `orch peek T002` | Show recent worker heartbeat/tool activity for a running task. |
-| `orch get T002` | Read a task result. |
-| `orch wait T002` | Wait for a task result and print worker activity while waiting. This does not cancel the task if the wait times out. |
+| `orch peek T002` | Show recent worker heartbeat/tool activity for a running task via `/v1/tasks/{task_id}/activity`. |
+| `orch task T002` | Show live broker status, route, and latest activity for a task. |
+| `orch get T002` | Read a completed task result. |
+| `orch wait T002` | Wait for that exact task result and print worker activity while waiting. This does not cancel the task if the wait times out. |
 
 For big tasks, give work more time when sending the task:
 
@@ -262,8 +263,14 @@ Debug-only commands:
 
 | Command | Use |
 | --- | --- |
-| `orch watch` | Watch broker events, including worker activity heartbeats/tool calls. |
+| `orch watch` | Watch broker events, including worker activity heartbeats/tool calls. Lifecycle lines are labeled QUEUED, DELIVERED, or SETTLED. |
 | `orch broker run --host 127.0.0.1 --port 8787` | Run the broker by hand. |
+
+For long sessions, filter status output instead of dumping everything:
+
+```bash
+orch status --task T010 --since-id 120 --limit 20
+```
 
 ## Configuration
 

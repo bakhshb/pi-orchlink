@@ -211,11 +211,13 @@ def test_activity_endpoint_marks_task_running_and_lists_activity():
     )
     task_response = client.get("/v1/tasks/T123?project_id=demo", headers=auth_headers())
     activity_response = client.get("/v1/activity?item_id=T123&project_id=demo", headers=auth_headers())
+    task_activity_response = client.get("/v1/tasks/T123/activity?project_id=demo", headers=auth_headers())
 
     assert response.json() == {"status": "recorded", "activity_id": 1}
     assert task_response.json()["status"] == "RUNNING"
     assert task_response.json()["job"]["last_activity_tool"] == "bash"
     assert activity_response.json()["activity"][0]["detail"] == "rg organization_id"
+    assert task_activity_response.json()["activity"][0]["task_id"] == "T123"
 
 
 def test_get_and_wait_task_result():
@@ -340,6 +342,89 @@ def test_get_next_returns_empty_when_no_message_arrives():
 
     assert response.status_code == 200
     assert response.json() == {"status": "empty"}
+
+
+def test_cancel_completed_task_reports_terminal_status():
+    client = make_client()
+    message = {
+        "protocol": "orch-a2a-v1",
+        "message_id": "msg-cancel-done",
+        "correlation_id": "req-cancel-done",
+        "project_id": "demo",
+        "conversation_id": "demo-tasks",
+        "task_id": "T-DONE",
+        "from_agent": "demo.lead",
+        "to_agent": "demo.work",
+        "type": "TASK",
+        "status": "PENDING",
+        "turn": 1,
+        "max_turns": 6,
+        "requires_reply": True,
+        "timeout_seconds": 1800,
+        "delivery": "async",
+        "payload": {"mode": "PLAN", "intent": "Return result."},
+    }
+    reply = {
+        **message,
+        "message_id": "reply-cancel-done",
+        "from_agent": "demo.work",
+        "to_agent": "demo.lead",
+        "type": "RESULT",
+        "status": "COMPLETED",
+        "requires_reply": False,
+        "payload": {"summary": "Done."},
+    }
+    client.post("/v1/messages/send", headers=auth_headers(), json=message)
+    client.post("/v1/messages/msg-cancel-done/reply", headers=auth_headers(), json=reply)
+
+    response = client.post("/v1/jobs/T-DONE/cancel", headers=auth_headers(), json={"project_id": "demo"})
+
+    assert response.status_code == 404
+    assert "already DONE" in response.json()["detail"]
+
+
+def test_status_filters_task_and_events_since():
+    client = make_client()
+    first = {
+        "protocol": "orch-a2a-v1",
+        "message_id": "msg-status-1",
+        "correlation_id": "req-status-1",
+        "project_id": "demo",
+        "conversation_id": "demo-tasks",
+        "task_id": "T010",
+        "from_agent": "demo.lead",
+        "to_agent": "demo.work",
+        "type": "TASK",
+        "status": "PENDING",
+        "turn": 1,
+        "max_turns": 6,
+        "requires_reply": True,
+        "timeout_seconds": 1800,
+        "delivery": "async",
+        "payload": {"mode": "PLAN", "intent": "One."},
+    }
+    second = {**first, "message_id": "msg-status-2", "correlation_id": "req-status-2", "task_id": "T011", "payload": {"mode": "PLAN", "intent": "Two."}}
+    reply = {
+        **first,
+        "message_id": "reply-status-1",
+        "from_agent": "demo.work",
+        "to_agent": "demo.lead",
+        "type": "RESULT",
+        "status": "COMPLETED",
+        "requires_reply": False,
+        "payload": {"summary": "Done."},
+    }
+    client.post("/v1/messages/send", headers=auth_headers(), json=first)
+    client.post("/v1/messages/msg-status-1/reply", headers=auth_headers(), json=reply)
+    since = client.get("/v1/events", headers=auth_headers()).json()["last_event_id"]
+    client.post("/v1/messages/send", headers=auth_headers(), json=second)
+
+    response = client.get(f"/v1/status?project_id=demo&task_id=T011&since={since}&limit=10", headers=auth_headers())
+    body = response.json()
+
+    assert response.status_code == 200
+    assert [job["task_id"] for job in body["jobs"]] == ["T011"]
+    assert all(event.get("task_id") == "T011" for event in body["recent_events"])
 
 
 def test_status_reports_basic_counts():

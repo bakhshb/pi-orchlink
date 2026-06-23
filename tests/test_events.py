@@ -93,6 +93,20 @@ def test_format_event_includes_chat_and_task_context():
     assert "work ACTIVITY T002 tool_call" in activity
     assert "bash: rg organization_id" in activity
 
+    settled = format_event(
+        {
+            "time": "2026-06-20T10:22:01+00:00",
+            "type": "reply_received",
+            "from_agent": "demo.work",
+            "to_agent": "demo.lead",
+            "message_type": "RESULT",
+            "task_id": "T002",
+            "status": "DONE",
+            "preview": "Done.",
+        }
+    )
+    assert "work → lead SETTLED RESULT T002 DONE" in settled
+
 
 def test_events_endpoint_shows_request_reply_flow():
     async def run():

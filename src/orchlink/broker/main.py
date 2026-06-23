@@ -162,6 +162,15 @@ def create_app(
     ) -> dict[str, Any]:
         return {"activity": await message_store.list_activity(item_id=item_id, limit=limit, project_id=project_id)}
 
+    @secure_router.get("/tasks/{task_id}/activity")
+    async def task_activity(
+        task_id: str,
+        limit: int = Query(default=20, ge=1, le=100),
+        project_id: str | None = Query(default=None),
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        return {"task_id": task_id, "activity": await message_store.list_activity(item_id=task_id, limit=limit, project_id=project_id)}
+
     @secure_router.get("/jobs")
     async def jobs(
         limit: int = Query(default=50, ge=1, le=500),
@@ -190,6 +199,9 @@ def create_app(
     @secure_router.get("/status")
     async def status(
         project_id: str | None = Query(default=None),
+        task_id: str | None = Query(default=None),
+        since: int = Query(default=0, ge=0),
+        limit: int = Query(default=20, ge=1, le=500),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
         agents = await message_store.list_agents()
@@ -197,8 +209,12 @@ def create_app(
             agents = [agent for agent in agents if str(agent.get("project_id") or "default") == project_id]
         active_messages = await message_store.list_active_messages(project_id=project_id)
         conversations = await message_store.list_conversations(project_id=project_id)
-        jobs = await message_store.list_jobs(limit=20, project_id=project_id)
-        events = await message_store.list_events(limit=20, project_id=project_id)
+        jobs = await message_store.list_jobs(limit=500 if task_id is not None else limit, project_id=project_id)
+        events = await message_store.list_events(since=since, limit=500 if task_id is not None else limit, project_id=project_id)
+        if task_id is not None:
+            active_messages = [item for item in active_messages if str(item.get("task_id") or "") == task_id]
+            jobs = [item for item in jobs if str(item.get("task_id") or "") == task_id][-limit:]
+            events = [item for item in events if str(item.get("task_id") or "") == task_id][-limit:]
         pending_reply_count = 0
         count_pending = getattr(message_store, "pending_reply_count", None)
         if count_pending is not None:

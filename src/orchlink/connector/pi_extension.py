@@ -398,7 +398,7 @@ export default function (pi: ExtensionAPI) {
       void checkCurrentTaskCancellation()
         .catch((error) => console.error(`[orchlink] cancel check failed: ${error?.message || error}`))
         .finally(() => {
-          if (currentTask && !cancelNoticeSent) scheduleCancelCheck(5000);
+          if (currentTask && !cancelNoticeSent) scheduleCancelCheck(1000);
         });
     }, delayMs);
   }
@@ -463,7 +463,7 @@ export default function (pi: ExtensionAPI) {
     });
     void postCurrentActivity("started", "Worker accepted the task.", { phase: "started" });
     scheduleActivityHeartbeat(1000);
-    scheduleCancelCheck(5000);
+    scheduleCancelCheck(1000);
   });
 
   pi.on("tool_call", async (event) => {
@@ -483,6 +483,7 @@ export default function (pi: ExtensionAPI) {
       phase: failed ? "tool_error" : "tool_result",
       tool_name: toolName,
     });
+    void checkCurrentTaskCancellation().catch((error) => console.error(`[orchlink] cancel check failed: ${error?.message || error}`));
   });
 
   pi.on("message_end", async (event, ctx) => {

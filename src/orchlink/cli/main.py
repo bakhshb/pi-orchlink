@@ -99,8 +99,15 @@ def register_project_role_sync(config: dict[str, Any], role: str) -> dict[str, A
     return asyncio.run(register_project_role(config, role))
 
 
-def fetch_status_sync(url: str, api_key: str, project_id: str | None = None) -> dict[str, Any]:
-    return asyncio.run(fetch_status(url, api_key, project_id=project_id))
+def fetch_status_sync(
+    url: str,
+    api_key: str,
+    project_id: str | None = None,
+    task_id: str | None = None,
+    since: int = 0,
+    limit: int = 20,
+) -> dict[str, Any]:
+    return asyncio.run(fetch_status(url, api_key, project_id=project_id, task_id=task_id, since=since, limit=limit))
 
 
 def fetch_events_sync(url: str, api_key: str, since: int = 0, limit: int = 50, project_id: str | None = None) -> dict[str, Any]:
@@ -135,6 +142,10 @@ def activity_query(config: dict[str, Any], item_id: str | None = None, limit: in
     if item_id:
         path += f"&item_id={quote(item_id, safe='')}"
     return path
+
+
+def task_activity_query(config: dict[str, Any], task_id: str, limit: int = 10) -> str:
+    return f"/v1/tasks/{quote(task_id, safe='')}/activity?limit={limit}{project_query(config, '&')}"
 
 
 def parse_iso_time(value: Any) -> datetime | None:
@@ -488,9 +499,11 @@ def send(
         print_orch_exception(exc)
         raise typer.Exit(1) from exc
     print_async_guidance(config, worker_id, task_id)
+    if mode == "REVIEW" and allow_async_review:
+        console.print(f"[Orch] Async REVIEW is not a gate. Before acting on it, verify the exact result with: orch wait {task_id}")
 
 
-@app.command()
+@app.command(help="Show live broker status for a task: route, delivery, and latest activity. Use `orch get` for the final result body.")
 def task(task_id: str) -> None:
     config = load_project_or_exit()
     try:
@@ -614,7 +627,7 @@ def talk(
         raise typer.Exit(1) from exc
     console.print(f"[Orch] Started conversation {conversation_id} with {worker_id}.")
     console.print(f"[Orch] Max rounds: {rounds} ({max_turns} turns)")
-    console.print("[Orch] Waiting for worker reply in the lead Pi chat.")
+    console.print("[Orch] Reply will arrive as a [Orchlink] message in the lead Pi chat — no polling needed.")
     console.print("[Orch] This is turn 1, not a final answer. Continue with: orch say " + conversation_id + " -m \"...\"")
     console.print("[Orch] Close only when the discussion reaches a decision: orch close " + conversation_id + " -m \"...\"")
 
@@ -654,7 +667,7 @@ def say(
         print_orch_exception(exc)
         raise typer.Exit(1) from exc
     console.print(f"[Orch] Sent turn {turn}/{max_turns} to work for {conversation_id}.")
-    console.print("[Orch] Waiting for worker reply in the lead Pi chat.")
+    console.print("[Orch] Reply will arrive as a [Orchlink] message in the lead Pi chat — no polling needed.")
     console.print("[Orch] Continue with another orch say if the discussion is not resolved; close when there is a decision.")
 
 
@@ -744,7 +757,12 @@ def peek(
     config = load_project_or_exit()
     try:
         ensure_broker_running(config)
-        body = broker_get_sync(config, activity_query(config, item_id=item_id, limit=limit))
+        try:
+            body = broker_get_sync(config, task_activity_query(config, item_id, limit=limit))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+            body = broker_get_sync(config, activity_query(config, item_id=item_id, limit=limit))
     except (RuntimeError, httpx.HTTPError) as exc:
         console.print(f"[Orch] {exc}")
         raise typer.Exit(1) from exc
@@ -760,7 +778,7 @@ def peek(
         console.print(f"- {format_activity(item)}")
 
 
-@app.command("get")
+@app.command("get", help="Print a completed task result, or a conversation summary for a conversation ID.")
 def get_command(item_id: str) -> None:
     config = load_project_or_exit()
     try:
@@ -805,13 +823,27 @@ def wait_command(
             console.print(f"[Orch] {exc}")
             raise typer.Exit(1) from exc
         if body.get("status") != "WAIT_TIMEOUT":
+            returned_task_id = body.get("task_id")
+            if returned_task_id and str(returned_task_id) != task_id:
+                console.print(f"[Orch] Broker returned result for {returned_task_id} while waiting for {task_id}; ignoring stale response.")
+                raise typer.Exit(1)
             _print_task_body(body)
+            if body.get("status") == "missing":
+                raise typer.Exit(1)
             return
         if not progress:
             _print_task_body(body)
             return
         try:
-            activity_body = broker_get_sync(config, activity_query(config, item_id=task_id, limit=5))
+            activity_body = broker_get_sync(config, task_activity_query(config, task_id, limit=5))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                activity_body = {"activity": []}
+            else:
+                try:
+                    activity_body = broker_get_sync(config, activity_query(config, item_id=task_id, limit=5))
+                except httpx.HTTPError:
+                    activity_body = {"activity": []}
         except httpx.HTTPError:
             activity_body = {"activity": []}
         for activity in activity_body.get("activity", []):
@@ -832,9 +864,10 @@ def cancel(
         ensure_broker_running(config)
         body = broker_post_sync(config, f"/v1/jobs/{item_id}/cancel", {"reason": reason, "project_id": current_project_id(config)})
     except (RuntimeError, httpx.HTTPError) as exc:
-        console.print(f"[Orch] {exc}")
+        print_orch_exception(exc)
         raise typer.Exit(1) from exc
     console.print(f"[Orch] Cancelled {item_id}.")
+    console.print("[Orch] Note: cancel marks broker work CANCELLED and unblocks Orchlink; it cannot kill an already-running Pi tool or shell process.")
     cancelled = body.get("cancelled") or []
     if cancelled:
         console.print(f"[Orch] Messages: {', '.join(str(item) for item in cancelled)}")
@@ -899,8 +932,19 @@ def stop() -> None:
 def status(
     broker_url_option: Annotated[str, typer.Option("--broker-url")] = "http://127.0.0.1:8787",
     api_key: Annotated[str, typer.Option("--api-key")] = "change-me",
+    project_id: Annotated[str | None, typer.Option("--project-id", help="Filter to one project_id.")] = None,
+    task_id: Annotated[str | None, typer.Option("--task", help="Filter jobs/messages/events to one task ID.")] = None,
+    since_id: Annotated[int, typer.Option("--since-id", min=0, help="Only include events after this event ID.")] = 0,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=500, help="Limit jobs and events in status output.")] = 20,
 ) -> None:
-    response = fetch_status_sync(broker_url_option, api_key)
+    response = fetch_status_sync(
+        broker_url_option,
+        api_key,
+        project_id=project_id,
+        task_id=task_id,
+        since=since_id,
+        limit=limit,
+    )
     console.print_json(json.dumps(response))
 
 

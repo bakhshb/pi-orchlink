@@ -1,5 +1,5 @@
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -8,8 +8,21 @@ def _headers(api_key: str) -> dict[str, str]:
     return {"X-API-Key": api_key}
 
 
-async def fetch_status(broker_url: str, api_key: str, project_id: str | None = None) -> dict[str, Any]:
-    path = "/v1/status" if project_id is None else f"/v1/status?project_id={quote(project_id, safe='')}"
+async def fetch_status(
+    broker_url: str,
+    api_key: str,
+    project_id: str | None = None,
+    task_id: str | None = None,
+    since: int = 0,
+    limit: int = 20,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"since": since, "limit": limit}
+    if project_id is not None:
+        params["project_id"] = project_id
+    if task_id is not None:
+        params["task_id"] = task_id
+    query = urlencode(params)
+    path = f"/v1/status?{query}" if query else "/v1/status"
     async with httpx.AsyncClient(base_url=broker_url) as client:
         response = await client.get(path, headers=_headers(api_key))
         response.raise_for_status()
@@ -58,9 +71,20 @@ def format_event(event: dict[str, Any]) -> str:
         task_or_conversation = event.get("task_id") or event.get("conversation_id") or "-"
         return f"[{timestamp}] {from_agent} ACTIVITY {task_or_conversation} {activity_type}\n{preview}" if preview else f"[{timestamp}] {from_agent} ACTIVITY {task_or_conversation} {activity_type}"
 
+    lifecycle = {
+        "message_queued": "QUEUED",
+        "message_delivered": "DELIVERED",
+        "reply_received": "SETTLED",
+        "work_cancelled": "CANCELLED",
+        "timeout": "TIMEOUT",
+        "late_reply_ignored": "IGNORED",
+    }.get(str(event.get("type") or ""), "")
+
     parts = [f"[{timestamp}]", from_agent]
     if to_agent != "-":
         parts.extend(["→", to_agent])
+    if lifecycle:
+        parts.append(lifecycle)
     parts.extend([message_type, str(task_or_conversation or "-")])
     if message_type == "TASK":
         if mode:

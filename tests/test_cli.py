@@ -101,6 +101,8 @@ def test_send_allows_async_review_when_explicit(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert "Sent R002" in result.output
+    assert "verify the exact result" in result.output
+    assert "orch wait R002" in result.output
 
 
 def test_talk_rejects_empty_message():
@@ -130,7 +132,8 @@ def test_talk_creates_conversation(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "Started conversation C001" in result.output
     assert "Max rounds: 6 (12 turns)" in result.output
-    assert "Waiting for worker reply" in result.output
+    assert "Reply will arrive" in result.output
+    assert "polling needed" in result.output
     assert "not a final answer" in result.output
 
 
@@ -240,6 +243,8 @@ def test_cancel_command_posts_cancel(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert called == {"path": "/v1/jobs/T010/cancel", "body": {"reason": "Wrong scope.", "project_id": "demo"}}
     assert "Cancelled T010" in result.output
+    assert "cannot" in result.output
+    assert "already-running Pi tool" in result.output
 
 
 def test_jobs_get_and_wait_commands(monkeypatch, tmp_path):
@@ -279,7 +284,7 @@ def test_wait_prints_worker_activity_during_progress(monkeypatch, tmp_path):
 
     def fake_broker_get_sync(config, path):
         nonlocal wait_calls
-        if path.startswith("/v1/activity?"):
+        if path.startswith("/v1/tasks/T010/activity?"):
             return {
                 "activity": [
                     {
@@ -306,6 +311,25 @@ def test_wait_prints_worker_activity_during_progress(monkeypatch, tmp_path):
     assert "Worker activity" in result.output
     assert "bash: rg users" in result.output
     assert "Done." in result.output
+
+
+def test_wait_rejects_mismatched_task_result(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    def fake_broker_get_sync(config, path):
+        if path.startswith("/v1/tasks/T013/wait"):
+            return {"status": "DONE", "task_id": "T012", "reply": {"type": "RESULT", "payload": {"summary": "stale"}}}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+
+    result = runner.invoke(cli_main.app, ["wait", "T013", "--timeout-seconds", "1"])
+
+    assert result.exit_code == 1
+    assert "waiting for T013" in result.output
+    assert "T012" in result.output
 
 
 def test_get_failed_task_prints_stderr(monkeypatch, tmp_path):
@@ -384,8 +408,7 @@ def test_peek_prints_worker_activity(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
 
     def fake_broker_get_sync(config, path):
-        assert path.startswith("/v1/activity?")
-        assert "item_id=T001" in path
+        assert path.startswith("/v1/tasks/T001/activity?")
         return {
             "activity": [
                 {
@@ -416,7 +439,7 @@ def test_task_command_reports_in_progress(monkeypatch, tmp_path):
     monkeypatch.setattr(
         cli_main,
         "fetch_status_sync",
-        lambda broker_url, api_key, project_id=None: {
+        lambda broker_url, api_key, project_id=None, task_id=None, since=0, limit=20: {
             "active_messages": [
                 {
                     "task_id": "T001",
@@ -566,13 +589,21 @@ def test_doctor_reports_stale_project_skills(monkeypatch, tmp_path):
 
 
 def test_status_command_prints_status(monkeypatch):
-    monkeypatch.setattr(
-        cli_main,
-        "fetch_status_sync",
-        lambda broker_url, api_key: {"broker": "ok", "agent_count": 0},
+    called = {}
+
+    def fake_fetch_status_sync(broker_url, api_key, project_id=None, task_id=None, since=0, limit=20):
+        called.update({"broker_url": broker_url, "api_key": api_key, "project_id": project_id, "task_id": task_id, "since": since, "limit": limit})
+        return {"broker": "ok", "agent_count": 0}
+
+    monkeypatch.setattr(cli_main, "fetch_status_sync", fake_fetch_status_sync)
+
+    result = runner.invoke(
+        cli_main.app,
+        ["status", "--broker-url", "http://broker", "--api-key", "test-key", "--task", "T010", "--since-id", "7", "--limit", "3"],
     )
 
-    result = runner.invoke(cli_main.app, ["status", "--broker-url", "http://broker", "--api-key", "test-key"])
-
     assert result.exit_code == 0
+    assert called["task_id"] == "T010"
+    assert called["since"] == 7
+    assert called["limit"] == 3
     assert '"broker": "ok"' in result.output

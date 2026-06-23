@@ -566,6 +566,28 @@ class MemoryMessageStore(MessageStore):
                 ]
             return selected[-limit:]
 
+    def _inactive_work_message_locked(self, item_id: str, project_id: str | None = None) -> str:
+        for result in self._results_by_task.values():
+            if not self._same_project(result.get("job") or result.get("reply") or result, project_id):
+                continue
+            if str(result.get("task_id") or "") == item_id:
+                return f"No active work found: {item_id} (already {result.get('status', 'DONE')})."
+        for task in self._tasks.values():
+            if not self._same_project(task, project_id):
+                continue
+            if str(task.get("task_id") or "") == item_id:
+                status = str(task.get("status") or "UNKNOWN")
+                if status.upper() in TERMINAL_MESSAGE_STATUSES:
+                    return f"No active work found: {item_id} (already {status})."
+        for conversation in self._conversations.values():
+            if not self._same_project(conversation, project_id):
+                continue
+            if str(conversation.get("conversation_id") or "") == item_id:
+                status = str(conversation.get("status") or "UNKNOWN")
+                if status.upper() != "OPEN":
+                    return f"No active work found: {item_id} (already {status})."
+        return f"No active work found: {item_id}."
+
     async def cancel_work(self, item_id: str, reason: str = "", project_id: str | None = None) -> dict[str, Any]:
         cancelled: list[str] = []
         async with self._lock:
@@ -600,7 +622,7 @@ class MemoryMessageStore(MessageStore):
                         preview=reason or "Conversation cancelled.",
                     )
                     return {"status": "cancelled", "item_id": item_id, "cancelled": [item_id]}
-                raise ValueError(f"No active work found: {item_id}")
+                raise ValueError(self._inactive_work_message_locked(item_id, project_id=project_id))
 
             for message in targets:
                 message["status"] = "CANCELLED"
@@ -712,6 +734,8 @@ class MemoryMessageStore(MessageStore):
             self._expire_timed_out_messages_locked()
             if project_id is not None and task_key in self._results_by_task:
                 return dict(self._results_by_task[task_key])
+            if project_id is not None and task_key not in self._tasks:
+                return {"status": "missing", "task_id": task_id, "error": "Task not found."}
             if project_id is None:
                 matches = [dict(result) for key, result in self._results_by_task.items() if key.endswith(f":{task_id}") or key == task_id]
                 if len(matches) == 1:

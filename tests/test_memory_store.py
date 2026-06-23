@@ -315,6 +315,17 @@ def test_save_reply_queues_reply_for_lead_inbox():
     asyncio.run(run())
 
 
+def test_wait_for_missing_scoped_task_returns_missing():
+    async def run():
+        store = MemoryMessageStore()
+
+        result = await store.wait_for_task("NOPE", timeout_seconds=1, project_id="demo")
+
+        assert result == {"status": "missing", "task_id": "NOPE", "error": "Task not found."}
+
+    asyncio.run(run())
+
+
 def test_wait_for_task_timeout_does_not_mutate_task_status():
     async def run():
         store = MemoryMessageStore()
@@ -340,6 +351,26 @@ def test_hard_timeout_expires_active_work_and_frees_worker_lane():
 
         assert jobs[0]["status"] == "TIMEOUT"
         assert queued == {"status": "queued", "message_id": "msg-0002"}
+
+    asyncio.run(run())
+
+
+def test_cancel_completed_work_reports_terminal_status():
+    async def run():
+        store = MemoryMessageStore()
+        message = task_message(project_id="demo", task_id="DONE-001")
+        reply = reply_message()
+        reply.update({"project_id": "demo", "task_id": "DONE-001", "correlation_id": message["correlation_id"], "payload": {"summary": "Done."}})
+
+        await store.enqueue_message(message)
+        await store.save_reply(message["message_id"], reply)
+
+        try:
+            await store.cancel_work("DONE-001", project_id="demo")
+        except ValueError as exc:
+            assert "already DONE" in str(exc)
+        else:
+            raise AssertionError("cancel should reject completed work")
 
     asyncio.run(run())
 
