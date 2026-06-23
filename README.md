@@ -198,7 +198,7 @@ Run:
 orch doctor
 ```
 
-It checks the project and tells you if `.orch` files are old. Current projects use `.orch/project.yaml`; legacy `orchestrator.yaml` and `worker-backend.yaml` are optional and normally show as `not used`.
+It checks the project-local `.orch` files and tells you if they are old.
 
 If you see this:
 

@@ -1068,14 +1068,9 @@ def monitor(
 def doctor(
     config_dir: Annotated[Path | None, typer.Option("--config-dir")] = None,
 ) -> None:
-    resolved_config_dir = resolve_config_dir(config_dir)
     console.print("Orchlink doctor")
     console.print(f"Package file: {Path(__file__).resolve()}")
     console.print(f"Project root: {PROJECT_ROOT}")
-    console.print(f"Legacy config dir: {resolved_config_dir}")
-    for filename in ("orchestrator.yaml", "worker-backend.yaml"):
-        status_text = "found" if (resolved_config_dir / filename).is_file() else "not used"
-        console.print(f"legacy {filename}: {status_text}")
 
     try:
         config = load_project_config()
