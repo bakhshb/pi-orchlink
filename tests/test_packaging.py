@@ -128,6 +128,22 @@ def test_doctor_reports_config_dir_and_global_cli_guidance(tmp_path):
     assert result.exit_code == 0
     assert "Orchlink doctor" in result.output
     assert str(config_dir) in result.output
-    assert "orchestrator.yaml: found" in result.output
-    assert "worker-backend.yaml: found" in result.output
+    assert "Legacy config dir" in result.output
+    assert "legacy orchestrator.yaml: found" in result.output
+    assert "legacy worker-backend.yaml: found" in result.output
     assert "~/.local/bin/orchlink" in result.output
+
+
+def test_doctor_marks_missing_legacy_configs_as_not_used(tmp_path):
+    from orchlink.cli.main import app
+
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+
+    result = CliRunner().invoke(app, ["doctor", "--config-dir", str(config_dir)])
+
+    assert result.exit_code == 0
+    assert "legacy orchestrator.yaml: not used" in result.output
+    assert "legacy worker-backend.yaml: not used" in result.output
+    assert "orchestrator.yaml: missing" not in result.output
+    assert "worker-backend.yaml: missing" not in result.output

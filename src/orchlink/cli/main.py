@@ -1072,10 +1072,10 @@ def doctor(
     console.print("Orchlink doctor")
     console.print(f"Package file: {Path(__file__).resolve()}")
     console.print(f"Project root: {PROJECT_ROOT}")
-    console.print(f"Config dir: {resolved_config_dir}")
+    console.print(f"Legacy config dir: {resolved_config_dir}")
     for filename in ("orchestrator.yaml", "worker-backend.yaml"):
-        status_text = "found" if (resolved_config_dir / filename).is_file() else "missing"
-        console.print(f"{filename}: {status_text}")
+        status_text = "found" if (resolved_config_dir / filename).is_file() else "not used"
+        console.print(f"legacy {filename}: {status_text}")
 
     try:
         config = load_project_config()
