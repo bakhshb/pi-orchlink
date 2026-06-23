@@ -234,6 +234,8 @@ orch work --new
 
 Use `--new` when you want fresh Pi chats with the latest Orchlink instructions.
 
+For real-session validation beyond unit tests, run the manual smoke plan in [`docs/manual-smoke-test.md`](docs/manual-smoke-test.md).
+
 ## Advanced commands
 
 You normally do not need these. The lead agent uses them when it coordinates with work.
