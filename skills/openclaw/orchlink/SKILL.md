@@ -1,7 +1,7 @@
 ---
 name: orchlink
 description: Use this skill whenever OpenClaw should coordinate with a local Pi worker through Orchlink. This is for acting as the lead agent: start/check the worker lane, send scoped tasks, wait for results, run review gates, inspect worker activity, handle blockers, and avoid cross-project/stale-broker mistakes.
-version: 1.0.0
+version: 1.0.1
 metadata:
   openclaw:
     emoji: "🔗"
@@ -26,6 +26,19 @@ Use shell commands when available. If you do not have shell access, tell the hum
 
 ## Before using Orchlink
 
+First verify the Orchlink CLI exists. Do this before any other `orch` command so you do not dead-end halfway through the workflow:
+
+```bash
+command -v orch
+```
+
+If this prints nothing or fails, stop. Tell the human: "Orchlink CLI is not installed or not on PATH. Install/update Orchlink first, then restart this OpenClaw session." If the human is developing this repo locally, suggest:
+
+```bash
+cd /home/debian/projects/orchlink
+./install.sh
+```
+
 From the target project directory, check setup:
 
 ```bash
@@ -33,7 +46,7 @@ orch doctor
 orch idle
 ```
 
-If `orch doctor` reports stale skills or incompatible broker, follow its instruction. A stale broker can leak old cross-project state; do not continue until fixed.
+If `orch doctor` reports stale skills, missing project config, missing Pi, or incompatible broker, follow its instruction. A stale broker can leak old cross-project state; do not continue until fixed.
 
 If no worker session is running, ask the human to start it in a visible terminal:
 

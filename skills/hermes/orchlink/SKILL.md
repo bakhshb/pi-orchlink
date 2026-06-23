@@ -1,7 +1,7 @@
 ---
 name: orchlink
 description: Use this skill whenever Hermes should act as the lead agent for a local Pi worker through Orchlink. It covers sending scoped worker tasks, blocking review gates, async wait/get flows, worker activity checks, blockers, project scoping, stale broker recovery, and safe cancellation semantics.
-version: 1.0.0
+version: 1.0.1
 platforms: [linux, macos]
 metadata:
   hermes:
@@ -27,12 +27,27 @@ Use terminal commands when available. If the current Hermes surface does not pro
 
 ## Start/check workflow
 
+First verify the Orchlink CLI exists. Do this before any other `orch` command so you do not dead-end halfway through the workflow:
+
+```bash
+command -v orch
+```
+
+If this prints nothing or fails, stop. Tell the human: "Orchlink CLI is not installed or not on PATH. Install/update Orchlink first, then restart this Hermes session." If the human is developing this repo locally, suggest:
+
+```bash
+cd /home/debian/projects/orchlink
+./install.sh
+```
+
 From the target project directory:
 
 ```bash
 orch doctor
 orch idle
 ```
+
+If `orch doctor` reports stale skills, missing project config, missing Pi, or incompatible broker, follow its instruction before continuing.
 
 If the worker is not running, ask the human to start a visible worker session:
 
