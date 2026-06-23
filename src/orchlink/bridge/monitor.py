@@ -4,8 +4,11 @@ from urllib.parse import quote, urlencode
 import httpx
 
 
-def _headers(api_key: str) -> dict[str, str]:
-    return {"X-API-Key": api_key}
+def _headers(api_key: str, project_id: str | None = None) -> dict[str, str]:
+    headers = {"X-API-Key": api_key}
+    if project_id is not None:
+        headers["X-Orchlink-Project-ID"] = project_id
+    return headers
 
 
 async def fetch_status(
@@ -24,7 +27,7 @@ async def fetch_status(
     query = urlencode(params)
     path = f"/v1/status?{query}" if query else "/v1/status"
     async with httpx.AsyncClient(base_url=broker_url) as client:
-        response = await client.get(path, headers=_headers(api_key))
+        response = await client.get(path, headers=_headers(api_key, project_id=project_id))
         response.raise_for_status()
         return response.json()
 
@@ -40,7 +43,7 @@ async def fetch_events(
     async with httpx.AsyncClient(base_url=broker_url) as client:
         response = await client.get(
             f"/v1/events?since={since}&limit={limit}{project_query}",
-            headers=_headers(api_key),
+            headers=_headers(api_key, project_id=project_id),
         )
         response.raise_for_status()
         return response.json()

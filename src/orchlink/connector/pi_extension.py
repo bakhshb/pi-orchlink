@@ -220,6 +220,7 @@ async function postJson(path: string, body: any): Promise<any> {
     headers: {
       "content-type": "application/json",
       "x-api-key": env("ORCHLINK_API_KEY", "change-me"),
+      "x-orchlink-project-id": env("ORCHLINK_PROJECT_ID", "default"),
     },
     body: JSON.stringify(body),
   });
@@ -230,7 +231,10 @@ async function postJson(path: string, body: any): Promise<any> {
 async function getJson(path: string): Promise<any> {
   const baseUrl = env("ORCHLINK_BROKER_URL", "http://127.0.0.1:8787").replace(/\/$/, "");
   const response = await fetch(`${baseUrl}${path}`, {
-    headers: { "x-api-key": env("ORCHLINK_API_KEY", "change-me") },
+    headers: {
+      "x-api-key": env("ORCHLINK_API_KEY", "change-me"),
+      "x-orchlink-project-id": env("ORCHLINK_PROJECT_ID", "default"),
+    },
   });
   if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
   return response.json();
@@ -268,6 +272,7 @@ export default function (pi: ExtensionAPI) {
   let activityTimer: ReturnType<typeof setTimeout> | undefined;
   let pendingTask: OrchMessage | undefined;
   let currentTask: OrchMessage | undefined;
+  let abortCurrentTurn: (() => void) | undefined;
   let cancelNoticeSent = false;
   let activityUnsupported = false;
   const recoveryGraceMs = Math.max(1000, Number(env("ORCHLINK_RECOVERABLE_ERROR_GRACE_MS", "180000")) || 180000);
@@ -303,6 +308,25 @@ export default function (pi: ExtensionAPI) {
   function clearActivityHeartbeat() {
     if (activityTimer) clearTimeout(activityTimer);
     activityTimer = undefined;
+  }
+
+  function rememberAbortContext(ctx: any) {
+    if (typeof ctx?.abort === "function") {
+      abortCurrentTurn = () => ctx.abort();
+    }
+  }
+
+  function clearAbortContext() {
+    abortCurrentTurn = undefined;
+  }
+
+  function abortIfPossible(ctx?: any) {
+    try {
+      if (typeof ctx?.abort === "function") ctx.abort();
+      else abortCurrentTurn?.();
+    } catch (error: any) {
+      console.error(`[orchlink] abort failed: ${error?.message || error}`);
+    }
   }
 
   async function postCurrentActivity(activityType: string, detail: string, extra: OrchMessage = {}) {
@@ -367,6 +391,7 @@ export default function (pi: ExtensionAPI) {
       currentTask = undefined;
       clearCancelCheck();
       clearActivityHeartbeat();
+      clearAbortContext();
       void sendReply(task, assistantMessage, ctx);
     }, recoveryGraceMs);
   }
@@ -382,23 +407,26 @@ export default function (pi: ExtensionAPI) {
     return String(conversation?.status || "").toUpperCase();
   }
 
-  async function checkCurrentTaskCancellation() {
-    if (stopped || !currentTask || cancelNoticeSent) return;
+  async function checkCurrentTaskCancellation(ctx?: any): Promise<boolean> {
+    if (stopped || !currentTask || cancelNoticeSent) return false;
     const status = await currentWorkStatus(currentTask);
-    if (!["CANCELLED", "TIMEOUT"].includes(status)) return;
+    if (!["CANCELLED", "TIMEOUT"].includes(status)) return false;
     cancelNoticeSent = true;
     const label = currentTask.task_id || currentTask.conversation_id || "current work";
+    void postCurrentActivity("cancelled", `Broker marked ${label} ${status}; aborting current Pi turn.`, { phase: "cancelled" });
+    abortIfPossible(ctx);
     pi.sendUserMessage(`[Orchlink] ${label} is ${status}. Stop this work now, do not make more edits, and briefly acknowledge the cancellation.`, { deliverAs: "steer" });
+    return true;
   }
 
-  function scheduleCancelCheck(delayMs = 5000) {
+  function scheduleCancelCheck(delayMs = 5000, ctx?: any) {
     clearCancelCheck();
     if (stopped || role !== "work" || !currentTask || cancelNoticeSent) return;
     cancelTimer = setTimeout(() => {
-      void checkCurrentTaskCancellation()
+      void checkCurrentTaskCancellation(ctx)
         .catch((error) => console.error(`[orchlink] cancel check failed: ${error?.message || error}`))
         .finally(() => {
-          if (currentTask && !cancelNoticeSent) scheduleCancelCheck(1000);
+          if (currentTask && !cancelNoticeSent) scheduleCancelCheck(1000, ctx);
         });
     }, delayMs);
   }
@@ -451,23 +479,28 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  pi.on("input", async (event) => {
+  pi.on("input", async (event, ctx) => {
     if (role !== "work" || !pendingTask) return;
     if (event.source !== "extension") return;
     if (!String(event.text || "").startsWith("You are the worker coding agent in")) return;
     currentTask = pendingTask;
     pendingTask = undefined;
+    rememberAbortContext(ctx);
     cancelNoticeSent = false;
     void markMessageStatus(String(currentTask.message_id || ""), "RUNNING").catch((error) => {
       console.error(`[orchlink] status update failed: ${error?.message || error}`);
     });
     void postCurrentActivity("started", "Worker accepted the task.", { phase: "started" });
     scheduleActivityHeartbeat(1000);
-    scheduleCancelCheck(1000);
+    scheduleCancelCheck(1000, ctx);
   });
 
-  pi.on("tool_call", async (event) => {
+  pi.on("tool_call", async (event, ctx) => {
     if (role !== "work" || !currentTask) return;
+    rememberAbortContext(ctx);
+    if (await checkCurrentTaskCancellation(ctx)) {
+      return { block: true, reason: "Orchlink cancelled this work before the tool call started." };
+    }
     const toolName = String((event as any).toolName || "tool");
     void postCurrentActivity("tool_call", summarizeToolInput(toolName, (event as any).input), {
       phase: "tool_call",
@@ -475,15 +508,16 @@ export default function (pi: ExtensionAPI) {
     });
   });
 
-  pi.on("tool_result", async (event) => {
+  pi.on("tool_result", async (event, ctx) => {
     if (role !== "work" || !currentTask) return;
+    rememberAbortContext(ctx);
     const toolName = String((event as any).toolName || "tool");
     const failed = Boolean((event as any).isError);
     void postCurrentActivity("tool_result", failed ? "Tool finished with error." : "Tool finished.", {
       phase: failed ? "tool_error" : "tool_result",
       tool_name: toolName,
     });
-    void checkCurrentTaskCancellation().catch((error) => console.error(`[orchlink] cancel check failed: ${error?.message || error}`));
+    void checkCurrentTaskCancellation(ctx).catch((error) => console.error(`[orchlink] cancel check failed: ${error?.message || error}`));
   });
 
   pi.on("message_end", async (event, ctx) => {
@@ -502,6 +536,7 @@ export default function (pi: ExtensionAPI) {
     currentTask = undefined;
     clearCancelCheck();
     clearActivityHeartbeat();
+    clearAbortContext();
     await sendReply(task, event.message, ctx);
   });
 
@@ -511,6 +546,7 @@ export default function (pi: ExtensionAPI) {
     clearCancelCheck();
     clearRecoveryTimer();
     clearActivityHeartbeat();
+    clearAbortContext();
   });
 }
 '''

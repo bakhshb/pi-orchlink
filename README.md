@@ -245,8 +245,8 @@ You normally do not need these. The lead agent uses them when it coordinates wit
 | `orch talk work -m "..." -r 6` | Start a short discussion with work for up to 6 lead↔worker rounds. |
 | `orch say C001 -m "..."` | Continue a Talk Mode conversation. |
 | `orch close C001 -m "..."` | Close Talk Mode with a decision. |
-| `orch cancel T002 -m "..."` | Mark stuck/no-longer-needed broker work CANCELLED. This unblocks Orchlink but cannot kill an already-running Pi tool or shell process. |
-| `orch jobs` | Show recent work. |
+| `orch cancel T002 -m "..."` | Mark stuck/no-longer-needed broker work CANCELLED and ask Pi to abort the current turn. Pi can stop before the next tool call; an already-running shell command may only stop if Pi's abort reaches it. |
+| `orch jobs` | Show recent work for the current project ID. |
 | `orch idle` | Check whether work is busy; shows latest worker activity when available. |
 | `orch peek T002` | Show recent worker heartbeat/tool activity for a running task via `/v1/tasks/{task_id}/activity`. |
 | `orch task T002` | Show live broker status, route, and latest activity for a task. |
@@ -266,10 +266,19 @@ Debug-only commands:
 | `orch watch` | Watch broker events, including worker activity heartbeats/tool calls. Lifecycle lines are labeled QUEUED, DELIVERED, or SETTLED. |
 | `orch broker run --host 127.0.0.1 --port 8787` | Run the broker by hand. |
 
+`orch get` and `orch wait` refuse cross-project or unscoped task results. If you see a stale-broker error, stop the old broker and restart fresh sessions:
+
+```bash
+orch stop
+orch lead --new
+orch work --new
+```
+
 For long sessions, filter status output instead of dumping everything:
 
 ```bash
 orch status --task T010 --since-id 120 --limit 20
+# use --all-projects only for broker debugging
 ```
 
 ## Configuration

@@ -24,6 +24,7 @@ from orchlink.bridge.ask import (
     start_talk_sync,
 )
 from orchlink.bridge.monitor import fetch_events, fetch_status, format_event
+from orchlink.broker.main import BROKER_CAPABILITIES, VERSION as BROKER_VERSION
 from orchlink.connector.pi_connector import PiConnector, PiConnectorError
 from orchlink.project.config import (
     ProjectConfigError,
@@ -116,14 +117,14 @@ def fetch_events_sync(url: str, api_key: str, since: int = 0, limit: int = 50, p
 
 def broker_get_sync(config: dict[str, Any], path: str) -> dict[str, Any]:
     with httpx.Client(base_url=broker_url(config), timeout=None) as client:
-        response = client.get(path, headers={"X-API-Key": broker_api_key(config)})
+        response = client.get(path, headers=broker_headers(config))
         response.raise_for_status()
         return response.json()
 
 
 def broker_post_sync(config: dict[str, Any], path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
     with httpx.Client(base_url=broker_url(config), timeout=None) as client:
-        response = client.post(path, headers={"X-API-Key": broker_api_key(config)}, json=body or {})
+        response = client.post(path, headers=broker_headers(config), json=body or {})
         response.raise_for_status()
         return response.json()
 
@@ -135,6 +136,10 @@ def current_project_id(config: dict[str, Any]) -> str:
 def project_query(config: dict[str, Any], prefix: str = "?") -> str:
     project_id = quote(current_project_id(config), safe="")
     return f"{prefix}project_id={project_id}"
+
+
+def broker_headers(config: dict[str, Any]) -> dict[str, str]:
+    return {"X-API-Key": broker_api_key(config), "X-Orchlink-Project-ID": current_project_id(config)}
 
 
 def activity_query(config: dict[str, Any], item_id: str | None = None, limit: int = 10) -> str:
@@ -203,6 +208,30 @@ def job_activity_line(job: dict[str, Any]) -> str:
     return format_activity(activity)
 
 
+def task_body_project_id(body: dict[str, Any]) -> str | None:
+    for source in (body, body.get("job") or {}, body.get("reply") or {}):
+        value = source.get("project_id") if isinstance(source, dict) else None
+        if value:
+            return str(value)
+    return None
+
+
+def validate_task_body_project(config: dict[str, Any], body: dict[str, Any], task_id: str) -> None:
+    status = str(body.get("status") or "").upper()
+    if status in {"WAIT_TIMEOUT", "MISSING"}:
+        return
+    expected = current_project_id(config)
+    actual = task_body_project_id(body)
+    if actual == expected:
+        return
+    if actual:
+        console.print(f"[Orch] Refusing cross-project result for {task_id}: broker returned project {actual}, current project is {expected}.")
+    else:
+        console.print(f"[Orch] Refusing unscoped result for {task_id}: broker response has no project_id. The broker is likely stale.")
+    console.print("[Orch] Run: orch stop && orch lead --new && orch work --new")
+    raise typer.Exit(1)
+
+
 def next_conversation_id(config: dict[str, Any]) -> str:
     try:
         body = broker_get_sync(config, f"/v1/jobs?limit=500{project_query(config, '&')}")
@@ -254,12 +283,37 @@ def run_update(ref: str, reinstall_only: bool = False) -> None:
             old_alias.unlink()
 
 
-def broker_health(url: str) -> bool:
+def broker_info(url: str) -> dict[str, Any] | None:
     try:
         response = httpx.get(f"{url.rstrip('/')}/health", timeout=0.5)
-        return response.status_code == 200 and response.json().get("status") == "ok"
+        if response.status_code != 200:
+            return None
+        body = response.json()
+        return body if body.get("status") == "ok" and body.get("service") == "orchlink" else None
     except Exception:
+        return None
+
+
+def broker_health(url: str) -> bool:
+    return broker_info(url) is not None
+
+
+def broker_compatible(info: dict[str, Any] | None) -> bool:
+    if not info:
         return False
+    capabilities = set(info.get("capabilities") or [])
+    return capabilities.issuperset(set(BROKER_CAPABILITIES))
+
+
+def stale_broker_message(url: str, info: dict[str, Any] | None) -> str:
+    version = str((info or {}).get("version") or "unknown")
+    missing = sorted(set(BROKER_CAPABILITIES) - set((info or {}).get("capabilities") or []))
+    missing_text = f" Missing capabilities: {', '.join(missing)}." if missing else ""
+    return (
+        f"Broker at {url} is running an older incompatible Orchlink broker "
+        f"(broker {version}, CLI expects {BROKER_VERSION}).{missing_text} "
+        "Stop the old broker, then restart fresh Pi sessions: orch stop; orch lead --new; orch work --new"
+    )
 
 
 def broker_pid_path(config: dict[str, Any]) -> Path:
@@ -311,8 +365,11 @@ def start_background_broker(config: dict[str, Any]) -> None:
 
     url = broker_url(config)
     for _ in range(50):
-        if broker_health(url):
+        info = broker_info(url)
+        if broker_compatible(info):
             return
+        if info is not None and not broker_compatible(info):
+            raise RuntimeError(stale_broker_message(url, info))
         if process.poll() is not None:
             raise RuntimeError(f"Broker exited during startup. See {log_path}")
         time.sleep(0.1)
@@ -321,8 +378,11 @@ def start_background_broker(config: dict[str, Any]) -> None:
 
 def ensure_broker_running(config: dict[str, Any]) -> None:
     url = broker_url(config)
-    if broker_health(url):
+    info = broker_info(url)
+    if broker_compatible(info):
         return
+    if info is not None:
+        raise RuntimeError(stale_broker_message(url, info))
     if not broker_auto_start(config):
         raise RuntimeError(f"Broker is not reachable at {url} and auto_start is disabled.")
     start_background_broker(config)
@@ -784,6 +844,7 @@ def get_command(item_id: str) -> None:
     try:
         ensure_broker_running(config)
         body = broker_get_sync(config, f"/v1/tasks/{item_id}{project_query(config)}")
+        validate_task_body_project(config, body, item_id)
         if body.get("status") == "missing":
             conversation = conversation_state(config, item_id)
             if conversation is not None:
@@ -827,6 +888,7 @@ def wait_command(
             if returned_task_id and str(returned_task_id) != task_id:
                 console.print(f"[Orch] Broker returned result for {returned_task_id} while waiting for {task_id}; ignoring stale response.")
                 raise typer.Exit(1)
+            validate_task_body_project(config, body, task_id)
             _print_task_body(body)
             if body.get("status") == "missing":
                 raise typer.Exit(1)
@@ -867,7 +929,7 @@ def cancel(
         print_orch_exception(exc)
         raise typer.Exit(1) from exc
     console.print(f"[Orch] Cancelled {item_id}.")
-    console.print("[Orch] Note: cancel marks broker work CANCELLED and unblocks Orchlink; it cannot kill an already-running Pi tool or shell process.")
+    console.print("[Orch] Note: cancel marks broker work CANCELLED and asks Pi to abort the current turn. Pi can stop before the next tool call; an already-running shell command may only stop if Pi's abort reaches it.")
     cancelled = body.get("cancelled") or []
     if cancelled:
         console.print(f"[Orch] Messages: {', '.join(str(item) for item in cancelled)}")
@@ -933,14 +995,21 @@ def status(
     broker_url_option: Annotated[str, typer.Option("--broker-url")] = "http://127.0.0.1:8787",
     api_key: Annotated[str, typer.Option("--api-key")] = "change-me",
     project_id: Annotated[str | None, typer.Option("--project-id", help="Filter to one project_id.")] = None,
+    all_projects: Annotated[bool, typer.Option("--all-projects", help="Do not apply the current project_id filter.")] = False,
     task_id: Annotated[str | None, typer.Option("--task", help="Filter jobs/messages/events to one task ID.")] = None,
     since_id: Annotated[int, typer.Option("--since-id", min=0, help="Only include events after this event ID.")] = 0,
     limit: Annotated[int, typer.Option("--limit", min=1, max=500, help="Limit jobs and events in status output.")] = 20,
 ) -> None:
+    effective_project_id = project_id
+    if effective_project_id is None and not all_projects:
+        try:
+            effective_project_id = current_project_id(load_project_config())
+        except ProjectConfigError:
+            effective_project_id = None
     response = fetch_status_sync(
         broker_url_option,
         api_key,
-        project_id=project_id,
+        project_id=effective_project_id,
         task_id=task_id,
         since=since_id,
         limit=limit,
@@ -960,9 +1029,13 @@ def doctor() -> None:
         console.print(".orch/project.yaml: missing")
     else:
         connector = PiConnector(config)
+        info = broker_info(broker_url(config))
         console.print(f".orch/project.yaml: found ({config.get('_config_path')})")
+        console.print(f"Project ID: {current_project_id(config)}")
         console.print(f"Broker URL: {broker_url(config)}")
-        console.print(f"Broker reachable: {'yes' if broker_health(broker_url(config)) else 'no'}")
+        console.print(f"Broker reachable: {'yes' if info else 'no'}")
+        if info:
+            console.print(f"Broker version: {info.get('version', 'unknown')} ({'compatible' if broker_compatible(info) else 'stale'})")
         console.print("API key configured: yes")
         console.print(f"Pi command: {connector.pi_command()} ({'found' if connector.check_available() else 'missing'})")
         stale = False

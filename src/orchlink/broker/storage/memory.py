@@ -105,6 +105,7 @@ class MemoryMessageStore(MessageStore):
             if task_id:
                 result = {
                     "status": "TIMEOUT",
+                    "project_id": self._project_id(message),
                     "task_id": str(task_id),
                     "error": "Task exceeded its timeout_seconds before the worker replied.",
                     "job": dict(message),
@@ -467,7 +468,7 @@ class MemoryMessageStore(MessageStore):
                 self._active_messages[message_id]["status"] = job_status
                 self._active_messages[message_id]["updated_at"] = self._now()
             if task_id:
-                result = {"status": job_status, "task_id": str(task_id), "reply": stored_reply}
+                result = {"status": job_status, "project_id": self._project_id(stored_reply), "task_id": str(task_id), "reply": stored_reply}
                 task_key = self._task_key(self._project_id(stored_reply), str(task_id))
                 self._results_by_task[task_key] = result
                 self._upsert_task_locked(stored_reply, job_status)
@@ -634,6 +635,7 @@ class MemoryMessageStore(MessageStore):
                 if task_id:
                     result = {
                         "status": "CANCELLED",
+                        "project_id": self._project_id(message),
                         "task_id": str(task_id),
                         "error": reason or "Work was cancelled.",
                         "job": dict(message),
@@ -735,7 +737,7 @@ class MemoryMessageStore(MessageStore):
             if project_id is not None and task_key in self._results_by_task:
                 return dict(self._results_by_task[task_key])
             if project_id is not None and task_key not in self._tasks:
-                return {"status": "missing", "task_id": task_id, "error": "Task not found."}
+                return {"status": "missing", "project_id": project_id, "task_id": task_id, "error": "Task not found."}
             if project_id is None:
                 matches = [dict(result) for key, result in self._results_by_task.items() if key.endswith(f":{task_id}") or key == task_id]
                 if len(matches) == 1:
@@ -751,7 +753,7 @@ class MemoryMessageStore(MessageStore):
                 self._task_waiters[task_key] = [item for item in waiters if item is not future]
                 if not self._task_waiters[task_key]:
                     self._task_waiters.pop(task_key, None)
-            return {"status": "WAIT_TIMEOUT", "task_id": task_id, "error": "No task result arrived before the wait timeout."}
+            return {"status": "WAIT_TIMEOUT", "project_id": project_id, "task_id": task_id, "error": "No task result arrived before the wait timeout."}
 
     async def get_task_result(self, task_id: str, project_id: str | None = None) -> dict[str, Any]:
         task_key = self._task_key(project_id, task_id) if project_id is not None else task_id
@@ -761,15 +763,15 @@ class MemoryMessageStore(MessageStore):
                 if task_key in self._results_by_task:
                     return dict(self._results_by_task[task_key])
                 if task_key in self._tasks:
-                    return {"status": self._tasks[task_key].get("status", "QUEUED"), "task_id": task_id, "job": dict(self._tasks[task_key])}
+                    return {"status": self._tasks[task_key].get("status", "QUEUED"), "project_id": project_id, "task_id": task_id, "job": dict(self._tasks[task_key])}
             else:
                 result_matches = [dict(result) for key, result in self._results_by_task.items() if key.endswith(f":{task_id}") or key == task_id]
                 if len(result_matches) == 1:
                     return result_matches[0]
                 task_matches = [dict(task) for key, task in self._tasks.items() if key.endswith(f":{task_id}") or key == task_id]
                 if len(task_matches) == 1:
-                    return {"status": task_matches[0].get("status", "QUEUED"), "task_id": task_id, "job": task_matches[0]}
-            return {"status": "missing", "task_id": task_id, "error": "Task not found."}
+                    return {"status": task_matches[0].get("status", "QUEUED"), "project_id": task_matches[0].get("project_id"), "task_id": task_id, "job": task_matches[0]}
+            return {"status": "missing", "project_id": project_id, "task_id": task_id, "error": "Task not found."}
 
     async def list_jobs(self, limit: int = 50, project_id: str | None = None) -> list[dict[str, Any]]:
         async with self._lock:

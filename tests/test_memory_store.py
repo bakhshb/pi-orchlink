@@ -321,7 +321,7 @@ def test_wait_for_missing_scoped_task_returns_missing():
 
         result = await store.wait_for_task("NOPE", timeout_seconds=1, project_id="demo")
 
-        assert result == {"status": "missing", "task_id": "NOPE", "error": "Task not found."}
+        assert result == {"status": "missing", "project_id": "demo", "task_id": "NOPE", "error": "Task not found."}
 
     asyncio.run(run())
 

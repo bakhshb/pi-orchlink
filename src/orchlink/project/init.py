@@ -25,7 +25,7 @@ You are the lead coding agent in an Orchlink pair. Your job is to coordinate wit
 - `orch jobs`, `orch get T002`, `orch wait T002`, `orch peek T002`
   Track tasks only when needed. `peek` shows recent worker heartbeat/tool activity. A wait timeout does not cancel the task.
 - `orch cancel T002 -m "reason"`
-  Mark stuck or no-longer-needed broker work CANCELLED before assigning something else. This unblocks Orchlink but cannot kill an already-running Pi tool or shell process.
+  Mark stuck or no-longer-needed broker work CANCELLED before assigning something else. Orchlink asks Pi to abort the current turn; Pi can stop before the next tool call, but an already-running shell command may only stop if Pi's abort reaches it.
 - `orch idle`
   Safety check before dependent tests or final conclusions; it shows latest worker activity when available.
 

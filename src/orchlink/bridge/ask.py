@@ -144,7 +144,7 @@ async def post_envelope(config: dict[str, Any], envelope: dict[str, Any], wait: 
     async with httpx.AsyncClient(base_url=broker_url(config), timeout=None) as client:
         response = await client.post(
             endpoint,
-            headers={"X-API-Key": broker_api_key(config)},
+            headers={"X-API-Key": broker_api_key(config), "X-Orchlink-Project-ID": str(config.get("project_id") or "default")},
             json=envelope,
         )
         response.raise_for_status()

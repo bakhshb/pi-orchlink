@@ -243,8 +243,48 @@ def test_cancel_command_posts_cancel(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert called == {"path": "/v1/jobs/T010/cancel", "body": {"reason": "Wrong scope.", "project_id": "demo"}}
     assert "Cancelled T010" in result.output
-    assert "cannot" in result.output
-    assert "already-running Pi tool" in result.output
+    assert "asks Pi to abort" in result.output
+    assert "already-running shell command" in result.output
+
+
+def test_jobs_rejects_stale_broker(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        cli_main,
+        "broker_info",
+        lambda url: {"status": "ok", "service": "orchlink", "version": "0.1.0", "capabilities": []},
+    )
+
+    result = runner.invoke(cli_main.app, ["jobs"])
+
+    assert result.exit_code == 1
+    assert "older incompatible Orchlink" in result.output
+    assert "broker 0.1.0" in result.output
+    assert "orch stop" in result.output
+
+
+def test_get_rejects_cross_project_result(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="chatting")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "broker_get_sync",
+        lambda config, path: {
+            "status": "DONE",
+            "project_id": "nexora",
+            "task_id": "T001",
+            "reply": {"project_id": "nexora", "type": "RESULT", "payload": {"summary": "old"}},
+        },
+    )
+
+    result = runner.invoke(cli_main.app, ["get", "T001"])
+
+    assert result.exit_code == 1
+    assert "Refusing cross-project result" in result.output
+    assert "nexora" in result.output
+    assert "chatting" in result.output
 
 
 def test_jobs_get_and_wait_commands(monkeypatch, tmp_path):
@@ -256,7 +296,7 @@ def test_jobs_get_and_wait_commands(monkeypatch, tmp_path):
         if path.startswith("/v1/jobs"):
             return {"jobs": [{"task_id": "T010", "mode": "PLAN", "status": "DONE", "from_agent": "demo.lead", "to_agent": "demo.work", "created_at": "now", "preview": "Inspect tests."}]}
         if path.startswith("/v1/tasks/T010/wait") or path.startswith("/v1/tasks/T010"):
-            return {"status": "DONE", "task_id": "T010", "reply": {"type": "RESULT", "payload": {"summary": "Done."}}}
+            return {"status": "DONE", "project_id": "demo", "task_id": "T010", "reply": {"project_id": "demo", "type": "RESULT", "payload": {"summary": "Done."}}}
         raise AssertionError(path)
 
     monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
@@ -299,8 +339,8 @@ def test_wait_prints_worker_activity_during_progress(monkeypatch, tmp_path):
         if path.startswith("/v1/tasks/T010/wait"):
             wait_calls += 1
             if wait_calls == 1:
-                return {"status": "WAIT_TIMEOUT", "task_id": "T010", "error": "still waiting"}
-            return {"status": "DONE", "task_id": "T010", "reply": {"type": "RESULT", "payload": {"summary": "Done."}}}
+                return {"status": "WAIT_TIMEOUT", "project_id": "demo", "task_id": "T010", "error": "still waiting"}
+            return {"status": "DONE", "project_id": "demo", "task_id": "T010", "reply": {"project_id": "demo", "type": "RESULT", "payload": {"summary": "Done."}}}
         raise AssertionError(path)
 
     monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
@@ -320,7 +360,7 @@ def test_wait_rejects_mismatched_task_result(monkeypatch, tmp_path):
 
     def fake_broker_get_sync(config, path):
         if path.startswith("/v1/tasks/T013/wait"):
-            return {"status": "DONE", "task_id": "T012", "reply": {"type": "RESULT", "payload": {"summary": "stale"}}}
+            return {"status": "DONE", "project_id": "other", "task_id": "T012", "reply": {"project_id": "other", "type": "RESULT", "payload": {"summary": "stale"}}}
         raise AssertionError(path)
 
     monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
@@ -341,8 +381,9 @@ def test_get_failed_task_prints_stderr(monkeypatch, tmp_path):
         "broker_get_sync",
         lambda config, path: {
             "status": "FAILED",
+            "project_id": "demo",
             "task_id": "T010",
-            "reply": {"type": "BLOCKER", "payload": {"summary": "", "stderr": "WebSocket error"}},
+            "reply": {"project_id": "demo", "type": "BLOCKER", "payload": {"summary": "", "stderr": "WebSocket error"}},
         },
     )
 

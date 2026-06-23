@@ -8,7 +8,13 @@ from orchlink.broker.settings import Settings, get_settings
 from orchlink.broker.storage import MemoryMessageStore, MessageStore, MessageStoreBusy
 
 
-VERSION = "0.1.0"
+VERSION = "0.4.0"
+BROKER_CAPABILITIES = [
+    "project_header_scope",
+    "task_activity_endpoint",
+    "scoped_task_results",
+    "status_filters",
+]
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
@@ -26,6 +32,11 @@ def get_store(request: Request) -> MessageStore:
     return request.app.state.store
 
 
+def request_project_id(request: Request, explicit: str | None = None) -> str | None:
+    value = explicit or request.headers.get("X-Orchlink-Project-ID")
+    return str(value) if value else None
+
+
 def create_app(
     store: MessageStore | None = None,
     settings: Settings | None = None,
@@ -37,8 +48,8 @@ def create_app(
     secure_router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok", "service": "orchlink", "version": VERSION}
+    async def health() -> dict[str, Any]:
+        return {"status": "ok", "service": "orchlink", "version": VERSION, "capabilities": BROKER_CAPABILITIES}
 
     @secure_router.post("/agents/register")
     async def register_agent(
@@ -112,6 +123,7 @@ def create_app(
     @secure_router.post("/jobs/{item_id}/cancel")
     async def cancel_work(
         item_id: str,
+        request: Request,
         body: dict[str, Any] = Body(default_factory=dict),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
@@ -119,7 +131,7 @@ def create_app(
             return await message_store.cancel_work(
                 item_id,
                 str(body.get("reason") or ""),
-                project_id=str(body.get("project_id") or "") or None,
+                project_id=request_project_id(request, str(body.get("project_id") or "") or None),
             )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -138,11 +150,13 @@ def create_app(
 
     @secure_router.get("/events")
     async def events(
+        request: Request,
         since: int = Query(default=0, ge=0),
         limit: int = Query(default=50, ge=1, le=500),
         project_id: str | None = Query(default=None),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
+        project_id = request_project_id(request, project_id)
         recent_events = await message_store.list_events(since=since, limit=limit, project_id=project_id)
         return {"events": recent_events, "last_event_id": recent_events[-1]["id"] if recent_events else since}
 
@@ -155,55 +169,65 @@ def create_app(
 
     @secure_router.get("/activity")
     async def activity(
+        request: Request,
         item_id: str | None = Query(default=None),
         limit: int = Query(default=20, ge=1, le=100),
         project_id: str | None = Query(default=None),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
+        project_id = request_project_id(request, project_id)
         return {"activity": await message_store.list_activity(item_id=item_id, limit=limit, project_id=project_id)}
 
     @secure_router.get("/tasks/{task_id}/activity")
     async def task_activity(
         task_id: str,
+        request: Request,
         limit: int = Query(default=20, ge=1, le=100),
         project_id: str | None = Query(default=None),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
-        return {"task_id": task_id, "activity": await message_store.list_activity(item_id=task_id, limit=limit, project_id=project_id)}
+        project_id = request_project_id(request, project_id)
+        return {"project_id": project_id, "task_id": task_id, "activity": await message_store.list_activity(item_id=task_id, limit=limit, project_id=project_id)}
 
     @secure_router.get("/jobs")
     async def jobs(
+        request: Request,
         limit: int = Query(default=50, ge=1, le=500),
         project_id: str | None = Query(default=None),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
-        return {"jobs": await message_store.list_jobs(limit=limit, project_id=project_id)}
+        project_id = request_project_id(request, project_id)
+        return {"project_id": project_id, "jobs": await message_store.list_jobs(limit=limit, project_id=project_id)}
 
     @secure_router.get("/tasks/{task_id}")
     async def get_task(
         task_id: str,
+        request: Request,
         project_id: str | None = Query(default=None),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
-        return await message_store.get_task_result(task_id, project_id=project_id)
+        return await message_store.get_task_result(task_id, project_id=request_project_id(request, project_id))
 
     @secure_router.get("/tasks/{task_id}/wait")
     async def wait_task(
         task_id: str,
+        request: Request,
         timeout_seconds: int = Query(default=1800, ge=1),
         project_id: str | None = Query(default=None),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
-        return await message_store.wait_for_task(task_id, timeout_seconds, project_id=project_id)
+        return await message_store.wait_for_task(task_id, timeout_seconds, project_id=request_project_id(request, project_id))
 
     @secure_router.get("/status")
     async def status(
+        request: Request,
         project_id: str | None = Query(default=None),
         task_id: str | None = Query(default=None),
         since: int = Query(default=0, ge=0),
         limit: int = Query(default=20, ge=1, le=500),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
+        project_id = request_project_id(request, project_id)
         agents = await message_store.list_agents()
         if project_id is not None:
             agents = [agent for agent in agents if str(agent.get("project_id") or "default") == project_id]

@@ -56,6 +56,9 @@ def test_pi_extension_uses_valid_record_type():
     assert "RUNNING" in ORCHLINK_PI_EXTENSION
     assert "checkCurrentTaskCancellation" in ORCHLINK_PI_EXTENSION
     assert "Stop this work now" in ORCHLINK_PI_EXTENSION
+    assert "abortIfPossible" in ORCHLINK_PI_EXTENSION
+    assert "ctx.abort" in ORCHLINK_PI_EXTENSION
+    assert "Orchlink cancelled this work before the tool call started" in ORCHLINK_PI_EXTENSION
     assert "isRecoverableAssistantError" in ORCHLINK_PI_EXTENSION
     assert "ORCHLINK_RECOVERABLE_ERROR_GRACE_MS" in ORCHLINK_PI_EXTENSION
     assert "180000" in ORCHLINK_PI_EXTENSION

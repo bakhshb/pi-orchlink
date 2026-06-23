@@ -1,6 +1,6 @@
 from fastapi.testclient import TestClient
 
-from orchlink.broker.main import create_app
+from orchlink.broker.main import BROKER_CAPABILITIES, VERSION, create_app
 from orchlink.broker.settings import Settings
 from orchlink.broker.storage.memory import MemoryMessageStore
 
@@ -23,7 +23,7 @@ def test_health_is_public():
     response = client.get("/health")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "service": "orchlink", "version": "0.1.0"}
+    assert response.json() == {"status": "ok", "service": "orchlink", "version": VERSION, "capabilities": BROKER_CAPABILITIES}
 
 
 def test_v1_endpoint_rejects_missing_api_key():
@@ -138,6 +138,37 @@ def test_chat_start_creates_conversation_job():
     jobs = jobs_response.json()["jobs"]
     assert jobs[0]["conversation_id"] == "C001"
     assert jobs[0]["status"] == "OPEN"
+
+
+def test_project_header_filters_jobs_when_query_missing():
+    client = make_client()
+    first = {
+        "protocol": "orch-a2a-v1",
+        "message_id": "msg-h-p1",
+        "correlation_id": "req-h-p1",
+        "project_id": "p1",
+        "conversation_id": "p1-tasks",
+        "task_id": "T001",
+        "from_agent": "p1.lead",
+        "to_agent": "p1.work",
+        "type": "TASK",
+        "status": "PENDING",
+        "turn": 1,
+        "max_turns": 6,
+        "requires_reply": True,
+        "timeout_seconds": 1800,
+        "delivery": "async",
+        "payload": {"mode": "PLAN", "intent": "P1 task."},
+    }
+    second = {**first, "message_id": "msg-h-p2", "correlation_id": "req-h-p2", "project_id": "p2", "conversation_id": "p2-tasks", "from_agent": "p2.lead", "to_agent": "p2.work", "payload": {"mode": "PLAN", "intent": "P2 task."}}
+    client.post("/v1/messages/send", headers=auth_headers(), json=first)
+    client.post("/v1/messages/send", headers=auth_headers(), json=second)
+
+    response = client.get("/v1/jobs", headers={**auth_headers(), "X-Orchlink-Project-ID": "p2"})
+
+    assert response.status_code == 200
+    assert response.json()["project_id"] == "p2"
+    assert [job["project_id"] for job in response.json()["jobs"]] == ["p2"]
 
 
 def test_jobs_and_tasks_filter_by_project_id():
