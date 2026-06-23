@@ -245,17 +245,31 @@ skills/openclaw/orchlink/SKILL.md
 skills/hermes/orchlink/SKILL.md
 ```
 
-Public install from a local Orchlink checkout:
+Public install from URL:
 
 ```bash
-# OpenClaw: installs into the active workspace skills/ directory.
-openclaw skills install ./skills/openclaw/orchlink --as orchlink
+# OpenClaw workspace install. OpenClaw installs from local skill directories,
+# so this downloads the public SKILL.md to a temporary skill folder first.
+tmp=$(mktemp -d)
+curl -fsSL https://raw.githubusercontent.com/bakhshb/pi-orchlink/main/skills/openclaw/orchlink/SKILL.md -o "$tmp/SKILL.md"
+openclaw skills install "$tmp" --as orchlink --force
+rm -rf "$tmp"
 
-# Or install for all local OpenClaw agents.
-openclaw skills install ./skills/openclaw/orchlink --as orchlink --global
+# OpenClaw global install for all local OpenClaw agents: add --global.
+tmp=$(mktemp -d)
+curl -fsSL https://raw.githubusercontent.com/bakhshb/pi-orchlink/main/skills/openclaw/orchlink/SKILL.md -o "$tmp/SKILL.md"
+openclaw skills install "$tmp" --as orchlink --force --global
+rm -rf "$tmp"
 
-# Hermes: installs the local skill into ~/.hermes/skills.
-hermes skills install ./skills/hermes/orchlink --name orchlink --force
+# Hermes supports direct SKILL.md URL installs.
+hermes skills install https://raw.githubusercontent.com/bakhshb/pi-orchlink/main/skills/hermes/orchlink/SKILL.md --name orchlink --force --yes
+```
+
+If you already have a local Orchlink checkout, you can install from disk instead:
+
+```bash
+openclaw skills install ./skills/openclaw/orchlink --as orchlink --force
+hermes skills install ./skills/hermes/orchlink --name orchlink --force --yes
 ```
 
 For development, use symlinks so edits in this repo are picked up without reinstalling:
