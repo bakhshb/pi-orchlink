@@ -245,15 +245,28 @@ skills/openclaw/orchlink/SKILL.md
 skills/hermes/orchlink/SKILL.md
 ```
 
-Developer symlink install:
+Public install from a local Orchlink checkout:
+
+```bash
+# OpenClaw: installs into the active workspace skills/ directory.
+openclaw skills install ./skills/openclaw/orchlink --as orchlink
+
+# Or install for all local OpenClaw agents.
+openclaw skills install ./skills/openclaw/orchlink --as orchlink --global
+
+# Hermes: installs the local skill into ~/.hermes/skills.
+hermes skills install ./skills/hermes/orchlink --name orchlink --force
+```
+
+For development, use symlinks so edits in this repo are picked up without reinstalling:
 
 ```bash
 mkdir -p ~/.openclaw/skills ~/.hermes/skills
-ln -sfn /home/debian/projects/orchlink/skills/openclaw/orchlink ~/.openclaw/skills/orchlink
-ln -sfn /home/debian/projects/orchlink/skills/hermes/orchlink ~/.hermes/skills/orchlink
+ln -sfn "$PWD/skills/openclaw/orchlink" ~/.openclaw/skills/orchlink
+ln -sfn "$PWD/skills/hermes/orchlink" ~/.hermes/skills/orchlink
 ```
 
-Start a new OpenClaw/Hermes session after changing skill files.
+Start a new OpenClaw/Hermes session after installing or changing skill files.
 
 ## Advanced commands
 
