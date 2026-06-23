@@ -1,16 +1,33 @@
-from fastapi.testclient import TestClient
+import asyncio
+
+import httpx
 
 from orchlink.broker.main import BROKER_CAPABILITIES, VERSION, create_app
 from orchlink.broker.settings import Settings
 from orchlink.broker.storage.memory import MemoryMessageStore
 
 
+class ASGITestClient:
+    def __init__(self) -> None:
+        self.app = create_app(
+            store=MemoryMessageStore(),
+            settings=Settings(api_key="test-key"),
+        )
+
+    async def _request(self, method: str, path: str, **kwargs):
+        transport = httpx.ASGITransport(app=self.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.request(method, path, **kwargs)
+
+    def get(self, path: str, **kwargs):
+        return asyncio.run(self._request("GET", path, **kwargs))
+
+    def post(self, path: str, **kwargs):
+        return asyncio.run(self._request("POST", path, **kwargs))
+
+
 def make_client():
-    app = create_app(
-        store=MemoryMessageStore(),
-        settings=Settings(api_key="test-key"),
-    )
-    return TestClient(app)
+    return ASGITestClient()
 
 
 def auth_headers():
