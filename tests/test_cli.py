@@ -303,8 +303,7 @@ def test_jobs_get_and_wait_commands(monkeypatch, tmp_path):
 
     jobs_result = runner.invoke(cli_main.app, ["jobs"])
     get_result = runner.invoke(cli_main.app, ["get", "T010"])
-    wait_result = runner.invoke(cli_main.app, ["wait", "T010", "--timeout-seconds", "1"])
-    wait_alias_result = runner.invoke(cli_main.app, ["wait", "T010", "--timeout", "1"])
+    wait_result = runner.invoke(cli_main.app, ["wait", "T010", "--timeout", "1"])
 
     assert jobs_result.exit_code == 0
     assert "ID" in jobs_result.output
@@ -315,8 +314,13 @@ def test_jobs_get_and_wait_commands(monkeypatch, tmp_path):
     assert "Done." in get_result.output
     assert wait_result.exit_code == 0
     assert "Done." in wait_result.output
-    assert wait_alias_result.exit_code == 0
-    assert "Done." in wait_alias_result.output
+
+
+def test_wait_rejects_timeout_seconds_flag():
+    result = runner.invoke(cli_main.app, ["wait", "T010", "--timeout-seconds", "1"])
+
+    assert result.exit_code == 2
+    assert "No such option '--timeout-seconds'" in result.output
 
 
 def test_wait_prints_worker_activity_during_progress(monkeypatch, tmp_path):
@@ -348,7 +352,7 @@ def test_wait_prints_worker_activity_during_progress(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
 
-    result = runner.invoke(cli_main.app, ["wait", "T010", "--timeout-seconds", "3", "--poll-seconds", "1"])
+    result = runner.invoke(cli_main.app, ["wait", "T010", "--timeout", "3", "--poll-seconds", "1"])
 
     assert result.exit_code == 0
     assert "Worker activity" in result.output
@@ -368,7 +372,7 @@ def test_wait_rejects_mismatched_task_result(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
 
-    result = runner.invoke(cli_main.app, ["wait", "T013", "--timeout-seconds", "1"])
+    result = runner.invoke(cli_main.app, ["wait", "T013", "--timeout", "1"])
 
     assert result.exit_code == 1
     assert "waiting for T013" in result.output

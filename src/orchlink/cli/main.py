@@ -508,7 +508,7 @@ def ask(
     worker_id: str,
     task_id: Annotated[str, typer.Option("--task", "--task-id", "-t")],
     message: Annotated[str, typer.Option("--msg", "--message", "-m")],
-    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
+    timeout_seconds: Annotated[int, typer.Option("--timeout")] = 1800,
     wait: Annotated[bool, typer.Option("--wait/--no-wait", help="Wait in this shell for the reply. Use orch send for async tasks.")] = True,
 ) -> None:
     config = load_project_or_exit()
@@ -535,7 +535,7 @@ def send(
     worker_id: str,
     task_id: Annotated[str, typer.Option("--task", "--task-id", "-t")],
     message: Annotated[str, typer.Option("--msg", "--message", "-m")],
-    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
+    timeout_seconds: Annotated[int, typer.Option("--timeout")] = 1800,
     allow_async_review: Annotated[bool, typer.Option("--allow-async-review", help="Allow REVIEW through async send. Use only when review is not a gate.")] = False,
 ) -> None:
     mode = infer_task_mode(message)
@@ -665,7 +665,7 @@ def talk(
     worker_id: str,
     message: Annotated[str, typer.Option("--msg", "--message", "-m")],
     rounds: Annotated[int, typer.Option("--rounds", "-r", min=1, max=6, help="Number of lead↔worker back-and-forth rounds.")] = 6,
-    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
+    timeout_seconds: Annotated[int, typer.Option("--timeout")] = 1800,
 ) -> None:
     require_nonempty_talk_message(message, "Talk")
     config = load_project_or_exit()
@@ -696,7 +696,7 @@ def talk(
 def say(
     conversation_id: str,
     message: Annotated[str, typer.Option("--msg", "--message", "-m")],
-    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
+    timeout_seconds: Annotated[int, typer.Option("--timeout")] = 1800,
 ) -> None:
     require_nonempty_talk_message(message, "Say")
     config = load_project_or_exit()
@@ -735,7 +735,7 @@ def say(
 def close(
     conversation_id: str,
     message: Annotated[str, typer.Option("--msg", "--message", "-m")] = "",
-    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds")] = 1800,
+    timeout_seconds: Annotated[int, typer.Option("--timeout")] = 1800,
 ) -> None:
     config = load_project_or_exit()
     try:
@@ -859,7 +859,7 @@ def get_command(item_id: str) -> None:
 @app.command("wait")
 def wait_command(
     task_id: str,
-    timeout_seconds: Annotated[int, typer.Option("--timeout-seconds", "--timeout")] = 1800,
+    timeout_seconds: Annotated[int, typer.Option("--timeout")] = 1800,
     progress: Annotated[bool, typer.Option("--progress/--no-progress", help="Print worker activity while waiting.")] = True,
     poll_seconds: Annotated[int, typer.Option("--poll-seconds", min=1, max=60)] = 5,
 ) -> None:

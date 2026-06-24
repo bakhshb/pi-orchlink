@@ -94,7 +94,7 @@ Observe progress:
 ```bash
 orch jobs
 orch peek TEDIT001
-orch wait TEDIT001 --timeout-seconds 300
+orch wait TEDIT001 --timeout 300
 orch get TEDIT001
 ```
 

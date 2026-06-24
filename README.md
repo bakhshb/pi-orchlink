@@ -322,7 +322,7 @@ You normally do not need these. The lead agent uses them when it coordinates wit
 For big tasks, give work more time when sending the task:
 
 ```bash
-orch send work -t T010 --timeout-seconds 7200 -m "MODE: DO. Implement chunk 1 only."
+orch send work -t T010 --timeout 7200 -m "MODE: DO. Implement chunk 1 only."
 ```
 
 Debug-only commands:
