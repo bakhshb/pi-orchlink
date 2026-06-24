@@ -8,12 +8,13 @@ from orchlink.broker.settings import Settings, get_settings
 from orchlink.broker.storage import MemoryMessageStore, MessageStore, MessageStoreBusy
 
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 BROKER_CAPABILITIES = [
     "project_header_scope",
     "task_activity_endpoint",
     "scoped_task_results",
     "status_filters",
+    "conversation_transcript_endpoint",
 ]
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -198,6 +199,15 @@ def create_app(
     ) -> dict[str, Any]:
         project_id = request_project_id(request, project_id)
         return {"project_id": project_id, "jobs": await message_store.list_jobs(limit=limit, project_id=project_id)}
+
+    @secure_router.get("/conversations/{conversation_id}")
+    async def get_conversation(
+        conversation_id: str,
+        request: Request,
+        project_id: str | None = Query(default=None),
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        return await message_store.get_conversation(conversation_id, project_id=request_project_id(request, project_id))
 
     @secure_router.get("/tasks/{task_id}")
     async def get_task(

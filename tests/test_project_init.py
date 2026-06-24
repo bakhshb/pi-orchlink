@@ -44,7 +44,7 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "orch say C001" in lead_skill
     assert "orch close C001" in lead_skill
     assert "`C001` is a conversation ID" in lead_skill
-    assert "Do not use `orch get C001`" in lead_skill
+    assert "orch get C001" in lead_skill
     assert "Talk Mode is a conversation" in lead_skill
     assert "Do not summarize after the first worker reply" in lead_skill
     assert "Stop conditions" in lead_skill

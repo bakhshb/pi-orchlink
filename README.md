@@ -311,6 +311,7 @@ You normally do not need these. The lead agent uses them when it coordinates wit
 | `orch talk work -m "..." -r 6` | Start a short discussion with work for up to 6 lead↔worker rounds. |
 | `orch say C001 -m "..."` | Continue a Talk Mode conversation. |
 | `orch close C001 -m "..."` | Close Talk Mode with a decision. |
+| `orch get C001` | Print the full Talk Mode transcript for a conversation. |
 | `orch cancel T002 -m "..."` | Mark stuck/no-longer-needed broker work CANCELLED and ask Pi to abort the current turn. Pi can stop before the next tool call; an already-running shell command may only stop if Pi's abort reaches it. |
 | `orch jobs` | Show recent work for the current project ID. |
 | `orch idle` | Check whether work is busy; shows latest worker activity when available. |

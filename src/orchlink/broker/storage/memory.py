@@ -19,6 +19,7 @@ class MemoryMessageStore(MessageStore):
         self._tasks: dict[str, dict[str, Any]] = {}
         self._results_by_task: dict[str, dict[str, Any]] = {}
         self._conversations: dict[str, dict[str, Any]] = {}
+        self._conversation_messages: dict[str, list[dict[str, Any]]] = {}
         self._pending_replies: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._task_waiters: dict[str, list[asyncio.Future[dict[str, Any]]]] = {}
         self._events: list[dict[str, Any]] = []
@@ -62,6 +63,31 @@ class MemoryMessageStore(MessageStore):
 
     def _message_preview(self, message: dict[str, Any]) -> str:
         return self._payload_preview(message.get("payload") or {})
+
+    def _append_conversation_message_locked(self, message: dict[str, Any], status: str | None = None) -> None:
+        message_type = str(message.get("type") or "")
+        conversation_id = str(message.get("conversation_id") or "")
+        if not conversation_id or not message_type.startswith("CHAT_"):
+            return
+        project_id = self._project_id(message)
+        key = self._conversation_key(project_id, conversation_id)
+        payload = dict(message.get("payload") or {})
+        entry = {
+            "project_id": project_id,
+            "conversation_id": conversation_id,
+            "message_id": message.get("message_id"),
+            "correlation_id": message.get("correlation_id"),
+            "from_agent": message.get("from_agent"),
+            "to_agent": message.get("to_agent"),
+            "type": message_type,
+            "status": status or message.get("status"),
+            "turn": message.get("turn"),
+            "max_turns": message.get("max_turns"),
+            "time": message.get("updated_at") or message.get("queued_at") or message.get("created_at") or self._now(),
+            "message": self._payload_preview(payload),
+            "payload": payload,
+        }
+        self._conversation_messages.setdefault(key, []).append(entry)
 
     def _append_event_locked(self, event_type: str, **fields: Any) -> dict[str, Any]:
         payload = fields.get("payload") or {}
@@ -384,6 +410,7 @@ class MemoryMessageStore(MessageStore):
             stored_message["queued_at"] = now
             stored_message["updated_at"] = now
             self._active_messages[message_id] = stored_message
+            self._append_conversation_message_locked(stored_message, status=stored_message["status"])
             if stored_message.get("type") == "CHAT_CLOSE":
                 self._touch_conversation_locked(stored_message, status="CLOSED")
             elif str(stored_message.get("type") or "").startswith("CHAT_"):
@@ -475,6 +502,7 @@ class MemoryMessageStore(MessageStore):
                 self._resolve_task_waiters_locked(task_key, result)
                 self._resolve_task_waiters_locked(str(task_id), result)
             if str(stored_reply.get("type") or "").startswith("CHAT_"):
+                self._append_conversation_message_locked(stored_reply, status=job_status)
                 self._touch_conversation_locked(stored_reply, status="OPEN" if job_status == "DONE" else job_status)
             reply_inbox = self._inboxes.setdefault(str(stored_reply["to_agent"]), asyncio.Queue())
             self._append_event_locked(
@@ -675,6 +703,7 @@ class MemoryMessageStore(MessageStore):
             conversation["status"] = "CLOSED"
             conversation["updated_at"] = self._now()
             if message:
+                self._append_conversation_message_locked(message, status="CLOSED")
                 conversation["last_message_preview"] = self._message_preview(message)[:300]
                 conversation["preview"] = conversation["last_message_preview"]
             self._append_event_locked(
@@ -794,6 +823,27 @@ class MemoryMessageStore(MessageStore):
         async with self._lock:
             self._expire_timed_out_messages_locked()
             return [dict(conversation) for conversation in self._conversations.values() if self._same_project(conversation, project_id)]
+
+    async def get_conversation(self, conversation_id: str, project_id: str | None = None) -> dict[str, Any]:
+        async with self._lock:
+            self._expire_timed_out_messages_locked()
+            if project_id is not None:
+                key = self._conversation_key(project_id, conversation_id)
+                conversation = self._conversations.get(key)
+            else:
+                matches = [item for item in self._conversations.values() if str(item.get("conversation_id") or "") == conversation_id]
+                conversation = matches[0] if len(matches) == 1 else None
+                key = self._conversation_key(self._project_id(conversation), conversation_id) if conversation else ""
+            if conversation is None:
+                return {"status": "missing", "project_id": project_id, "conversation_id": conversation_id, "error": "Conversation not found."}
+            messages = [dict(item) for item in self._conversation_messages.get(key, [])]
+            return {
+                "status": conversation.get("status", "UNKNOWN"),
+                "project_id": conversation.get("project_id"),
+                "conversation_id": conversation_id,
+                "conversation": dict(conversation),
+                "messages": messages,
+            }
 
     async def list_events(self, since: int = 0, limit: int = 100, project_id: str | None = None) -> list[dict[str, Any]]:
         async with self._lock:

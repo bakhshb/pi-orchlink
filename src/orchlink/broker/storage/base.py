@@ -83,5 +83,9 @@ class MessageStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_conversation(self, conversation_id: str, project_id: str | None = None) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
     async def list_events(self, since: int = 0, limit: int = 100, project_id: str | None = None) -> list[dict[str, Any]]:
         raise NotImplementedError

@@ -648,13 +648,36 @@ def require_nonempty_talk_message(message: str, command_name: str) -> None:
     raise typer.Exit(1)
 
 
-def _print_conversation_body(conversation: dict[str, Any]) -> None:
-    conversation_id = str(conversation.get("conversation_id") or "")
-    console.print(f"[Orch] Conversation {conversation_id}: {conversation.get('status', 'UNKNOWN')}")
+def conversation_entry_text(entry: dict[str, Any]) -> str:
+    payload = entry.get("payload") or {}
+    for key in ("message", "summary", "stdout", "intent", "topic"):
+        value = payload.get(key)
+        if value:
+            return str(value).strip()
+    return str(entry.get("message") or "").strip()
+
+
+def _print_conversation_body(body: dict[str, Any]) -> None:
+    conversation = body.get("conversation") or body
+    conversation_id = str(body.get("conversation_id") or conversation.get("conversation_id") or "")
+    console.print(f"[Orch] Conversation {conversation_id}: {body.get('status') or conversation.get('status', 'UNKNOWN')}")
     console.print(f"[Orch] Turn: {conversation.get('turn', '?')}/{conversation.get('max_turns', '?')}")
-    preview = str(conversation.get("last_message_preview") or conversation.get("preview") or "").strip()
-    if preview:
-        console.print(preview)
+    messages = body.get("messages") or []
+    if messages:
+        console.print("[Orch] Transcript:")
+        for index, item in enumerate(messages, start=1):
+            from_agent = str(item.get("from_agent") or "?")
+            to_agent = str(item.get("to_agent") or "?")
+            message_type = str(item.get("type") or "CHAT")
+            turn = item.get("turn") or "?"
+            max_turns = item.get("max_turns") or "?"
+            console.print(f"\n[{index}] {from_agent} → {to_agent} {message_type} turn {turn}/{max_turns}")
+            text = conversation_entry_text(item)
+            console.print(text or "(empty)", markup=False)
+    else:
+        preview = str(conversation.get("last_message_preview") or conversation.get("preview") or "").strip()
+        if preview:
+            console.print(preview, markup=False)
     if conversation.get("status") == "OPEN":
         console.print(f"[Orch] Continue: orch say {conversation_id} -m \"...\"")
         console.print(f"[Orch] Close: orch close {conversation_id} -m \"Decision: ...\"")
@@ -838,16 +861,17 @@ def peek(
         console.print(f"- {format_activity(item)}")
 
 
-@app.command("get", help="Print a completed task result, or a conversation summary for a conversation ID.")
+@app.command("get", help="Print a completed task result, or a full Talk Mode transcript for a conversation ID.")
 def get_command(item_id: str) -> None:
     config = load_project_or_exit()
     try:
         ensure_broker_running(config)
-        body = broker_get_sync(config, f"/v1/tasks/{item_id}{project_query(config)}")
+        quoted_id = quote(item_id, safe="")
+        body = broker_get_sync(config, f"/v1/tasks/{quoted_id}{project_query(config)}")
         validate_task_body_project(config, body, item_id)
         if body.get("status") == "missing":
-            conversation = conversation_state(config, item_id)
-            if conversation is not None:
+            conversation = broker_get_sync(config, f"/v1/conversations/{quoted_id}{project_query(config)}")
+            if conversation.get("status") != "missing":
                 _print_conversation_body(conversation)
                 return
     except (RuntimeError, httpx.HTTPError) as exc:
