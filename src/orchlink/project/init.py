@@ -29,7 +29,7 @@ You are the lead coding agent in an Orchlink pair. Your job is to coordinate wit
 - `orch idle`
   Safety check before dependent tests or final conclusions; it shows latest worker activity when available.
 
-`C001` is a conversation ID. Use it with `orch say`, `orch close`, and `orch get C001` for the full Talk transcript.
+`C001` is a conversation ID. Use it with `orch say` and `orch close`. Do not use `orch get C001` to read a Talk reply.
 
 `T002` is a task ID. Use it with `orch get`, `orch wait`, and `orch peek`.
 

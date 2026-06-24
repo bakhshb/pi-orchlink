@@ -1,7 +1,7 @@
 ---
 name: orchlink
 description: Use this skill whenever OpenClaw should coordinate with a local Pi worker through Orchlink. This is for acting as the lead agent: start/check the worker lane, send scoped tasks, wait for results, run review gates, inspect worker activity, handle blockers, and avoid cross-project/stale-broker mistakes.
-version: 1.0.2
+version: 1.0.1
 metadata:
   openclaw:
     emoji: "🔗"
@@ -142,13 +142,11 @@ Use Talk Mode only when a visible lead Pi session is running or the human explic
 
 ```bash
 orch talk work -m "one short question" -r 3
-orch get C001
 orch say C001 -m "answer or follow-up"
 orch close C001 -m "Decision: ... Rationale: ... Dissent/risk accepted: ... Next step: ... Owner: ... Human approval needed: yes/no"
-orch get C001
 ```
 
-`orch get C001` prints the full Talk transcript. Talk Mode is a conversation, not a task order. No `TASK_ID`, no `MODE`, no scope boilerplate.
+Talk Mode is a conversation, not a task order. No `TASK_ID`, no `MODE`, no scope boilerplate.
 
 ## Worker result expectations
 

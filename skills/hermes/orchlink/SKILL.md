@@ -1,7 +1,7 @@
 ---
 name: orchlink
 description: Use this skill whenever Hermes should act as the lead agent for a local Pi worker through Orchlink. It covers sending scoped worker tasks, blocking review gates, async wait/get flows, worker activity checks, blockers, project scoping, stale broker recovery, and safe cancellation semantics.
-version: 1.0.2
+version: 1.0.1
 platforms: [linux, macos]
 metadata:
   hermes:
@@ -111,13 +111,11 @@ Use Talk Mode only if the human explicitly wants a lead/work conversation or has
 
 ```bash
 orch talk work -m "one short question" -r 3
-orch get C001
 orch say C001 -m "answer or follow-up"
 orch close C001 -m "Decision: ... Rationale: ... Dissent/risk accepted: ... Next step: ... Owner: ... Human approval needed: yes/no"
-orch get C001
 ```
 
-`orch get C001` prints the full Talk transcript. Talk Mode messages should be short and conversational: no `MODE`, no `TASK_ID`, no task boilerplate.
+Talk Mode messages should be short and conversational: no `MODE`, no `TASK_ID`, no task boilerplate.
 
 ## Review gates
 

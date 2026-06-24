@@ -157,55 +157,6 @@ def test_chat_start_creates_conversation_job():
     assert jobs[0]["status"] == "OPEN"
 
 
-def test_get_conversation_returns_full_transcript():
-    client = make_client()
-    start = {
-        "protocol": "orch-a2a-v1",
-        "message_id": "msg-chat",
-        "correlation_id": "req-chat",
-        "project_id": "test",
-        "conversation_id": "C001",
-        "task_id": None,
-        "from_agent": "test.lead",
-        "to_agent": "test.work",
-        "type": "CHAT_START",
-        "status": "PENDING",
-        "turn": 1,
-        "max_turns": 6,
-        "requires_reply": True,
-        "timeout_seconds": 1800,
-        "delivery": "conversation",
-        "payload": {"mode": "TALK", "topic": "SQLite?", "message": "Lead full question?"},
-    }
-    long_reply = "Worker full reply " + ("x" * 400)
-    reply = {
-        **start,
-        "message_id": "reply-chat",
-        "from_agent": "test.work",
-        "to_agent": "test.lead",
-        "type": "CHAT_REPLY",
-        "status": "DONE",
-        "turn": 2,
-        "requires_reply": False,
-        "timeout_seconds": 1,
-        "payload": {"mode": "TALK", "summary": long_reply, "stdout": long_reply},
-    }
-
-    send_response = client.post("/v1/messages/send", headers=auth_headers(), json=start)
-    reply_response = client.post("/v1/messages/msg-chat/reply", headers=auth_headers(), json=reply)
-    get_response = client.get("/v1/conversations/C001?project_id=test", headers=auth_headers())
-
-    assert send_response.status_code == 200
-    assert reply_response.status_code == 200
-    assert get_response.status_code == 200
-    body = get_response.json()
-    assert body["conversation_id"] == "C001"
-    assert body["status"] == "OPEN"
-    assert [item["type"] for item in body["messages"]] == ["CHAT_START", "CHAT_REPLY"]
-    assert body["messages"][0]["message"] == "Lead full question?"
-    assert body["messages"][1]["message"] == long_reply
-
-
 def test_project_header_filters_jobs_when_query_missing():
     client = make_client()
     first = {

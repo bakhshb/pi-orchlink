@@ -192,47 +192,27 @@ def test_close_sends_chat_close(monkeypatch, tmp_path):
     assert "Closed conversation C001" in result.output
 
 
-def test_get_conversation_id_prints_full_transcript(monkeypatch, tmp_path):
+def test_get_conversation_id_prints_conversation_guidance(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
-    long_worker_reply = "Worker full reply " + ("x" * 400)
 
     def fake_broker_get_sync(config, path):
         if path.startswith("/v1/tasks/C001"):
-            return {"status": "missing", "project_id": "demo", "task_id": "C001", "error": "Task not found."}
-        if path.startswith("/v1/conversations/C001"):
+            return {"status": "missing", "task_id": "C001", "error": "Task not found."}
+        if path.startswith("/v1/jobs"):
             return {
-                "status": "OPEN",
-                "project_id": "demo",
-                "conversation_id": "C001",
-                "conversation": {
-                    "kind": "conversation",
-                    "conversation_id": "C001",
-                    "mode": "TALK",
-                    "status": "OPEN",
-                    "turn": 2,
-                    "max_turns": 6,
-                    "preview": "short preview",
-                },
-                "messages": [
+                "jobs": [
                     {
-                        "from_agent": "demo.lead",
-                        "to_agent": "demo.work",
-                        "type": "CHAT_START",
-                        "turn": 1,
+                        "kind": "conversation",
+                        "conversation_id": "C001",
+                        "mode": "TALK",
+                        "status": "OPEN",
+                        "turn": 3,
                         "max_turns": 6,
-                        "payload": {"message": "Lead full question?"},
-                    },
-                    {
-                        "from_agent": "demo.work",
-                        "to_agent": "demo.lead",
-                        "type": "CHAT_REPLY",
-                        "turn": 2,
-                        "max_turns": 6,
-                        "payload": {"summary": long_worker_reply},
-                    },
-                ],
+                        "preview": "Discuss repo risks.",
+                    }
+                ]
             }
         raise AssertionError(path)
 
@@ -242,10 +222,6 @@ def test_get_conversation_id_prints_full_transcript(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert "Conversation C001: OPEN" in result.output
-    assert "Transcript" in result.output
-    assert "Lead full question?" in result.output
-    assert "Worker full reply" in result.output
-    assert result.output.count("x") >= 400
     assert "Continue: orch say C001" in result.output
 
 
