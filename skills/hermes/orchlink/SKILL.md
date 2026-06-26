@@ -145,18 +145,18 @@ orch wait TREV001
 
 ## Task prompt checklist
 
-Every `orch ask` or `orch send` task should include:
+Task prompts should be scoped, not templated for its own sake. Include enough of these fields for the worker to act safely:
 
-- `MODE: DISCUSS | PLAN | DO | REVIEW`
-- `TASK_ID: ...`
-- current context
-- exact allowed files/paths
-- forbidden files/paths
-- whether edits are allowed
-- commands/tests the worker may run
-- desired reply shape, chosen for this task
+- Always: `MODE: DISCUSS | PLAN | DO | REVIEW`
+- Always: `TASK_ID: ...`
+- Usually: current context
+- Usually: exact allowed files/paths
+- Usually: forbidden files/paths
+- Usually: whether edits are allowed
+- Usually: commands/tests the worker may run
+- Optional: desired reply shape, only when you care about the format
 
-Keep scopes narrow. The worker lane is single-flight; do not stack multiple tasks.
+Keep scopes narrow. Short, obvious tasks can be shorter. Risky, broad, review, or implementation tasks should include the full scoping details. The worker lane is single-flight; do not stack multiple tasks.
 
 ## Expected worker replies
 

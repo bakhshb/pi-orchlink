@@ -115,18 +115,18 @@ orch wait TREV001
 
 ## Task message checklist
 
-Every `orch ask` or `orch send` message should include:
+Task messages should be scoped, not templated for its own sake. Include enough of these fields for the worker to act safely:
 
-- `MODE: DISCUSS | PLAN | DO | REVIEW`
-- `TASK_ID: ...`
-- current context
-- exact worker scope
-- forbidden scope
-- whether edits are allowed
-- desired reply shape, chosen for this task
-- tests/checks the worker may run
+- Always: `MODE: DISCUSS | PLAN | DO | REVIEW`
+- Always: `TASK_ID: ...`
+- Usually: current context
+- Usually: exact worker scope
+- Usually: forbidden scope
+- Usually: whether edits are allowed
+- Usually: tests/checks the worker may run
+- Optional: desired reply shape, only when you care about the format
 
-Keep worker scopes narrow. Prefer file/path limits. Do not ask the worker to inspect the whole repository unless necessary.
+Keep worker scopes narrow. Prefer file/path limits. Short, obvious tasks can be shorter. Risky, broad, review, or implementation tasks should include the full scoping details. Do not ask the worker to inspect the whole repository unless necessary.
 
 ## Reply handling
 
