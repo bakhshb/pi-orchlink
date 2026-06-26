@@ -186,7 +186,7 @@ Lead should not run big tests, final summaries, release steps, or cleanup that d
   run/
 ```
 
-You do not run these files. Orchlink gives them to Pi so lead and work know their roles.
+You do not run these files. Orchlink gives them to Pi so lead and work know their roles. `orch lead` and `orch work` refresh stale or missing generated skill files from the installed templates before starting Pi.
 
 Do not commit `.orch/`.
 
@@ -223,16 +223,15 @@ Run:
 orch update
 ```
 
-After an update, refresh the project instructions and restart:
+After an update, restart the broker and Pi sessions:
 
 ```bash
-orch init --refresh-skills
 orch stop
 orch lead --new
 orch work --new
 ```
 
-Use `--new` when you want fresh Pi chats with the latest Orchlink instructions.
+`orch lead` and `orch work` refresh stale generated skills automatically. Use `--new` when you want fresh Pi chats with the latest Orchlink instructions.
 
 For real-session validation beyond unit tests, run the manual smoke plan in [`docs/manual-smoke-test.md`](docs/manual-smoke-test.md).
 

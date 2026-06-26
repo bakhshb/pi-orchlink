@@ -38,7 +38,7 @@ from orchlink.project.config import (
     role_agent_id,
     run_dir,
 )
-from orchlink.project.init import LEAD_SKILL, WORK_SKILL, init_project
+from orchlink.project.init import init_project, project_skill_statuses, refresh_project_skills_if_needed
 
 
 def discover_project_root() -> Path:
@@ -502,6 +502,12 @@ def load_project_or_exit() -> dict[str, Any]:
         raise typer.Exit(1) from exc
 
 
+def auto_refresh_project_skills(config: dict[str, Any]) -> None:
+    refreshed = refresh_project_skills_if_needed(project_root(config))
+    if refreshed:
+        console.print(f"[Orch] Refreshed project skills from current templates: {', '.join(refreshed)}")
+
+
 @broker_app.command("run", help="Run the local Orchlink broker HTTP server in the foreground.")
 def broker_run(
     host: Annotated[str, typer.Option("--host", help="Host interface to bind.")] = "127.0.0.1",
@@ -531,6 +537,7 @@ def lead(
 ) -> None:
     config = load_project_or_exit()
     try:
+        auto_refresh_project_skills(config)
         ensure_broker_running(config)
         console.print("[Orch] Broker online")
         register_project_role_sync(config, "lead")
@@ -554,6 +561,7 @@ def work(
 ) -> None:
     config = load_project_or_exit()
     try:
+        auto_refresh_project_skills(config)
         ensure_broker_running(config)
         console.print("[Orch] Broker online")
         register_project_role_sync(config, "worker")
@@ -1136,19 +1144,14 @@ def doctor() -> None:
             console.print(f"Broker version: {info.get('version', 'unknown')} ({'compatible' if broker_compatible(info) else 'stale'})")
         console.print("API key configured: yes")
         console.print(f"Pi command: {connector.pi_command()} ({'found' if connector.check_available() else 'missing'})")
+        statuses = project_skill_statuses(project_root(config))
         stale = False
         missing = False
-        for skill_name, expected in (("lead.md", LEAD_SKILL), ("work.md", WORK_SKILL)):
-            path = project_root(config) / ".orch" / "skills" / skill_name
-            if not path.is_file():
-                status_text = "missing"
-                missing = True
-            elif path.read_text(encoding="utf-8") != expected:
-                status_text = "stale"
-                stale = True
-            else:
-                status_text = "current"
-            console.print(f"{skill_name}: {status_text}")
+        for role in ("lead", "work"):
+            status_text = statuses[role]
+            stale = stale or status_text == "stale"
+            missing = missing or status_text == "missing"
+            console.print(f"{role}.md: {status_text}")
         if stale or missing:
             console.print("Project .orch files: stale")
             console.print("Run: orch init --refresh-skills")

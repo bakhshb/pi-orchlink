@@ -7,7 +7,7 @@ from orchlink.project.config import (
     load_project_config,
     resolve_agent_id,
 )
-from orchlink.project.init import init_project
+from orchlink.project.init import init_project, load_skill_template, project_skill_statuses, refresh_project_skills_if_needed
 
 __all__ = [
     "ORCH_DIR_NAME",
@@ -17,5 +17,8 @@ __all__ = [
     "find_project_root",
     "init_project",
     "load_project_config",
+    "load_skill_template",
+    "project_skill_statuses",
+    "refresh_project_skills_if_needed",
     "resolve_agent_id",
 ]

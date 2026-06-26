@@ -14,7 +14,16 @@ def test_pyproject_declares_src_layout_and_console_script():
     assert data["project"]["scripts"] == {"orch": "orchlink.cli.main:app"}
     assert data["tool"]["setuptools"]["package-dir"] == {"": "src"}
     assert data["tool"]["setuptools"]["packages"]["find"]["where"] == ["src"]
+    assert data["tool"]["setuptools"]["package-data"] == {"orchlink.project": ["templates/*.md"]}
     assert (ROOT / "src" / "orchlink").is_dir()
+
+
+def test_project_skill_templates_are_packaged_markdown_files():
+    from orchlink.project.init import load_skill_template
+
+    assert "# Lead Role" in load_skill_template("lead")
+    assert "# Worker Role" in load_skill_template("work")
+    assert "LEAD_SKILL" not in (ROOT / "src" / "orchlink" / "project" / "init.py").read_text(encoding="utf-8")
 
 
 def test_cli_imports_from_installable_package_and_exposes_required_commands():
