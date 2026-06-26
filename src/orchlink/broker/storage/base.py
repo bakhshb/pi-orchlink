@@ -67,7 +67,15 @@ class MessageStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def list_jobs(self, limit: int = 50, project_id: str | None = None) -> list[dict[str, Any]]:
+    async def list_jobs(
+        self,
+        limit: int = 50,
+        project_id: str | None = None,
+        active: bool = False,
+        status: str | None = None,
+        kind: str | None = None,
+        item_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         raise NotImplementedError
 
     @abstractmethod

@@ -238,7 +238,7 @@ For real-session validation beyond unit tests, run the manual smoke plan in [`do
 
 ## OpenClaw and Hermes adapter skills
 
-This repo includes adapter skills for using OpenClaw or Hermes as the Orchlink lead while Pi runs the visible `work` session:
+This repo includes adapter skills for using OpenClaw or Hermes as the Orchlink lead while Pi runs the visible `work` session. External leads should prefer `orch ask --wait` for synchronous decisions/reviews, use `orch wait` or `orch get` but not both unless rereading, and reserve Talk Mode for visible lead/work discussion.
 
 ```text
 skills/openclaw/orchlink/SKILL.md
@@ -306,18 +306,23 @@ You normally do not need these. The lead agent uses them when it coordinates wit
 
 | Command | What it means |
 | --- | --- |
-| `orch ask work --wait -t T001 -m "..."` | Ask work and wait. Use for decisions and reviews. |
-| `orch send work -t T002 -m "..."` | Send work an independent task. |
-| `orch talk work -m "..." -r 6` | Start a short discussion with work for up to 6 lead↔worker rounds. |
+| `orch ask work --wait -t T001 -m "..."` | Ask work and wait. Use for external/synchronous decisions and reviews. |
+| `orch send work -t T002 -m "..."` | Send work an independent task only when you can work on another scope. |
+| `orch talk work -m "..." -r 6` | Start a visible lead/work discussion for up to 6 lead↔worker rounds. Do not use Talk as automation glue. |
 | `orch say C001 -m "..."` | Continue a Talk Mode conversation. |
 | `orch close C001 -m "..."` | Close Talk Mode with a decision. |
-| `orch cancel T002 -m "..."` | Mark stuck/no-longer-needed broker work CANCELLED and ask Pi to abort the current turn. Pi can stop before the next tool call; an already-running shell command may only stop if Pi's abort reaches it. |
-| `orch jobs` | Show recent work for the current project ID. |
-| `orch idle` | Check whether work is busy; shows latest worker activity when available. |
-| `orch peek T002` | Show recent worker heartbeat/tool activity for a running task via `/v1/tasks/{task_id}/activity`. |
-| `orch task T002` | Show live broker status, route, and latest activity for a task. |
-| `orch get T002` | Read a completed task result. |
-| `orch wait T002` | Wait for that exact task result and print worker activity while waiting. This does not cancel the task if the wait times out. |
+| `orch cancel T002 -m "..."` | Mark broker work CANCELLED immediately and ask Pi to abort the current turn. Future tool calls are blocked; already-running shell commands are best-effort. |
+| `orch jobs` | Main browser for recent work in the current project ID. Status is authoritative; active jobs can show last heartbeat/tool activity, but stale heartbeat activity is hidden after terminal jobs. |
+| `orch jobs --active` | Show active/open/blocking work. |
+| `orch jobs --status STATUS` | Filter by broker status. |
+| `orch jobs --kind task\|talk` | Show only task or Talk conversation rows. |
+| `orch jobs --id T002` | Focus on one task/conversation/message ID. |
+| `orch jobs --json` | Print machine-readable jobs output. |
+| `orch idle` | Script/check idle state; exit 0 means idle, exit 1 means active/blocking work exists. |
+| `orch peek T002` | Show recent worker heartbeat/tool activity for a long-running task. Short tasks may finish before activity is useful. |
+| `orch task T002` | Show focused route/activity status until `orch jobs --id` fully replaces it. |
+| `orch get T002` | Read or reread a completed task result. |
+| `orch wait T002` | Wait for that exact task result and print worker activity while waiting. This does not cancel the task if the wait times out. Use `wait` or `get`, not both, unless rereading/debugging. |
 
 For big tasks, give work more time when sending the task:
 
@@ -329,6 +334,7 @@ Debug-only commands:
 
 | Command | Use |
 | --- | --- |
+| `orch status --task T010 --since-id 120 --limit 20` | Print raw broker JSON for debugging; normal agents should not use it for coordination. |
 | `orch watch` | Watch broker events, including worker activity heartbeats/tool calls. Lifecycle lines are labeled QUEUED, DELIVERED, or SETTLED. |
 | `orch broker run --host 127.0.0.1 --port 8787` | Run the broker by hand. |
 
@@ -340,7 +346,14 @@ orch lead --new
 orch work --new
 ```
 
-For long sessions, filter status output instead of dumping everything:
+Use built-in help to see command and option descriptions:
+
+```bash
+orch --help
+orch jobs --help
+```
+
+For broker debugging in long sessions, filter raw status output instead of dumping everything:
 
 ```bash
 orch status --task T010 --since-id 120 --limit 20

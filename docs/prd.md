@@ -519,6 +519,60 @@ Checks:
 - worker skill exists
 - worker can register
 
+12.8 "orch jobs"
+
+Shows recent work for the current project. This is the main work browser.
+
+Commands:
+
+orch jobs
+orch jobs --active
+orch jobs --status STATUS
+orch jobs --kind task
+orch jobs --kind talk
+orch jobs --id T001
+orch jobs --id C001
+orch jobs --json
+
+Behavior:
+
+- Default `orch jobs` shows recent work, including terminal and active rows.
+- `--active` shows only pending/running/open/blocking work.
+- Blocking statuses are PENDING, QUEUED, DELIVERED, RUNNING, IN_PROGRESS, and OPEN.
+- `--status` filters by broker status.
+- `--kind task` means rows with a task_id.
+- `--kind talk` means rows with a conversation_id and no task_id.
+- `--id` focuses one task/conversation/message ID.
+- `--json` prints machine-readable output.
+- Show ID, kind, mode, status, route, updated time, and preview.
+- Status is authoritative for agents.
+- Last activity may show heartbeat/tool activity while work is active.
+- Stale heartbeat activity such as "Worker still active" must not be shown after a job is terminal.
+- Terminal jobs must still appear as rows; only stale heartbeat metadata is suppressed.
+
+12.8.1 "orch idle"
+
+Keep `orch idle` as a script/check command while it has a useful exit-code contract:
+
+- exit 0 = idle
+- exit 1 = active/blocking work exists
+
+12.8.2 Focused/debug status commands
+
+Keep `orch task T001` as focused route/activity status until `orch jobs --id T001` matches or exceeds it.
+
+Keep `orch status` as raw broker JSON for debugging only. Normal agents should not use it for coordination.
+
+12.8.3 Cancellation honesty
+
+`orch cancel T001` marks broker work CANCELLED immediately and sends a steering cancellation message to Pi when possible. Future tool calls should be blocked. Already-running shell commands are best-effort and may only stop if Pi's abort reaches them.
+
+12.9 CLI help
+
+`orch --help` must explain each top-level command in plain language.
+
+Command-specific help, such as `orch jobs --help`, must explain the command and its options.
+
 13. Python Packaging
 
 Orchlink must be a real installable Python package.
@@ -835,8 +889,13 @@ orch ask work --task <TASK_ID> --msg "<TASK_MESSAGE>"
 
 Rules:
 - Send small tasks.
+- Prefer `orch ask work --wait` for review gates and synchronous decisions.
+- Use Talk Mode for visible discussion, not automation.
 - Ask for PLAN before risky implementation.
 - Include clear scope and constraints.
+- Decide the desired worker reply shape per task; do not force a universal template every time.
+- Use `orch wait T001` or `orch get T001`, not both routinely. Use `get` later only to reread/debug a completed result.
+- Use `peek` only for long-running work.
 - Review worker replies before continuing.
 - Do not let the worker edit forbidden files.
 - If worker returns BLOCKER, decide the next step.
@@ -865,18 +924,19 @@ Rules:
 - If the task is unclear, return BLOCKER.
 - If implementation is allowed, run relevant tests.
 - Do not commit unless explicitly allowed.
+- Follow the lead's requested reply shape.
 
-Always answer with:
+For task replies, prefer starting with:
 
 TYPE: PLAN | RESULT | BLOCKER
-TASK_ID:
-SUMMARY:
-FILES_INSPECTED:
-FILES_CHANGED:
-TESTS_RUN:
-FINDINGS:
-RISKS:
-RECOMMENDED_NEXT_STEP:
+
+If the lead requests no shape, use a concise default:
+
+summary:
+changed/inspected:
+tests:
+risks/blockers:
+next:
 
 23. Worker Task Prompt
 
@@ -913,17 +973,19 @@ Rules:
 - If implementation is allowed, run relevant tests.
 - Do not commit unless explicitly allowed.
 
-Required response format:
+Response guidance:
+
+For task replies, prefer starting with:
 
 TYPE: PLAN | RESULT | BLOCKER
-TASK_ID:
-SUMMARY:
-FILES_INSPECTED:
-FILES_CHANGED:
-TESTS_RUN:
-FINDINGS:
-RISKS:
-RECOMMENDED_NEXT_STEP:
+
+Then follow the lead's EXPECTED REPLY shape. If no useful shape is provided, be concise with:
+
+summary:
+changed/inspected:
+tests:
+risks/blockers:
+next:
 
 24. Security
 
@@ -1023,6 +1085,8 @@ MVP is complete when:
 13. API key protection works.
 14. Tests pass.
 15. README explains daily usage clearly.
+16. `orch --help` explains top-level commands and `orch jobs --help` explains the jobs command/options.
+17. `orch jobs` keeps terminal job rows visible but hides stale terminal heartbeat activity.
 
 29. Implementation Phases
 

@@ -73,20 +73,8 @@ Rules:
 - Return BLOCKER with specific questions if the request is unclear, too broad, or too large to scope safely.
 - If implementation is allowed, run relevant tests.
 - Do not commit unless explicitly allowed.
-
-Required response format:
-
-TYPE: PLAN | RESULT | BLOCKER
-MODE:
-TASK_ID:
-SUMMARY:
-FILES_INSPECTED:
-FILES_CHANGED:
-TESTS_RUN:
-FINDINGS:
-RISKS:
-OPEN_QUESTIONS:
-RECOMMENDED_NEXT_STEP:
+- Prefer starting task replies with: TYPE: PLAN | RESULT | BLOCKER.
+- After TYPE, follow the lead's EXPECTED REPLY shape. If none is useful, be concise with summary, changed/inspected, tests, risks/blockers, next.
 `;
 }
 
@@ -148,12 +136,10 @@ function messageText(message: any): string {
 }
 
 function detectReplyType(output: string): string {
-  for (const line of output.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith("TYPE:")) continue;
-    const value = trimmed.slice("TYPE:".length).trim().split(/\s+/, 1)[0];
-    if (["PLAN", "RESULT", "BLOCKER"].includes(value)) return value;
-  }
+  const firstLine = output.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) || "";
+  if (!firstLine.startsWith("TYPE:")) return "RESULT";
+  const value = firstLine.slice("TYPE:".length).trim().split(/\s+/, 1)[0];
+  if (["PLAN", "RESULT", "BLOCKER"].includes(value)) return value;
   return "RESULT";
 }
 
@@ -392,7 +378,7 @@ export default function (pi: ExtensionAPI) {
     const label = currentTask.task_id || currentTask.conversation_id || "current work";
     void postCurrentActivity("cancelled", `Broker marked ${label} ${status}; aborting current Pi turn.`, { phase: "cancelled" });
     abortIfPossible(ctx);
-    pi.sendUserMessage(`[Orchlink] ${label} is ${status}. Stop this work now, do not make more edits, and briefly acknowledge the cancellation.`, { deliverAs: "steer" });
+    pi.sendUserMessage(`[Orchlink] ${label} is ${status}. Stop working now. Do not make more edits, do not call more tools, and briefly acknowledge the cancellation.`, { deliverAs: "steer" });
     return true;
   }
 

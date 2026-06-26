@@ -7,6 +7,8 @@ from orchlink.broker.storage.base import MessageStore, MessageStoreBusy
 
 FAILED_STATUSES = {"FAILED", "TIMEOUT", "CANCELLED"}
 BUSY_MESSAGE_STATUSES = {"PENDING", "QUEUED", "DELIVERED", "RUNNING", "IN_PROGRESS"}
+ACTIVE_ACTIVITY_STATUSES = {"DELIVERED", "RUNNING", "IN_PROGRESS"}
+ACTIVE_JOB_STATUSES = BUSY_MESSAGE_STATUSES | {"OPEN"}
 TERMINAL_MESSAGE_STATUSES = {"DONE", "COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "CLOSED"}
 WORKER_BOUND_TYPES = {"TASK", "CHAT_START", "CHAT_TURN", "CHAT_CLOSE"}
 
@@ -141,6 +143,22 @@ class MemoryMessageStore(MessageStore):
             return "TALK"
         return "PLAN"
 
+    def _job_kind(self, job: dict[str, Any]) -> str:
+        if job.get("task_id"):
+            return "task"
+        if job.get("conversation_id"):
+            return "talk"
+        return str(job.get("kind") or "-").lower()
+
+    def _hide_stale_heartbeat_locked(self, job: dict[str, Any]) -> dict[str, Any]:
+        status = str(job.get("status") or "").upper()
+        if job.get("last_activity_type") == "heartbeat" and status not in ACTIVE_ACTIVITY_STATUSES:
+            job.pop("last_activity_at", None)
+            job.pop("last_activity_type", None)
+            job.pop("last_activity_tool", None)
+            job.pop("last_activity_preview", None)
+        return job
+
     def _event_fields(self, message: dict[str, Any], status: str | None = None) -> dict[str, Any]:
         payload = message.get("payload") or {}
         return {
@@ -171,6 +189,15 @@ class MemoryMessageStore(MessageStore):
         conversation_id = str(activity.get("conversation_id") or "")
         message_id = str(activity.get("message_id") or "")
         preview = str(activity.get("detail") or activity.get("phase") or activity.get("activity_type") or "")[:300]
+
+        if conversation_id:
+            conversation = self._conversations.get(self._conversation_key(project_id, conversation_id))
+            if conversation:
+                conversation["updated_at"] = timestamp
+                conversation["last_activity_at"] = timestamp
+                conversation["last_activity_type"] = activity.get("activity_type")
+                conversation["last_activity_tool"] = activity.get("tool_name")
+                conversation["last_activity_preview"] = preview
 
         target_message: dict[str, Any] | None = None
         if message_id:
@@ -266,7 +293,7 @@ class MemoryMessageStore(MessageStore):
             if agent and agent not in participants:
                 participants.append(agent)
         self._conversations[conversation_key] = {
-            "kind": "conversation",
+            "kind": "talk",
             "conversation_id": str(conversation_id),
             "project_id": project_id,
             "participants": participants,
@@ -274,13 +301,17 @@ class MemoryMessageStore(MessageStore):
             "status": next_status,
             "turn": turn,
             "max_turns": max_turns,
-            "from_agent": message.get("from_agent") or existing.get("from_agent"),
-            "to_agent": message.get("to_agent") or existing.get("to_agent"),
+            "from_agent": existing.get("from_agent") or message.get("from_agent"),
+            "to_agent": existing.get("to_agent") or message.get("to_agent"),
             "created_at": existing.get("created_at") or now,
             "updated_at": now,
             "last_message_preview": self._message_preview(message)[:300],
             "preview": self._message_preview(message)[:300],
             "message_type": message_type,
+            "last_activity_at": existing.get("last_activity_at"),
+            "last_activity_type": existing.get("last_activity_type"),
+            "last_activity_tool": existing.get("last_activity_tool"),
+            "last_activity_preview": existing.get("last_activity_preview"),
         }
 
     def _assert_conversation_can_receive_locked(self, message: dict[str, Any]) -> None:
@@ -773,11 +804,36 @@ class MemoryMessageStore(MessageStore):
                     return {"status": task_matches[0].get("status", "QUEUED"), "project_id": task_matches[0].get("project_id"), "task_id": task_id, "job": task_matches[0]}
             return {"status": "missing", "project_id": project_id, "task_id": task_id, "error": "Task not found."}
 
-    async def list_jobs(self, limit: int = 50, project_id: str | None = None) -> list[dict[str, Any]]:
+    async def list_jobs(
+        self,
+        limit: int = 50,
+        project_id: str | None = None,
+        active: bool = False,
+        status: str | None = None,
+        kind: str | None = None,
+        item_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         async with self._lock:
             self._expire_timed_out_messages_locked()
             jobs = [dict(task) for task in self._tasks.values() if self._same_project(task, project_id)]
             jobs.extend(dict(conversation) for conversation in self._conversations.values() if self._same_project(conversation, project_id))
+            if active:
+                jobs = [job for job in jobs if str(job.get("status") or "").upper() in ACTIVE_JOB_STATUSES]
+            if status:
+                expected_status = status.upper()
+                jobs = [job for job in jobs if str(job.get("status") or "").upper() == expected_status]
+            if kind:
+                expected_kind = kind.lower()
+                jobs = [job for job in jobs if self._job_kind(job) == expected_kind]
+            if item_id:
+                jobs = [
+                    job
+                    for job in jobs
+                    if str(job.get("task_id") or "") == item_id
+                    or str(job.get("conversation_id") or "") == item_id
+                    or str(job.get("message_id") or "") == item_id
+                ]
+            jobs = [self._hide_stale_heartbeat_locked(job) for job in jobs]
             jobs.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
             return jobs[:limit]
 

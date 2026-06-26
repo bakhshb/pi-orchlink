@@ -61,7 +61,10 @@ def test_pi_extension_uses_valid_record_type():
     assert "markMessageStatus" in ORCHLINK_PI_EXTENSION
     assert "RUNNING" in ORCHLINK_PI_EXTENSION
     assert "checkCurrentTaskCancellation" in ORCHLINK_PI_EXTENSION
-    assert "Stop this work now" in ORCHLINK_PI_EXTENSION
+    assert "Stop working now" in ORCHLINK_PI_EXTENSION
+    assert "do not call more tools" in ORCHLINK_PI_EXTENSION
+    assert "Stop working now. Do not make more edits, do not call more tools" in ORCHLINK_PI_EXTENSION
+    assert "deliverAs: \"steer\"" in ORCHLINK_PI_EXTENSION
     assert "abortIfPossible" in ORCHLINK_PI_EXTENSION
     assert "ctx.abort" in ORCHLINK_PI_EXTENSION
     assert "Orchlink cancelled this work before the tool call started" in ORCHLINK_PI_EXTENSION
@@ -83,6 +86,10 @@ def test_pi_extension_uses_valid_record_type():
     assert "renderLeadPrompt(message), { deliverAs: \"steer\" }" in ORCHLINK_PI_EXTENSION
     assert "deliverAs: \"nextTurn\"" not in ORCHLINK_PI_EXTENSION
     assert "Stop any unrelated work now" in ORCHLINK_PI_EXTENSION
+    assert "Prefer starting task replies with: TYPE: PLAN | RESULT | BLOCKER" in ORCHLINK_PI_EXTENSION
+    assert "const firstLine = output.split" in ORCHLINK_PI_EXTENSION
+    assert "if (!firstLine.startsWith(\"TYPE:\")) return \"RESULT\";" in ORCHLINK_PI_EXTENSION
+    assert "for (const line of output.split" not in ORCHLINK_PI_EXTENSION
 
 
 def test_pi_extension_keeps_current_task_during_recoverable_transport_error():

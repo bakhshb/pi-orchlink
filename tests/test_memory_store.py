@@ -114,6 +114,67 @@ def test_record_activity_marks_task_running_and_lists_activity():
     asyncio.run(run())
 
 
+def test_list_jobs_hides_stale_heartbeat_after_completion_but_keeps_active_activity():
+    async def run():
+        store = MemoryMessageStore()
+        await store.enqueue_message(task_message(project_id="demo"))
+        await store.get_next_message("demo.work", wait_seconds=1)
+        await store.record_activity(
+            {
+                "project_id": "demo",
+                "agent_id": "demo.work",
+                "message_id": "msg-0001",
+                "task_id": "TEST-001",
+                "activity_type": "heartbeat",
+                "detail": "Worker still active.",
+            }
+        )
+
+        running_jobs = await store.list_jobs(project_id="demo")
+        assert running_jobs[0]["status"] == "RUNNING"
+        assert running_jobs[0]["last_activity_type"] == "heartbeat"
+        assert running_jobs[0]["last_activity_preview"] == "Worker still active."
+
+        await store.save_reply("msg-0001", {**reply_message(), "project_id": "demo"})
+        done_jobs = await store.list_jobs(project_id="demo")
+
+        assert done_jobs[0]["status"] == "DONE"
+        assert "last_activity_type" not in done_jobs[0]
+        assert "last_activity_preview" not in done_jobs[0]
+
+    asyncio.run(run())
+
+
+def test_list_jobs_filters_active_status_kind_and_id():
+    async def run():
+        store = MemoryMessageStore()
+        await store.enqueue_message(task_message(project_id="demo"))
+        await store.save_reply("msg-0001", {**reply_message(), "project_id": "demo"})
+        await store.enqueue_message(
+            task_message(
+                project_id="demo",
+                message_id="msg-chat",
+                correlation_id="req-chat",
+                conversation_id="C001",
+                task_id=None,
+                type="CHAT_START",
+                delivery="conversation",
+                payload={"mode": "TALK", "message": "Discuss."},
+            )
+        )
+
+        active = await store.list_jobs(project_id="demo", active=True)
+        done_tasks = await store.list_jobs(project_id="demo", status="DONE", kind="task")
+        one_talk = await store.list_jobs(project_id="demo", item_id="C001")
+
+        assert [job["conversation_id"] for job in active] == ["C001"]
+        assert [job["task_id"] for job in done_tasks] == ["TEST-001"]
+        assert one_talk[0]["kind"] == "talk"
+        assert one_talk[0]["conversation_id"] == "C001"
+
+    asyncio.run(run())
+
+
 def test_project_scoped_jobs_allow_same_task_id_in_different_projects():
     async def run():
         store = MemoryMessageStore()
@@ -211,6 +272,58 @@ def test_open_conversation_blocks_new_task_to_worker():
             await store.enqueue_message(task_message(message_id="msg-0002", correlation_id="req-0002", task_id="TEST-002"))
 
         assert exc.value.detail["blocking_id"] == "C001"
+
+    asyncio.run(run())
+
+
+def test_talk_job_keeps_lead_route_and_surfaces_activity_after_reply():
+    async def run():
+        store = MemoryMessageStore()
+        chat = task_message(
+            project_id="demo",
+            message_id="msg-chat",
+            correlation_id="req-chat",
+            conversation_id="C001",
+            task_id=None,
+            type="CHAT_START",
+            delivery="conversation",
+            payload={"mode": "TALK", "message": "Discuss."},
+        )
+        reply = {
+            **reply_message(),
+            "project_id": "demo",
+            "message_id": "reply-chat",
+            "correlation_id": "req-chat",
+            "conversation_id": "C001",
+            "task_id": None,
+            "from_agent": "demo.work",
+            "to_agent": "demo.lead",
+            "type": "CHAT_REPLY",
+            "status": "DONE",
+            "delivery": "conversation",
+            "payload": {"mode": "TALK", "summary": "Use memory first."},
+        }
+
+        await store.enqueue_message(chat)
+        await store.get_next_message("demo.work", wait_seconds=1)
+        await store.record_activity(
+            {
+                "project_id": "demo",
+                "agent_id": "demo.work",
+                "message_id": "msg-chat",
+                "conversation_id": "C001",
+                "activity_type": "tool_call",
+                "tool_name": "read",
+                "detail": "docs/prd.md",
+            }
+        )
+        await store.save_reply("msg-chat", reply)
+        jobs = await store.list_jobs(project_id="demo", kind="talk")
+
+        assert jobs[0]["from_agent"] == "demo.lead"
+        assert jobs[0]["to_agent"] == "demo.work"
+        assert jobs[0]["last_activity_tool"] == "read"
+        assert jobs[0]["last_activity_preview"] == "docs/prd.md"
 
     asyncio.run(run())
 

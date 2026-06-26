@@ -29,12 +29,20 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     lead_skill = paths["lead_skill"].read_text(encoding="utf-8")
     work_skill = paths["work_skill"].read_text(encoding="utf-8")
     assert "not just delegate" in lead_skill
-    assert "Task message checklist" in lead_skill
+    assert "Result shape and task prompts" in lead_skill
     assert "orch talk work" in lead_skill
     assert "orch ask work --wait" in lead_skill
     assert "orch send work" in lead_skill
     assert "orch cancel T002" in lead_skill
     assert "wait timeout does not cancel" in lead_skill
+    assert "stale heartbeat activity is hidden" in lead_skill
+    assert "status is authoritative" in lead_skill
+    assert "orch jobs --active" in lead_skill
+    assert "orch jobs --status STATUS" in lead_skill
+    assert "orch jobs --json" in lead_skill
+    assert "Use `orch wait T002` or `orch get T002`, not both routinely" in lead_skill
+    assert "Raw broker JSON for debugging only" in lead_skill
+    assert "Already-running shell commands are best-effort" in lead_skill
     assert "Do not use `orch send` for review gates" in lead_skill
     assert "orch idle" in lead_skill
     assert "Do not run dependent full tests" in lead_skill
@@ -52,6 +60,8 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "do not do an exhaustive scan" in lead_skill
     assert "no TASK_ID" in lead_skill
     assert "MODE: DISCUSS | PLAN | DO | REVIEW" in lead_skill
+    assert "desired reply shape" in lead_skill
+    assert "TYPE: PLAN | RESULT | BLOCKER" in lead_skill
     assert "## Modes" in work_skill
     assert "TALK: discuss" in work_skill
     assert "For TALK, behave like a collaborator" in work_skill
@@ -62,6 +72,9 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "read every file" in work_skill
     assert "Stop conditions for TALK" in work_skill
     assert "proceed, fix something first" in work_skill
+    assert "Follow the lead's requested reply shape" in work_skill
+    assert "summary:" in work_skill
+    assert "changed/inspected:" in work_skill
     assert "TYPE: CHAT_REPLY" not in work_skill
 
 
@@ -74,7 +87,7 @@ def test_refresh_skills_keeps_existing_project_config(tmp_path):
     refreshed = init_project(tmp_path, refresh_skills=True)
 
     assert refreshed["config"].read_text(encoding="utf-8") == "project_id: custom\n"
-    assert "Task message checklist" in refreshed["lead_skill"].read_text(encoding="utf-8")
+    assert "Result shape and task prompts" in refreshed["lead_skill"].read_text(encoding="utf-8")
     assert "## Modes" in refreshed["work_skill"].read_text(encoding="utf-8")
 
 
