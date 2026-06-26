@@ -889,6 +889,36 @@ def jobs(
             console.print(f"  last activity: {activity}")
 
 
+@app.command(help="Show registered lead/work Pi sessions for the current project.")
+def sessions(
+    active: Annotated[bool, typer.Option("--active/--all", help="Show only active sessions, or include released history.")] = True,
+    json_output: Annotated[bool, typer.Option("--json", help="Print raw sessions JSON.")] = False,
+) -> None:
+    config = load_project_or_exit()
+    try:
+        ensure_broker_running(config)
+        body = broker_get_sync(config, f"/v1/sessions?active={str(active).lower()}{project_query(config, '&')}")
+    except (RuntimeError, httpx.HTTPError) as exc:
+        console.print(f"[Orch] {exc}")
+        raise typer.Exit(1) from exc
+
+    sessions_list = body.get("sessions", [])
+    if json_output:
+        console.print_json(json.dumps(body))
+        return
+
+    if not sessions_list:
+        console.print("[Orch] No active lead/work sessions registered for this project." if active else "[Orch] No lead/work sessions registered for this project.")
+        return
+
+    console.print("AGENT\tROLE\tSTATUS\tPID\tSESSION\tHEARTBEAT")
+    for session in sessions_list:
+        console.print(
+            f"{session.get('agent_id', '-')}\t{session.get('role', '-')}\t{session.get('status', '-')}\t"
+            f"{session.get('pid', '-')}\t{session.get('session_id', '-')}\t{human_age(session.get('last_heartbeat_at'))}"
+        )
+
+
 @app.command(help="Exit 0 if the worker lane is idle; exit 1 if active work exists.")
 def idle(limit: Annotated[int, typer.Option("--limit", help="Maximum number of recent jobs to inspect.")] = 50) -> None:
     config = load_project_or_exit()

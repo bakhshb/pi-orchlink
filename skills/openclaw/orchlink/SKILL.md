@@ -1,7 +1,7 @@
 ---
 name: orchlink
 description: Use this skill whenever OpenClaw should coordinate with a local Pi worker through Orchlink. This is for acting as the lead agent: start/check the worker lane, send scoped tasks, wait for results, run review gates, inspect worker activity, handle blockers, and avoid cross-project/stale-broker mistakes.
-version: 1.0.1
+version: 1.0.2
 metadata:
   openclaw:
     emoji: "🔗"
@@ -23,9 +23,9 @@ Use shell commands when available. If you do not have shell access, tell the hum
 - Current-project isolation comes from `.orch/project.yaml` and the `project_id` sent by the CLI.
 - `T001` means task ID. Use it with `orch wait` or `orch get` for results, `orch jobs --id`, `orch peek`, and `orch task` for status/activity.
 - `C001` means Talk conversation ID. Use it with `orch say` and `orch close` only when a visible lead Pi session is part of the workflow.
-- Human daily commands are `orch init`, `orch lead`, `orch work`, `orch doctor`, `orch jobs`, `orch stop`, and `orch update`.
+- Human daily commands are `orch init`, `orch lead`, `orch work`, `orch doctor`, `orch sessions`, `orch jobs`, `orch stop`, and `orch update`.
 - Lead/agent coordination commands are `orch ask`, `orch send`, `orch talk`, `orch say`, `orch close`, `orch wait`, `orch get`, `orch idle`, `orch peek`, and `orch cancel`.
-- Debug/reference commands are `orch status`, `orch watch`, `orch task`, and `orch broker run`; do not use raw debug output for normal coordination.
+- Debug/reference commands are `orch status`, `orch watch`, `orch task`, and `orch broker run`; do not use raw debug output for normal coordination. Prefer `orch sessions` over raw status/curl/Python parsing when checking whether lead/work Pi sessions exist.
 
 ## Before using Orchlink
 
@@ -42,14 +42,17 @@ cd /home/debian/projects/orchlink
 ./install.sh
 ```
 
-From the target project directory, check setup:
+From the target project directory, check setup and visible sessions:
 
 ```bash
 orch doctor
+orch sessions
 orch idle
 ```
 
 If `orch doctor` reports stale skills, missing project config, missing Pi, or incompatible broker, follow its instruction. A stale broker can leak old cross-project state; do not continue until fixed.
+
+`orch sessions` confirms whether visible lead/work Pi sessions exist. `orch idle` only checks pending work; it can pass even when no worker session is running.
 
 If no worker session is running, ask the human to start it in a visible terminal:
 
@@ -76,6 +79,8 @@ orch wait T002
 ```
 
 Use `orch peek T002` only for long-running work where heartbeat/tool activity would help. Use `orch get T002` later only to reread or debug a completed result.
+
+Use `orch jobs --active` to inspect active work details after `send`; use `orch idle` as the gate before new assignments or dependent work.
 
 Check worker lane before dependent work:
 
@@ -173,13 +178,13 @@ For task work, prefer asking the worker to start with `TYPE: PLAN | RESULT | BLO
 ## Safety rules
 
 - The worker lane is single-flight. Do not stack worker tasks.
-- Run `orch idle` before dependent tests, final conclusions, or assigning more worker work.
+- Run `orch idle` before dependent tests, final conclusions, or assigning more worker work. Use `orch jobs --active` only when you need details about active work.
 - Keep lead and worker scopes separate.
 - Do not expose API keys or secrets in prompts, outputs, or logs.
 - Use `orch jobs` as the main work browser; use `orch jobs --active` for open/running/blocking work, `orch jobs --status STATUS` for one broker state, `orch jobs --kind task` or `orch jobs --kind talk` for task/Talk filtering, `orch jobs --id T002` for focused lookup, and `orch jobs --json` for machine-readable output.
 - Do not rely on `orch jobs` alone for final results; use `orch wait` or `orch get`.
 - Treat `orch task T002` as focused status/activity until `orch jobs --id T002` fully replaces it.
-- Treat `orch status` as raw debug JSON, not normal coordination output.
+- Treat `orch status` as raw debug JSON, not normal coordination output. For session checks, use `orch sessions` instead of raw status, curl, or ad hoc JSON/Python parsing.
 - In `orch jobs`, trust the job `STATUS` over activity text. Heartbeat activity means "worker was alive then"; it is shown only for active jobs and hidden after terminal jobs when stale.
 - If a command reports stale broker or cross-project result, stop and repair before continuing.
 
@@ -192,12 +197,18 @@ orch --help
 orch jobs --help
 ```
 
-If Orchlink looks confused, run:
+If Orchlink looks confused, run the readable checks first:
 
 ```bash
 orch doctor
-curl -s http://127.0.0.1:8787/health
+orch sessions
 orch idle
+```
+
+Use broker health only for deeper debugging:
+
+```bash
+curl -s http://127.0.0.1:8787/health
 ```
 
 Expected broker health includes capabilities like:

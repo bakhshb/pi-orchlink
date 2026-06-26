@@ -1,7 +1,7 @@
 ---
 name: orchlink
 description: Use this skill whenever Hermes should act as the lead agent for a local Pi worker through Orchlink. It covers sending scoped worker tasks, blocking review gates, async wait/get flows, worker activity checks, blockers, project scoping, stale broker recovery, and safe cancellation semantics.
-version: 1.0.1
+version: 1.0.2
 platforms: [linux, macos]
 metadata:
   hermes:
@@ -24,9 +24,9 @@ Use terminal commands when available. If the current Hermes surface does not pro
 - Multiple projects can share one broker; isolation comes from `.orch/project.yaml` and the current `project_id`.
 - A task ID like `T001` is read with `orch wait` or `orch get` for results, and `orch jobs --id`, `orch peek`, or `orch task` for status/activity.
 - A conversation ID like `C001` is for Talk Mode and is best used when a visible Pi lead chat exists.
-- Human daily commands are `orch init`, `orch lead`, `orch work`, `orch doctor`, `orch jobs`, `orch stop`, and `orch update`.
+- Human daily commands are `orch init`, `orch lead`, `orch work`, `orch doctor`, `orch sessions`, `orch jobs`, `orch stop`, and `orch update`.
 - Lead/agent coordination commands are `orch ask`, `orch send`, `orch talk`, `orch say`, `orch close`, `orch wait`, `orch get`, `orch idle`, `orch peek`, and `orch cancel`.
-- Debug/reference commands are `orch status`, `orch watch`, `orch task`, and `orch broker run`; do not use raw debug output for normal coordination.
+- Debug/reference commands are `orch status`, `orch watch`, `orch task`, and `orch broker run`; do not use raw debug output for normal coordination. Prefer `orch sessions` over raw status/curl/Python parsing when checking whether lead/work Pi sessions exist.
 
 ## Start/check workflow
 
@@ -43,14 +43,17 @@ cd /home/debian/projects/orchlink
 ./install.sh
 ```
 
-From the target project directory:
+From the target project directory, check setup and visible sessions:
 
 ```bash
 orch doctor
+orch sessions
 orch idle
 ```
 
 If `orch doctor` reports stale skills, missing project config, missing Pi, or incompatible broker, follow its instruction before continuing.
+
+`orch sessions` confirms whether visible lead/work Pi sessions exist. `orch idle` only checks pending work; it can pass even when no worker session is running.
 
 If the worker is not running, ask the human to start a visible worker session:
 
@@ -86,6 +89,8 @@ orch wait T002
 ```
 
 Use `orch peek T002` only for long-running work where heartbeat/tool activity would help. Use `orch get T002` later only to reread or debug a completed result.
+
+Use `orch jobs --active` to inspect active work details after `send`; use `orch idle` as the gate before new assignments or dependent work.
 
 Check the lane before dependent work:
 
@@ -190,7 +195,7 @@ In `orch jobs`, trust the job `STATUS` over activity text. Heartbeat activity me
 
 ## Progress and activity
 
-Use `orch jobs` as the main work browser, with filters when useful:
+Use `orch jobs` as the main work browser, with filters when useful. These filters inspect work details; they do not replace `orch idle` as the gate before new assignments.
 
 ```bash
 orch jobs --active
@@ -208,11 +213,11 @@ orch peek T002
 orch task T002
 ```
 
-`peek` is observational only and is most useful for long-running work. It does not replace `wait`, `get`, or `idle`. Treat `orch task T002` as focused status/activity until `orch jobs --id T002` fully replaces it. Treat `orch status` as raw debug JSON, not normal coordination output.
+`peek` is observational only and is most useful for long-running work. It does not replace `wait`, `get`, or `idle`. Treat `orch task T002` as focused status/activity until `orch jobs --id T002` fully replaces it. Treat `orch status` as raw debug JSON, not normal coordination output; for session checks, use `orch sessions` instead of raw status, curl, or ad hoc JSON/Python parsing.
 
 ## Safety rules
 
-- Run `orch idle` before dependent tests, final conclusions, or new worker assignments.
+- Run `orch idle` before dependent tests, final conclusions, or new worker assignments. Use `orch jobs --active` only when you need details about active work.
 - Keep Hermes-owned work and worker-owned work separate.
 - Do not print or send real API keys/secrets.
 - Do not ask the worker to scan the whole repo unless necessary.
@@ -228,12 +233,18 @@ orch --help
 orch jobs --help
 ```
 
-Then check setup:
+Then run the readable checks first:
 
 ```bash
 orch doctor
-curl -s http://127.0.0.1:8787/health
+orch sessions
 orch idle
+```
+
+Use broker health only for deeper debugging:
+
+```bash
+curl -s http://127.0.0.1:8787/health
 ```
 
 Healthy broker output should include capabilities such as:
