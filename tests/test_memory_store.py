@@ -516,6 +516,56 @@ def test_chat_reply_queues_reply_for_lead_inbox():
     asyncio.run(run())
 
 
+def test_talk_conversation_can_close_after_worker_reply():
+    async def run():
+        store = MemoryMessageStore()
+        message = task_message(
+            project_id="demo",
+            message_id="msg-chat",
+            correlation_id="req-chat",
+            conversation_id="C001",
+            task_id=None,
+            type="CHAT_START",
+            delivery="conversation",
+            payload={"mode": "TALK", "message": "Start."},
+        )
+        reply = {
+            **reply_message(),
+            "project_id": "demo",
+            "message_id": "reply-chat",
+            "correlation_id": "req-chat",
+            "conversation_id": "C001",
+            "task_id": None,
+            "from_agent": "demo.work",
+            "to_agent": "demo.lead",
+            "type": "CHAT_REPLY",
+            "status": "DONE",
+            "delivery": "conversation",
+            "payload": {"mode": "TALK", "summary": "ok"},
+        }
+
+        await store.enqueue_message(message)
+        await store.get_next_message("demo.work", wait_seconds=1)
+        await store.save_reply("msg-chat", reply)
+        result = await store.close_conversation(
+            "C001",
+            {
+                "project_id": "demo",
+                "conversation_id": "C001",
+                "from_agent": "demo.lead",
+                "to_agent": "demo.work",
+                "type": "CHAT_CLOSE",
+                "payload": {"summary": "done"},
+            },
+        )
+        jobs = await store.list_jobs(project_id="demo", kind="talk")
+
+        assert result == {"status": "closed", "conversation_id": "C001"}
+        assert jobs[0]["status"] == "CLOSED"
+
+    asyncio.run(run())
+
+
 def test_save_reply_queues_reply_for_lead_inbox():
     async def run():
         store = MemoryMessageStore()

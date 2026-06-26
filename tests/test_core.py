@@ -33,6 +33,7 @@ def test_core_transition_table_allows_expected_forward_paths_only():
     assert can_transition("queued", "delivered") is True
     assert can_transition("delivered", "running") is True
     assert can_transition("running", "done") is True
+    assert can_transition("running", "closed") is True
     assert can_transition("running", "cancelled") is True
 
     assert can_transition("DONE", "RUNNING") is False
