@@ -11,7 +11,7 @@ metadata:
 
 # Orchlink Lead for OpenClaw
 
-You are the lead agent using Orchlink to coordinate with a visible local Pi worker session. Treat Orchlink as a project-local worker lane, not as a dashboard or database.
+You are the lead agent using Orchlink to coordinate with a visible local Pi worker session. Treat Orchlink as one local lead/work loop, not as a dashboard, database, workflow engine, or agent platform.
 
 Use shell commands when available. If you do not have shell access, tell the human the exact `orch ...` command to run and what output to paste back.
 
@@ -23,6 +23,9 @@ Use shell commands when available. If you do not have shell access, tell the hum
 - Current-project isolation comes from `.orch/project.yaml` and the `project_id` sent by the CLI.
 - `T001` means task ID. Use it with `orch wait` or `orch get` for results, `orch jobs --id`, `orch peek`, and `orch task` for status/activity.
 - `C001` means Talk conversation ID. Use it with `orch say` and `orch close` only when a visible lead Pi session is part of the workflow.
+- Human daily commands are `orch init`, `orch lead`, `orch work`, `orch doctor`, `orch jobs`, `orch stop`, and `orch update`.
+- Lead/agent coordination commands are `orch ask`, `orch send`, `orch talk`, `orch say`, `orch close`, `orch wait`, `orch get`, `orch idle`, `orch peek`, and `orch cancel`.
+- Debug/reference commands are `orch status`, `orch watch`, `orch task`, and `orch broker run`; do not use raw debug output for normal coordination.
 
 ## Before using Orchlink
 

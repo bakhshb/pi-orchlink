@@ -551,3 +551,51 @@ def test_status_reports_basic_counts():
     assert body["agent_count"] == 1
     assert body["active_message_count"] == 0
     assert body["pending_reply_count"] == 0
+
+
+def test_session_endpoints_and_peer_offline_guard():
+    client = ASGITestClient()
+    client.app = create_app(store=MemoryMessageStore(require_peer_sessions=True), settings=Settings(api_key="test-key"))
+
+    offline = client.post(
+            "/v1/messages/send",
+            headers=auth_headers(),
+            json={
+                "protocol": "orch-a2a-v1",
+                "message_id": "msg-offline",
+                "correlation_id": "req-offline",
+                "conversation_id": "test-tasks",
+                "task_id": "T-OFFLINE",
+                "from_agent": "test.lead",
+                "to_agent": "test.work",
+                "type": "TASK",
+                "status": "PENDING",
+                "turn": 1,
+                "max_turns": 6,
+                "requires_reply": True,
+                "timeout_seconds": 30,
+                "delivery": "async",
+                "payload": {"mode": "PLAN", "intent": "Inspect."},
+            },
+        )
+    assert offline.status_code == 409
+    assert offline.json()["detail"]["error"] == "peer_offline"
+
+    acquired = client.post(
+            "/v1/sessions/acquire",
+            headers=auth_headers(),
+            json={"project_id": "test", "agent_id": "test.work", "role": "work", "pid": 123},
+        )
+    assert acquired.status_code == 200
+    lease_id = acquired.json()["session"]["lease_id"]
+
+    heartbeat = client.post(f"/v1/sessions/{lease_id}/heartbeat", headers=auth_headers(), json={"project_id": "test"})
+    assert heartbeat.status_code == 200
+
+    sessions = client.get("/v1/sessions?project_id=test&active=true", headers=auth_headers())
+    assert sessions.status_code == 200
+    assert len(sessions.json()["sessions"]) == 1
+
+    released = client.post(f"/v1/sessions/{lease_id}/release", headers=auth_headers(), json={"project_id": "test", "reason": "done"})
+    assert released.status_code == 200
+    assert released.json()["session"]["status"] == "RELEASED"

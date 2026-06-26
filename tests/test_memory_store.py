@@ -533,3 +533,38 @@ def test_wait_for_reply_times_out():
         }
 
     asyncio.run(run())
+
+
+def test_peer_session_required_rejects_offline_worker():
+    async def run():
+        store = MemoryMessageStore(require_peer_sessions=True)
+
+        with pytest.raises(MessageStoreBusy) as exc:
+            await store.enqueue_message(task_message())
+
+        assert exc.value.detail["error"] == "peer_offline"
+        assert exc.value.detail["peer"] == "demo.work"
+
+    asyncio.run(run())
+
+
+def test_releasing_worker_session_cancels_active_task_and_frees_autostop():
+    async def run():
+        store = MemoryMessageStore(require_peer_sessions=True)
+        session = await store.acquire_session({"project_id": "demo", "agent_id": "demo.work", "role": "work", "pid": 123})
+        message = task_message(project_id="demo")
+
+        await store.enqueue_message(message)
+        received = await store.get_next_message("demo.work", wait_seconds=1)
+        assert received is not None
+
+        released = await store.release_session(session["lease_id"], "worker exited", project_id="demo")
+        result = await store.get_task_result("TEST-001", project_id="demo")
+
+        assert released["status"] == "RELEASED"
+        assert released["settled_work"] == ["TEST-001"]
+        assert result["status"] == "CANCELLED"
+        assert result["error"] == "worker exited"
+        assert await store.can_auto_stop(project_id="demo") is True
+
+    asyncio.run(run())

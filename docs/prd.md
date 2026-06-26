@@ -1,1172 +1,872 @@
-Orchlink PRD
+# Orchlink PRD
 
-1. Product Name
+## 1. Product thesis
 
-Orchlink
+Orchlink coordinates one visible lead Pi session and one visible worker Pi session inside a local project.
 
-Orchlink is a local broker and connector that lets two visible Pi coding-agent sessions communicate with each other through a structured request/reply protocol.
+The product is not a platform, workflow engine, cloud service, or hidden agent swarm. It is a local lead/work loop that removes copy-paste while keeping both coding-agent sessions visible and accountable.
 
-The purpose is simple:
+Secondary adapter mode: an external lead agent such as OpenClaw or Hermes may use the `orch` CLI to coordinate with a visible Pi worker. That is supported adapter usage, but the core product remains the same local lead/work loop.
 
-Terminal 1: Pi lead session
-Terminal 2: Pi worker session
+```text
+human → visible lead Pi → Orchlink broker → visible work Pi → Orchlink broker → visible lead Pi → human
+```
 
-The user talks to the lead.
-The lead sends tasks to the worker.
-The worker receives the task in its own Pi session.
-The worker replies.
-The lead receives the reply and continues.
+Product language:
 
-Orchlink is the communication layer between the sessions.
+- **work** is the broad user-facing term: a delegated task or a Talk conversation.
+- **job** is the status row shown by `orch jobs`.
+- **message/envelope/protocol** are broker internals and should appear only in architecture or reference sections.
 
-2. Command Name
+## 2. Core technical design principles
 
-The user-facing CLI command must be:
+### 2.1 Start with a canonical Job/Event model
 
-orch
+`Job` should be the main model, not raw messages.
 
-The commands must be short and easy to remember.
+Two job types:
 
-Primary commands:
+```text
+TaskJob
+TalkJob
+```
 
-orch init
-orch lead
-orch work
-orch ask work --task T001 --msg "Inspect the project and return a plan."
-orch watch
-orch stop
-orch doctor
+Target-state lifecycle for the canonical model:
 
-Daily use should usually require only:
+```text
+CREATED
+QUEUED
+DELIVERED
+RUNNING
+DONE
+FAILED
+TIMEOUT
+CANCELLED
+CLOSED
+```
 
-orch lead
-orch work
+Current protocol/status names are close but not identical; do not treat this lifecycle as fully implemented until state-model cleanup reconciles the vocabulary.
 
-The broker should be started automatically when needed.
+Everything else should derive from that model:
 
-Do not require the user to remember long commands like:
+- `orch jobs`
+- `orch wait`
+- `orch get`
+- `orch idle`
+- cancellation
+- timeout handling
+- activity
+- result retrieval
 
-python -m ...
-uvicorn ...
-orchlink start worker-backend ...
+Current code works, but state is spread across active messages, tasks, conversations, results, events, activity, sessions, and waiters. Future cleanup should simplify this around one canonical job state machine and an event stream.
 
-Those are implementation details, not user commands.
+### 2.2 Make the broker boring and strict
 
-3. Product Summary
+The broker should only coordinate:
 
-Orchlink allows independent Pi coding-agent sessions to work together.
+- validate protocol
+- register sessions
+- enforce the single-flight worker lane
+- route jobs
+- track state
+- record events
+- handle timeout/cancel
+- return results
 
-The user opens two terminals:
+It should never:
 
-Terminal 1:
-orch lead
+- think
+- plan
+- summarize
+- make product decisions
+- perform agent behavior
 
-Terminal 2:
-orch work
+Agent behavior belongs in visible Pi sessions and generated lead/work skills.
 
-Then the user talks only to the lead session.
+### 2.3 Keep storage intentionally ephemeral for now
 
-The lead can delegate tasks to the worker using:
+The current in-memory broker is acceptable for the current local two-session product.
 
-orch ask work --task T001 --msg "Task message"
+Accepted limitation:
 
-The worker receives the task, processes it inside its own visible Pi session, and sends the final response back to the lead.
+- broker restart loses active work and recent history
+- waiters cannot survive broker process restart
+- events/activity are runtime diagnostics, not a durable audit log
 
-The experience should feel like two coding agents talking to each other, while still keeping each session separate.
+Near-term reliability should come from:
 
-4. Problem
+- visible sessions
+- session leases and expiry
+- `orch jobs`
+- `orch idle`
+- `orch cancel`
+- `orch doctor`
+- simple restart guidance
 
-Today, when using two Pi coding-agent sessions, the user must manually copy and paste work between them:
+Durable local history is deferred unless restart recovery becomes a real product pain. Do not add storage complexity now.
 
-1. Ask lead session.
-2. Copy lead task.
-3. Paste task into worker session.
-4. Wait for worker response.
-5. Copy worker response.
-6. Paste back into lead session.
+## 3. Current implementation baseline
 
-This is slow and annoying.
+The codebase already implements:
 
-Orchlink removes the copy-paste step by giving the sessions a shared local communication protocol.
-
-5. Product Goal
-
-Build a Python-based local system that allows two visible Pi coding-agent sessions to communicate:
-
-lead session  →  Orchlink broker  →  worker session
-worker session  →  Orchlink broker  →  lead session
-
-The MVP must support:
-
-- One lead session
-- One worker session
-- Simple CLI command: orch
-- Python venv
+- installable Python package with `orch = "orchlink.cli.main:app"`
+- project-local `.orch/project.yaml`
+- generated lead/work skill templates
 - FastAPI broker
-- In-memory message routing
-- Request/reply communication
-- Native Pi connector
-- Visible Pi sessions
-- Simple project-local config
-- Automatic broker startup
-- Worker listening for tasks
-- Lead able to delegate tasks
-- Message monitor
-- Tests for the full request/reply loop
+- in-memory `MessageStore` abstraction and `MemoryMessageStore`
+- API-key protected broker endpoints
+- project scoping through project IDs and `X-Orchlink-Project-ID`
+- visible Pi launcher and generated Pi extension
+- lead and worker session leases, heartbeats, release/expiry, and auto-stop support
+- task jobs, Talk conversations, events, activity, result retrieval, waiters, cancellation, and status views
+- single-flight worker lane enforcement
+- separated human, agent-coordination, and debug command surfaces
+- tests for broker, protocol, memory store, CLI, events, packaging, project init, state, and request/reply behavior
 
-6. Non-Goals for MVP
+This PRD describes current state plus near-term cleanup direction. It is not an old MVP backlog.
 
-Do not implement these in the first version:
+## 4. Product goals
 
-- Database
-- SQLite
-- Redis
-- RabbitMQ
-- Web dashboard
-- GitLab integration
-- Telegram integration
-- Slack/Discord integration
-- Cloud deployment
-- Multi-user auth
-- Vector memory
-- Automatic Git merge
-- Complex workflow engine
-- Multi-worker scheduler
-- Tmux adapter
+Orchlink should answer these questions clearly:
 
-No tmux in the primary design.
+1. Is setup valid?
+2. Is the broker reachable and compatible?
+3. Is the lead session running?
+4. Is the worker session running?
+5. Is there active worker work?
+6. Can lead safely assign another worker task or Talk turn?
+7. What is the latest status of work?
+8. What activity is the worker performing?
+9. Did the result belong to this project?
+10. Was work completed, cancelled, timed out, failed, or abandoned?
+11. What should lead do next?
 
-The primary design must be a native Pi connector.
+## 5. Non-goals
 
-7. Core Runtime Experience
+Do not turn Orchlink into:
 
-The desired daily flow:
+- a cloud orchestration service
+- a multi-user collaboration backend
+- a general workflow engine
+- a dashboard-first product
+- a tmux automation layer
+- a Redis/RabbitMQ/Postgres platform
+- an automatic git merge system
+- a hidden autonomous agent swarm
 
-Terminal 1
+Multiple workers, remote brokers, dashboards, durable history, and non-Pi adapters may be future work only if the simple local lead/work loop remains clear.
 
-cd ~/projects/my-project
-orch lead
+## 6. Command surfaces
 
-This starts a visible Pi lead session.
+Keep one `orch` binary. Separate commands by audience in docs, generated skills, and help text. Do not create separate binaries or namespaces unless there is a strong usability reason later.
 
-The lead session should know:
+### 6.1 Human daily commands
 
-- it is the lead
-- a worker exists
-- it can delegate using orch ask work
-- it should ask for PLAN before risky implementation
-- it should review worker replies before continuing
+Humans should mostly need:
 
-Terminal 2
+```bash
+orch init      # set up .orch for this project
+orch lead      # start/reopen visible lead Pi
+orch work      # start/reopen visible worker Pi
+orch doctor    # check setup and compatibility
+orch jobs      # see recent/current work
+orch stop      # stop the project broker
+orch update    # update the install
+```
 
-cd ~/projects/my-project
-orch work
+Humans should be able to use Orchlink without learning broker API details.
 
-This starts a visible Pi worker session.
+### 6.2 Agent coordination commands
 
-The worker session should know:
+Lead agents use these to coordinate with worker:
 
-- it is the worker
-- it listens for tasks from the lead
-- it must obey scope
-- it must return PLAN, RESULT, or BLOCKER
+```bash
+orch ask work --wait -t T001 -m "MODE: REVIEW. ..."
+orch send work -t T002 -m "MODE: DO. ..."
+orch talk work -m "one short question" -r 6
+orch say C001 -m "follow-up"
+orch close C001 -m "Decision: ..."
+orch wait T002
+orch get T002
+orch idle
+orch peek T002
+orch cancel T002 -m "reason"
+```
 
-Optional Terminal 3
+Rules:
 
+- `ask --wait` is for synchronous decisions and review gates.
+- `send` is for async work only when lead can work on a different scope.
+- `talk` is for visible discussion, not automation glue.
+- `wait` and `get` should not both be used routinely.
+- `idle` is a safety check before dependent tests, final conclusions, or new worker assignment.
+- `cancel` marks broker work cancelled immediately, but process interruption is best-effort.
+
+### 6.3 Debug/reference commands
+
+These exist for debugging and advanced inspection:
+
+```bash
+orch status
 orch watch
+orch task T001
+orch broker run
+```
 
-This shows the conversation:
+Normal lead/work behavior should not depend on raw broker JSON.
 
-[10:12:01] lead → work TASK T001
-[10:14:42] work → lead PLAN T001
+## 7. Runtime experience
 
-8. How Sessions Know Each Other
+### 7.1 Set up a project
 
-Orchlink uses a project-local config.
-
-When the user runs:
-
+```bash
+cd /path/to/project
 orch init
-
-Orchlink creates:
-
-.orch/
-├── project.yaml
-├── skills/
-│   ├── lead.md
-│   └── work.md
-└── run/
-
-The project config defines:
-
-project_id
-broker_url
-api_key
-lead agent id
-worker agent id
-Pi command
-project directory
-
-By default:
-
-lead agent id   = <project_id>.lead
-worker agent id = <project_id>.work
-
-Inside the project, the user does not need to type the full IDs.
-
-The user can type:
-
-orch ask work --task T001 --msg "..."
-
-Orchlink expands "work" to:
-
-<project_id>.work
-
-This keeps commands simple.
-
-9. Architecture
-
-┌──────────────────────────────┐
-│ Terminal 1                   │
-│ orch lead                    │
-│ Visible Pi lead session      │
-└───────────────┬──────────────┘
-                │
-                │ sends task using orch ask
-                ▼
-┌──────────────────────────────┐
-│ Orchlink Broker              │
-│ FastAPI + in-memory store    │
-└───────────────┬──────────────┘
-                │
-                │ routes task
-                ▼
-┌──────────────────────────────┐
-│ Terminal 2                   │
-│ orch work                    │
-│ Visible Pi worker session    │
-└───────────────┬──────────────┘
-                │
-                │ returns reply
-                ▼
-┌──────────────────────────────┐
-│ Orchlink Broker              │
-└───────────────┬──────────────┘
-                │
-                │ returns reply
-                ▼
-┌──────────────────────────────┐
-│ Lead receives worker result  │
-└──────────────────────────────┘
-
-10. Main Components
-
-10.1 Broker
-
-The broker is the local message router.
-
-Responsibilities:
-
-- Start automatically when needed.
-- Register lead and worker agents.
-- Store active messages in memory.
-- Route messages to the correct session.
-- Match replies using correlation_id.
-- Enforce timeouts.
-- Reject invalid messages.
-- Protect endpoints with API key.
-
-The broker does not think or code.
-
-10.2 Lead Connector
-
-The lead connector starts and configures the visible Pi lead session.
-
-Responsibilities:
-
-- Load .orch/project.yaml.
-- Ensure broker is running.
-- Register lead agent.
-- Start Pi in lead mode.
-- Provide lead skill/instructions.
-- Make delegation command available.
-
-10.3 Worker Connector
-
-The worker connector starts and configures the visible Pi worker session.
-
-Responsibilities:
-
-- Load .orch/project.yaml.
-- Ensure broker is running.
-- Register worker agent.
-- Start Pi in worker mode.
-- Listen for tasks.
-- Send incoming task into the worker Pi session.
-- Wait for worker answer.
-- Send worker answer back to broker.
-
-10.4 Monitor
-
-The monitor displays message flow.
-
-Command:
-
-orch watch
-
-Responsibilities:
-
-- Show messages between lead and worker.
-- Show task ID.
-- Show message type.
-- Show status.
-- Show short preview.
-
-11. Native Pi Connector Requirement
-
-Orchlink must not rely on tmux for the primary experience.
-
-The preferred integration is a native Pi connector.
-
-The connector should support named Pi sessions.
-
-Desired conceptual behavior:
-
-pi --session lead
-pi --session work
-
-However, the user should not have to run those directly.
-
-The user should run:
-
-orch lead
-orch work
-
-Internally, Orchlink may call Pi with the configured command.
-
-Example from config:
-
-pi:
-  command: pi
-  lead_args:
-    - --session
-    - lead
-  work_args:
-    - --session
-    - work
-
-If Pi supports native listen/connect flags, Orchlink should use them.
-
-Conceptual worker behavior:
-
-Start visible Pi worker session.
-Register with broker.
-Wait for broker task.
-Inject task into worker session.
-Wait for answer.
-Return answer to broker.
-Continue waiting.
-
-If Pi does not support native task injection, the MVP must clearly return an error explaining that the Pi connector needs a send/listen capability.
-
-Do not silently pretend the worker is connected if it is not.
-
-12. Simple Command UX
-
-12.1 "orch init"
-
-Initializes Orchlink for the current project.
-
-Command:
-
-orch init
+```
 
 Creates:
 
-.orch/project.yaml
-.orch/skills/lead.md
-.orch/skills/work.md
-.orch/run/
+```text
+.orch/
+  project.yaml
+  skills/
+    lead.md
+    work.md
+  run/
+```
 
-It should ask only minimal questions or use defaults.
+`orch lead` and `orch work` refresh stale generated skills before launching Pi.
 
-Default project ID should be based on the current folder name.
+### 7.2 Start visible sessions
 
-Example:
+Terminal 1:
 
-Current folder: ~/projects/test
-project_id: test
-
-12.2 "orch lead"
-
-Starts the visible lead Pi session.
-
-Command:
-
+```bash
 orch lead
+```
 
-Behavior:
+Terminal 2:
 
-1. Load .orch/project.yaml.
-2. Ensure broker is running.
-3. Register <project_id>.lead.
-4. Load .orch/skills/lead.md.
-5. Start Pi lead session.
-6. Show available worker.
-7. Keep user inside the lead session.
-
-Expected output before Pi starts:
-
-[Orch] Broker online
-[Orch] Registered: test.lead
-[Orch] Worker available: work
-[Orch] Starting Pi lead session...
-
-12.3 "orch work"
-
-Starts the visible worker Pi session and listens for tasks.
-
-Command:
-
+```bash
 orch work
+```
 
-Behavior:
+Expected behavior:
 
-1. Load .orch/project.yaml.
-2. Ensure broker is running.
-3. Register <project_id>.work.
-4. Load .orch/skills/work.md.
-5. Start Pi worker session.
-6. Start task listener.
-7. Keep worker visible.
+- broker starts when needed
+- lead/work register with broker
+- sessions acquire leases and heartbeat
+- visible Pi sessions receive role instructions and the Orchlink extension
+- worker listens for tasks and Talk turns
+- lead receives worker replies in visible chat
 
-Expected output:
+### 7.3 Delegate a blocking review
 
-[Orch] Broker online
-[Orch] Registered: test.work
-[Orch] Starting Pi worker session...
-[Orch] Waiting for tasks...
+```bash
+orch ask work --wait -t T001 -m "MODE: REVIEW. Review the plan. Reply with verdict, risks, files inspected, tests run."
+```
 
-When task arrives:
+Expected behavior:
 
-[Orch] Received TASK T001 from lead
-[Orch] Sending task to Pi worker session...
-[Orch] Worker replied
-[Orch] Reply sent to lead
+- broker rejects the request if worker is offline or busy
+- work appears in `orch jobs`
+- worker receives a scoped prompt
+- worker reply resolves the waiter
+- lead receives the result in CLI and/or visible lead chat
+- result is scoped to the current project
 
-12.4 "orch ask"
+### 7.4 Delegate async work
 
-Sends a task to the worker and waits for reply.
+```bash
+orch send work -t T002 -m "MODE: DO. Implement only the parser change. Run parser tests."
+```
 
-Command:
+Expected behavior:
 
-orch ask work --task T001 --msg "Inspect the project and return PLAN only."
+- broker enforces the single-flight worker lane
+- lead may continue only on a separate scope
+- lead must reconcile the worker result before dependent final steps
 
-Short alias may also be supported:
+### 7.5 Talk Mode
 
-orch ask work -t T001 -m "Inspect the project and return PLAN only."
+```bash
+orch talk work -m "Should we keep this behavior simple or split it into a new command?" -r 3
+orch say C001 -m "Follow-up question"
+orch close C001 -m "Decision: ..."
+```
 
-Behavior:
+Expected behavior:
 
-1. Resolve work to <project_id>.work.
-2. Build protocol message.
-3. Send message to broker.
-4. Wait for reply.
-5. Print reply.
+- Talk messages stay conversational
+- no task prompt boilerplate is injected
+- each turn is tracked as work in `orch jobs`
+- max turns are enforced
+- open Talk conversations block new worker-bound work
+- closing records a compact decision
 
-12.5 "orch watch"
+## 8. Core concepts
 
-Shows message flow.
+### 8.1 Project
 
-Command:
+A project is a repository or working directory with `.orch/project.yaml`.
 
-orch watch
+The project defines:
 
-Example output:
+- `project_id`
+- broker URL, host, port, API key, auto-start, auto-stop, peer-session policy
+- Pi command and optional session args
+- lead agent ID and session ID
+- worker agent ID and session ID
+- allowed and forbidden scope defaults
 
-[10:12:01] test.lead → test.work TASK T001
-Inspect the project and return PLAN only.
+All normal work, result, event, activity, and session queries must be project scoped.
 
-[10:14:22] test.work → test.lead PLAN T001
-Found repeated code in two files. Recommend limited cleanup.
+### 8.2 Agent
 
-12.6 "orch stop"
+An agent is a registered participant:
 
-Stops local Orchlink broker and any background Orchlink processes for the current user.
+- lead: coordinates with worker and talks to the human
+- work: receives scoped work and replies to lead
 
-Command:
+Default IDs:
 
-orch stop
+```text
+<project_id>.lead
+<project_id>.work
+```
 
-It must not kill unrelated Pi sessions unless explicitly confirmed.
+### 8.3 Visible session
 
-12.7 "orch doctor"
+A visible session is a running Pi process managed by `orch lead` or `orch work`.
 
-Checks setup.
+Sessions have:
 
-Command:
+- lease ID
+- role
+- agent ID
+- project ID
+- process ID when known
+- session ID
+- heartbeat timestamp
+- active/released/expired status
+- grace period
 
-orch doctor
+If a worker session exits or expires, active worker-owned work should be settled as cancelled so lead does not wait forever.
 
-Checks:
+### 8.4 Job
 
-- Python package installed
-- .orch/project.yaml exists
-- broker reachable or startable
-- API key configured
-- Pi command exists
-- lead skill exists
-- worker skill exists
-- worker can register
+A job is a status row for work.
 
-12.8 "orch jobs"
+Kinds:
 
-Shows recent work for the current project. This is the main work browser.
+- `task`: delegated task with a task ID
+- `talk`: open or closed Talk conversation with a conversation ID
 
-Commands:
+Fields:
 
-orch jobs
-orch jobs --active
-orch jobs --status STATUS
-orch jobs --kind task
-orch jobs --kind talk
-orch jobs --id T001
-orch jobs --id C001
-orch jobs --json
-
-Behavior:
-
-- Default `orch jobs` shows recent work, including terminal and active rows.
-- `--active` shows only pending/running/open/blocking work.
-- Blocking statuses are PENDING, QUEUED, DELIVERED, RUNNING, IN_PROGRESS, and OPEN.
-- `--status` filters by broker status.
-- `--kind task` means rows with a task_id.
-- `--kind talk` means rows with a conversation_id and no task_id.
-- `--id` focuses one task/conversation/message ID.
-- `--json` prints machine-readable output.
-- Show ID, kind, mode, status, route, updated time, and preview.
-- Status is authoritative for agents.
-- Last activity may show heartbeat/tool activity while work is active.
-- Stale heartbeat activity such as "Worker still active" must not be shown after a job is terminal.
-- Terminal jobs must still appear as rows; only stale heartbeat metadata is suppressed.
-
-12.8.1 "orch idle"
-
-Keep `orch idle` as a script/check command while it has a useful exit-code contract:
-
-- exit 0 = idle
-- exit 1 = active/blocking work exists
-
-12.8.2 Focused/debug status commands
-
-Keep `orch task T001` as focused route/activity status until `orch jobs --id T001` matches or exceeds it.
+- ID (`task_id` or `conversation_id`)
+- kind
+- mode
+- status
+- route
+- project ID
+- preview
+- created/updated timestamps
+- optional latest activity
+- optional result/reply
 
-Keep `orch status` as raw broker JSON for debugging only. Normal agents should not use it for coordination.
-
-12.8.3 Cancellation honesty
-
-`orch cancel T001` marks broker work CANCELLED immediately and sends a steering cancellation message to Pi when possible. Future tool calls should be blocked. Already-running shell commands are best-effort and may only stop if Pi's abort reaches them.
-
-12.9 CLI help
+`orch jobs` is the main browser for jobs.
 
-`orch --help` must explain each top-level command in plain language.
+### 8.5 Event
 
-Command-specific help, such as `orch jobs --help`, must explain the command and its options.
+An event is a runtime observation used by `orch watch`, status views, and debugging.
 
-13. Python Packaging
+Examples:
 
-Orchlink must be a real installable Python package.
+- agent registered
+- session acquired/released/expired
+- message queued
+- message delivered
+- worker activity
+- reply received
+- timeout
+- cancellation
+- conversation closed
 
-Use "pyproject.toml".
+### 8.6 Activity
 
-Required structure:
+Activity is worker telemetry while work is active.
 
-orchlink/
-├── pyproject.toml
-├── README.md
-├── src/
-│   └── orchlink/
-│       ├── __init__.py
-│       ├── broker/
-│       │   ├── __init__.py
-│       │   ├── main.py
-│       │   ├── protocol.py
-│       │   ├── settings.py
-│       │   └── storage/
-│       │       ├── __init__.py
-│       │       ├── base.py
-│       │       └── memory.py
-│       ├── cli/
-│       │   ├── __init__.py
-│       │   └── main.py
-│       ├── connector/
-│       │   ├── __init__.py
-│       │   ├── pi_connector.py
-│       │   ├── lead.py
-│       │   └── worker.py
-│       ├── bridge/
-│       │   ├── __init__.py
-│       │   ├── ask.py
-│       │   ├── listener.py
-│       │   └── monitor.py
-│       └── project/
-│           ├── __init__.py
-│           ├── init.py
-│           └── config.py
-└── tests/
-    ├── test_protocol.py
-    ├── test_memory_store.py
-    ├── test_broker.py
-    ├── test_cli.py
-    └── test_request_reply.py
-
-"pyproject.toml" must expose:
-
-[project.scripts]
-orch = "orchlink.cli.main:app"
-
-Install:
-
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-
-The command must then work:
-
-orch --help
-
-14. Dependencies
-
-Use Python 3.11+.
-
-Dependencies:
-
-fastapi
-uvicorn[standard]
-pydantic
-pydantic-settings
-httpx
-typer
-rich
-pyyaml
-pytest
-
-No DB dependency in MVP.
-
-15. Storage Strategy
-
-MVP uses in-memory storage only.
-
-The broker stores:
-
-- registered agents
-- inbox queues
-- active messages
-- pending reply futures
-- recent events for watch command
-
-The implementation must still use a storage interface:
-
-MessageStore
-└── MemoryMessageStore
-
-Do not allow FastAPI routes to manipulate raw dictionaries directly.
-
-Future storage can add:
-
-SQLiteMessageStore
-RedisMessageStore
-
-But not in MVP.
-
-16. Broker Auto-Start
-
-The user should not need to manually start the broker.
-
-When the user runs:
-
-orch lead
-orch work
-orch ask
-orch watch
-
-Orchlink should:
-
-1. Check broker health.
-2. If broker is not running, start it locally in the background.
-3. Write PID/log files under .orch/run or ~/.orchlink/run.
-4. Continue command.
-
-For debugging, this command may also exist:
-
-orch broker
-
-But daily usage should not require it.
-
-17. Project Config
-
-"orch init" creates ".orch/project.yaml".
-
-Example:
-
-project_id: test
-
-broker:
-  url: http://127.0.0.1:8787
-  api_key: change-me
-  auto_start: true
-  host: 127.0.0.1
-  port: 8787
-
-pi:
-  command: pi
-
-lead:
-  agent_id: test.lead
-  session_id: lead
-  project_dir: .
-
-work:
-  agent_id: test.work
-  session_id: work
-  project_dir: .
-  poll_wait_seconds: 5
-
-scope:
-  allowed:
-    - "**/*"
-  forbidden:
-    - ".git/**"
-    - ".orch/**"
-    - "node_modules/**"
-    - ".venv/**"
-
-No project-specific product name should be hardcoded.
-
-The project ID should come from the folder name unless the user overrides it.
-
-18. Message Protocol
-
-Every message must use this envelope:
-
+Examples:
+
+- heartbeat
+- tool call
+- tool result
+- phase/status update
+
+Activity answers “is the worker doing anything?” It is not a durable audit log.
+
+### 8.7 Message
+
+A message is a broker envelope used to route a work turn or reply.
+
+Messages are implementation details behind jobs. They still need strict validation because the broker must route, correlate, and reject invalid work.
+
+## 9. Modes
+
+Modes are product behavior, not only prompt text.
+
+| Mode | Purpose | Edits allowed? | Typical command |
+| --- | --- | --- | --- |
+| TALK | visible discussion, challenge, tradeoff, decision | no | `orch talk`, `orch say`, `orch close` |
+| DISCUSS | reason and recommend inside a task envelope | no | `orch ask/send` |
+| PLAN | inspect if useful, then propose | no | `orch ask/send` |
+| REVIEW | inspect and gate next step | no, unless explicitly allowed | `orch ask --wait` |
+| DO | implement scoped work | yes, only inside scope | `orch send` or `orch ask --wait` |
+
+Mode requirements:
+
+- TALK should be concise teammate chat with no task boilerplate.
+- REVIEW is a gate when its result can change lead’s next action.
+- DO requires explicit implementation permission.
+- If DO is requested without implementation permission, worker should inspect only and return PLAN/BLOCKER.
+- Worker should follow the lead’s requested reply shape.
+- Task replies should prefer `TYPE: PLAN | RESULT | BLOCKER` when practical.
+
+## 10. Architecture
+
+```text
+Typer CLI
+  ├─ human commands: init/lead/work/doctor/jobs/stop/update
+  ├─ agent coordination commands: ask/send/talk/say/close/wait/get/idle/peek/cancel
+  └─ debug/reference commands: status/watch/task/broker run
+
+Project config
+  ├─ .orch/project.yaml
+  ├─ generated lead/work skills
+  └─ run directory for PID/log/extension files
+
+FastAPI broker
+  ├─ protocol validation
+  ├─ API-key auth
+  ├─ session leases
+  ├─ job routing and status
+  ├─ single-flight enforcement
+  ├─ events/activity
+  ├─ result waiters
+  └─ cancellation/timeout handling
+
+Storage interface
+  └─ MemoryMessageStore today
+
+Pi connector
+  ├─ launches visible Pi sessions
+  ├─ injects generated skills
+  ├─ injects Orchlink Pi extension
+  ├─ sets runtime env vars
+  └─ maintains session lease heartbeats
+
+Pi extension
+  ├─ registers role with broker
+  ├─ polls for broker messages
+  ├─ renders worker task/Talk prompts
+  ├─ captures assistant replies
+  ├─ posts results back to broker
+  ├─ records activity telemetry
+  ├─ delivers worker results into lead chat
+  └─ attempts best-effort cancellation/abort
+```
+
+## 11. Broker API requirements
+
+Public:
+
+- `GET /health`
+
+Protected by `X-API-Key`:
+
+- `POST /v1/agents/register`
+- `POST /v1/sessions/acquire`
+- `POST /v1/sessions/{lease_id}/heartbeat`
+- `POST /v1/sessions/{lease_id}/release`
+- `GET /v1/sessions`
+- `POST /v1/messages/send`
+- `POST /v1/messages/send-and-wait`
+- `GET /v1/agents/{agent_id}/next`
+- `POST /v1/messages/{message_id}/reply`
+- `POST /v1/messages/{message_id}/status`
+- `POST /v1/jobs/{item_id}/cancel`
+- `POST /v1/conversations/{conversation_id}/close`
+- `GET /v1/events`
+- `POST /v1/activity`
+- `GET /v1/activity`
+- `GET /v1/tasks/{task_id}/activity`
+- `GET /v1/jobs`
+- `GET /v1/tasks/{task_id}`
+- `GET /v1/tasks/{task_id}/wait`
+- `GET /v1/status`
+
+API requirements:
+
+- reject invalid API keys except on `/health`
+- reject unsupported protocol versions
+- reject unknown message types
+- reject invalid mode/delivery combinations
+- reject turns above `max_turns`
+- reject worker-bound work when peer session is required and offline
+- reject worker-bound work when the worker lane is busy
+- preserve project scoping on jobs, tasks, events, activity, sessions, and results
+- never print or log API keys
+
+## 12. Protocol reference
+
+Every routed message uses an envelope like:
+
+```json
 {
   "protocol": "orch-a2a-v1",
-  "message_id": "msg-0001",
-  "correlation_id": "req-0001",
-  "project_id": "test",
-  "conversation_id": "test-default",
+  "message_id": "msg-...",
+  "correlation_id": "req-...",
+  "project_id": "demo",
+  "conversation_id": "demo-tasks",
   "task_id": "T001",
-  "from_agent": "test.lead",
-  "to_agent": "test.work",
+  "from_agent": "demo.lead",
+  "to_agent": "demo.work",
   "type": "TASK",
   "status": "PENDING",
   "turn": 1,
   "max_turns": 6,
   "requires_reply": true,
   "timeout_seconds": 1800,
+  "delivery": "async",
   "payload": {
-    "intent": "Inspect the project and return PLAN only.",
+    "mode": "PLAN",
+    "intent": "Inspect and propose only.",
     "scope": {
-      "allowed": [
-        "**/*"
-      ],
-      "forbidden": [
-        ".git/**",
-        ".orch/**",
-        "node_modules/**",
-        ".venv/**"
-      ]
+      "allowed": ["**/*"],
+      "forbidden": [".git/**", ".orch/**", "node_modules/**", ".venv/**"]
     },
-    "constraints": [
-      "Do not edit files.",
-      "Return PLAN only."
-    ],
-    "expected_reply": [
-      "summary",
-      "files inspected",
-      "findings",
-      "risks",
-      "recommended next step"
-    ]
+    "constraints": [],
+    "expected_reply": []
   }
 }
+```
 
-19. Message Types
+Supported task/result message types:
 
-MVP message types:
+- `TASK`
+- `PLAN`
+- `RESULT`
+- `BLOCKER`
+- `REVIEW`
+- `CLOSE`
+- `STOP`
 
-TASK
-PLAN
-RESULT
-BLOCKER
-REVIEW
-CLOSE
-STOP
+Supported Talk message types:
 
-The broker must reject unknown message types.
+- `CHAT_START`
+- `CHAT_TURN`
+- `CHAT_REPLY`
+- `CHAT_CLOSE`
 
-20. Broker API
+Status vocabulary:
 
-20.1 Health
+- active/busy: `PENDING`, `QUEUED`, `DELIVERED`, `RUNNING`, `IN_PROGRESS`, `OPEN`
+- terminal/settled: `DONE`, `COMPLETED`, `FAILED`, `TIMEOUT`, `CANCELLED`, `CLOSED`
 
-GET /health
+## 13. Single-flight worker lane
 
-Response:
+The worker lane is single-flight per project and worker agent.
 
-{
-  "status": "ok",
-  "service": "orchlink",
-  "version": "0.1.0"
-}
+A new worker-bound task or Talk turn must be rejected when:
 
-20.2 Register Agent
+- a task is queued/delivered/running/in-progress
+- a Talk conversation is open and waiting on the worker
+- peer sessions are required and the target worker session is offline
 
-POST /v1/agents/register
+The error must include enough context for lead to decide whether to wait, inspect jobs, or cancel stuck work.
 
-Request:
+## 14. Cancellation and timeout semantics
 
-{
-  "project_id": "test",
-  "agent_id": "test.work",
-  "role": "worker",
-  "display_name": "Worker",
-  "capabilities": [
-    "inspection",
-    "implementation",
-    "tests"
-  ]
-}
+Cancellation is coordination cancellation, not process isolation.
 
-20.3 Send and Wait
+Expected behavior:
 
-POST /v1/messages/send-and-wait
+- `orch cancel <id>` marks matching broker work `CANCELLED` immediately.
+- pending `wait` calls resolve with cancellation.
+- task/conversation/job status changes to cancelled.
+- an event is recorded.
+- Pi extension attempts to steer the current assistant turn to stop.
+- Pi extension attempts to abort if supported by Pi.
+- future tool calls should be blocked when the extension can enforce it.
 
-Used by:
+Honest limitation:
 
-orch ask work ...
+- already-running shell commands or tool calls may continue if Pi cannot interrupt them in time.
+- broker state cancellation is stronger than process cancellation.
+- docs must not claim hard sandboxing or OS-level termination.
 
-Must send message and wait for worker reply.
+Timeout behavior:
 
-20.4 Get Next Message
+- wait timeout does not cancel the underlying task
+- task timeout settles broker work as `TIMEOUT`
+- late replies after timeout/cancel should be ignored or clearly marked as late
 
-GET /v1/agents/{agent_id}/next?wait_seconds=5
+## 15. Pi connector contract
 
-Used by the worker listener.
+The Pi connector is the riskiest integration point and must be treated as a maintained adapter.
 
-20.5 Reply
+Required capabilities:
 
-POST /v1/messages/{message_id}/reply
+- launch or reopen named visible Pi sessions
+- append role-specific system prompts
+- load the Orchlink extension
+- pass broker URL, API key, project ID, agent ID, role, and polling settings through env vars
+- inject worker task and Talk prompts into the visible worker session
+- capture assistant outputs as worker replies
+- deliver worker replies into the visible lead session
+- record activity telemetry where supported
+- attempt cancellation/abort where supported
 
-Used by the worker to return a reply.
+Compatibility requirements:
 
-20.6 Events
+- `orch doctor` should check Pi command availability and generated skill freshness.
+- The extension should degrade clearly when a required Pi API is missing.
+- Connector/version assumptions should be documented.
+- If Pi extension APIs change, Orchlink should fail loudly with actionable guidance instead of pretending worker is connected.
 
-GET /v1/events
+## 16. Security
 
-Used by:
+Security model:
 
-orch watch
+- broker binds to `127.0.0.1` by default
+- all `/v1` endpoints require `X-API-Key`
+- API key is stored in `.orch/project.yaml` or supplied by environment
+- CLI must not print real keys
+- logs must not include API keys
+- `.orch/` should not be committed
+- project scoping prevents stale cross-project result reads
 
-MVP may keep events in memory.
+Out of scope:
 
-21. Lead Skill
+- multi-user auth
+- public internet exposure
+- remote broker trust model
+- sandboxing of worker tool execution
 
-"orch init" creates:
+## 17. Generated skills and behavior policy
 
-.orch/skills/lead.md
+`orch init` creates generated skills for lead and work.
 
-Content:
+Lead skill must teach:
 
-# Lead Role
+- coordinate with worker, do not merely delegate
+- keep scopes separate
+- distinguish human daily, agent coordination, and debug commands
+- use `ask --wait` for gates
+- use `send` only for independent async work
+- use Talk for discussion
+- use `idle` before dependent final steps or another assignment
+- do not stack worker tasks
+- decide reply shape per task
+- reconcile worker replies before continuing
 
-You are the lead coding agent.
+Worker skill must teach:
 
-You can delegate work to the worker through Orchlink.
+- obey mode and scope
+- no edits for TALK/DISCUSS/PLAN/REVIEW unless explicitly allowed
+- DO only inside scope
+- return BLOCKER when unclear or too broad
+- follow lead’s requested reply shape
+- keep Talk conversational
+- avoid universal verbose templates unless requested
 
-Use this command:
+Generated skills are part of product behavior and should stay aligned with this PRD.
 
-orch ask work --task <TASK_ID> --msg "<TASK_MESSAGE>"
+## 18. CLI command requirements
 
-Rules:
-- Send small tasks.
-- Prefer `orch ask work --wait` for review gates and synchronous decisions.
-- Use Talk Mode for visible discussion, not automation.
-- Ask for PLAN before risky implementation.
-- Include clear scope and constraints.
-- Decide the desired worker reply shape per task; do not force a universal template every time.
-- Use `orch wait T001` or `orch get T001`, not both routinely. Use `get` later only to reread/debug a completed result.
-- Use `peek` only for long-running work.
-- Review worker replies before continuing.
-- Do not let the worker edit forbidden files.
-- If worker returns BLOCKER, decide the next step.
+### Human daily commands
 
-When "orch lead" starts Pi, it must provide or display this skill so the lead session knows how to use Orchlink.
+#### `orch init`
 
-22. Worker Skill
+Creates project config, skills, and run directory. Supports refreshing generated skills without overwriting config.
 
-"orch init" creates:
+#### `orch lead`
 
-.orch/skills/work.md
+Ensures broker, registers lead, acquires session lease, launches visible Pi lead with lead skill and extension.
 
-Content:
+#### `orch work`
 
-# Worker Role
+Ensures broker, registers worker, acquires session lease, launches visible Pi worker with worker skill and extension.
 
-You are the worker coding agent.
+#### `orch doctor`
 
-You receive tasks from the lead through Orchlink.
+Checks project setup, broker reachability/compatibility, API key presence, Pi command, generated skills, and recommended recovery steps.
 
-Rules:
-- Work only on the assigned task.
-- Obey allowed scope.
-- Never edit forbidden files.
-- For PLAN, DISCUSS, and REVIEW, inspect/report only; do not edit.
-- If MODE is DO but implementation is not explicitly allowed, inspect only and return PLAN.
-- If the task is unclear, return BLOCKER.
-- If implementation is allowed, run relevant tests.
-- Do not commit unless explicitly allowed.
-- Follow the lead's requested reply shape.
+#### `orch jobs`
 
-For task replies, prefer starting with:
+Main work browser. Supports:
 
-TYPE: PLAN | RESULT | BLOCKER
+```bash
+orch jobs
+orch jobs --active
+orch jobs --status STATUS
+orch jobs --kind task
+orch jobs --kind talk
+orch jobs --id T001
+orch jobs --json
+```
 
-If the lead requests no shape, reply concisely in the shape that best fits the work. Do not invent a fixed result template unless the lead asks for one.
+Output should show ID, kind, mode, status, updated age, route, preview, and latest non-stale activity.
 
-23. Worker Task Prompt
+#### `orch stop`
 
-When the worker receives a task, Orchlink must generate a prompt:
+Stops the project broker without killing unrelated Pi sessions.
 
-You are the worker coding agent.
+#### `orch update`
 
-You received a task from the lead through Orchlink.
+Updates the installed package and tells the user to refresh skills/restart sessions.
 
-TASK ID:
-{task_id}
+### Agent coordination commands
 
-INTENT:
-{intent}
+#### `orch ask`
 
-ALLOWED SCOPE:
-{allowed_scope}
+Sends work and waits by default. Primary command for review gates and synchronous decisions.
 
-FORBIDDEN SCOPE:
-{forbidden_scope}
+#### `orch send`
 
-CONSTRAINTS:
-{constraints}
+Sends async work. Must block REVIEW unless explicitly allowed as non-gating async review.
 
-EXPECTED REPLY:
-{expected_reply}
+#### `orch talk`, `orch say`, `orch close`
 
-Rules:
-- Work only on this task.
-- Do not expand scope.
-- Do not edit forbidden files.
-- For PLAN, DISCUSS, and REVIEW, inspect/report only; do not edit.
-- If MODE is DO but implementation is not explicitly allowed, inspect only and return PLAN.
-- If the task is unclear, return BLOCKER.
-- If implementation is allowed, run relevant tests.
-- Do not commit unless explicitly allowed.
+Manage visible Talk Mode conversations. Must preserve plain conversational UX and max-turn protection.
 
-Response guidance:
+#### `orch idle`
 
-For task replies, prefer starting with:
+Exit-code safety check:
 
-TYPE: PLAN | RESULT | BLOCKER
+- 0: no active/blocking work
+- 1: active/blocking work exists
 
-Then follow the lead's EXPECTED REPLY shape. If no useful shape is provided, reply naturally and do not invent a fixed result template.
+#### `orch wait`
 
-24. Security
+Waits for one exact task result. A wait timeout does not cancel the task.
 
-MVP security:
+#### `orch get`
 
-- API key required for broker endpoints except /health.
-- API key stored in .orch/project.yaml or environment.
-- Do not print secrets in logs.
-- Broker defaults to 127.0.0.1.
-- Do not expose broker to the public internet.
+Reads or rereads a task result, or conversation summary when supported.
 
-25. Timeouts and Loop Protection
+#### `orch peek`
 
-Default timeout:
+Shows recent activity for long-running work only.
 
-1800 seconds
+#### `orch cancel`
 
-Every message includes:
+Marks work cancelled and asks Pi to stop. Must be honest about best-effort interruption.
 
-turn
-max_turns
+### Debug/reference commands
 
-Defaults:
+#### `orch status`
 
-turn = 1
-max_turns = 6
+Prints raw broker status JSON for debugging.
 
-Rules:
+#### `orch watch`
 
-- Reject messages where turn > max_turns.
-- Reject max_turns > 12 unless explicitly configured.
-- Return timeout if worker does not reply.
+Watches broker events for debugging worker activity and routing.
 
-26. Logging
+#### `orch task`
 
-Logs must include:
+Shows focused route/activity status until `orch jobs --id` fully replaces it.
 
-- broker started
-- broker stopped
-- agent registered
-- message queued
-- message delivered
-- worker started task
-- worker reply received
-- timeout
-- invalid request
+#### `orch broker run`
 
-Logs must include where relevant:
+Runs the broker foreground server for debugging/development.
 
-project_id
-task_id
-message_id
-correlation_id
-from_agent
-to_agent
-status
+## 19. Acceptance criteria for current v1
 
-Do not log API keys.
+Orchlink is acceptable for v1 when:
 
-27. Tests
+1. `orch init` creates valid config and generated skills.
+2. `orch lead` and `orch work` start visible Pi sessions with the Orchlink extension.
+3. Broker auto-start works for normal commands.
+4. Lead and worker register and maintain session leases.
+5. Worker offline is detected when peer sessions are required.
+6. `orch ask --wait` completes a request/reply loop.
+7. `orch send` supports async work without stacking worker work.
+8. `orch talk/say/close` supports visible Talk conversations.
+9. `orch jobs` is the main current-project work browser.
+10. `orch idle` correctly reports active/blocking work through its exit code.
+11. `orch wait` and `orch get` return project-scoped results and reject stale cross-project data.
+12. Activity telemetry appears for active work when supported by Pi.
+13. Cancellation marks broker state immediately and sends best-effort stop/abort steering to Pi.
+14. Timeout behavior is explicit and tested.
+15. Unknown message types and invalid protocol envelopes are rejected.
+16. API-key protection works.
+17. Generated skills teach the intended lead/worker behavior.
+18. README documents human, agent coordination, and debug commands separately.
+19. Unit tests pass.
+20. Manual smoke tests cover real visible Pi sessions.
 
-Tests must cover:
+## 20. Near-term roadmap
 
-- project init creates config and skills
-- protocol validation
-- invalid message type rejection
-- agent registration
-- send-and-wait success
-- send-and-wait timeout
-- worker next-message polling
-- reply handling
-- orch ask command
-- orch watch events
-- broker auto-start check
+### Product/docs cleanup
 
-Minimum test command:
+- keep one product concept: coordinated visible lead/work sessions
+- use “work” for user-facing explanation
+- use “job” for `orch jobs` status rows
+- keep message/protocol details in architecture/reference only
+- separate commands by audience in PRD, README, and skills
 
-pytest
+### State model cleanup
 
-28. Acceptance Criteria
+- introduce a canonical Job/Event model in code when changing state logic
+- reduce duplicated status derivation across tasks/conversations/messages
+- keep the broker boring and strict
+- do not add storage complexity now
 
-MVP is complete when:
+### Connector hardening
 
-1. `orch init` creates project config and skills.
-2. `orch lead` starts or prepares a visible Pi lead session.
-3. `orch work` starts or prepares a visible Pi worker session and listens for tasks.
-4. Broker starts automatically when needed.
-5. Lead and worker register with the broker.
-6. `orch ask work --task T001 --msg "..."`
-   sends a task to the worker.
-7. Worker receives the task.
-8. Worker processes the task through Pi connector.
-9. Worker reply returns to the lead.
-10. `orch watch` shows the exchange.
-11. Timeout works.
-12. Unknown message types are rejected.
-13. API key protection works.
-14. Tests pass.
-15. README explains daily usage clearly.
-16. `orch --help` explains top-level commands and `orch jobs --help` explains the jobs command/options.
-17. `orch jobs` keeps terminal job rows visible but hides stale terminal heartbeat activity.
+- document required Pi extension APIs
+- add connector compatibility/version checks where practical
+- improve actionable errors when Pi APIs are missing or changed
+- keep graceful degradation honest
 
-29. Implementation Phases
+### Later enhancements, only if needed
 
-Phase 1: Clean Python Package
+- multiple workers
+- reviewer role
+- full transcript command
+- richer activity views
+- remote broker mode
+- web dashboard
+- additional agent adapters
+- durable local history if restart recovery becomes painful
 
-- Add pyproject.toml.
-- Add src/orchlink package.
-- Add orch console command.
-- Add basic CLI help.
+## 21. If rebuilding the app from scratch
 
-Phase 2: Project Init
+Build it in this order:
 
-- Implement orch init.
-- Create .orch/project.yaml.
-- Create .orch/skills/lead.md.
-- Create .orch/skills/work.md.
+1. Define the canonical Job/Event state machine.
+2. Build the local broker around jobs, sessions, events, results, and single-flight enforcement.
+3. Add strict protocol envelopes only where needed for routing and validation.
+4. Add project config and generated behavior skills.
+5. Add the small human CLI.
+6. Add the agent coordination CLI.
+7. Add the debug/reference CLI.
+8. Add the Pi connector and extension contract.
+9. Add activity, cancellation, and recovery UX.
+10. Add tests around state transitions and failure modes.
 
-Phase 3: Broker
+The rebuild should improve internal clarity, not broaden the product too early.
 
-- FastAPI broker.
-- Health endpoint.
-- API key protection.
-- Protocol models.
-- MemoryMessageStore.
+## 22. Final principle
 
-Phase 4: Request/Reply Loop
+Keep Orchlink boring and trustworthy.
 
-- Register agent.
-- Send-and-wait.
-- Get next message.
-- Reply endpoint.
-- Timeout behavior.
-
-Phase 5: CLI Ask and Watch
-
-- orch ask work.
-- orch watch.
-- event stream in memory.
-
-Phase 6: Pi Connector
-
-- Implement configurable Pi command.
-- Implement lead startup.
-- Implement worker startup/listen mode.
-- Send task into worker Pi session using native connector behavior.
-- Return worker result.
-
-Phase 7: Smooth Daily UX
-
-- orch lead.
-- orch work.
-- broker auto-start.
-- clear logs and errors.
-- orch doctor.
-
-Phase 8: Tests and Docs
-
-- Add tests.
-- Add README.
-- Document simple commands.
-- Document limitations.
-
-30. Future Enhancements
-
-Future versions may add:
-
-- Multiple workers
-- Multiple project sessions at the same time
-- SQLite persistence
-- Redis Streams
-- Web dashboard
-- Git integration
-- Reviewer role
-- Human approval gates
-- Remote broker
-
-Do not implement these in MVP.
-
-31. Final Principle
-
-Orchlink must stay simple.
-
-The user should remember:
-
-orch init
-orch lead
-orch work
-orch ask work
-orch watch
-
-The lead is the brain.
-The worker is the hand.
-Orchlink is the link.
+```text
+lead is the coordinator
+work is the scoped collaborator
+broker is the local source of coordination truth
+jobs are what humans and agents inspect
+messages are only how the broker moves turns around
+```

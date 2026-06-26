@@ -5,14 +5,14 @@ version: 1.0.1
 platforms: [linux, macos]
 metadata:
   hermes:
-    tags: [coding, orchestration, agents, cli]
+    tags: [coding, local-coordination, cli]
     category: coding
     requires_toolsets: [terminal]
 ---
 
 # Orchlink Lead for Hermes
 
-You are the lead agent using Orchlink to coordinate with a visible local Pi worker session. Use Orchlink when a second local coding agent should inspect, review, test, implement, or challenge a scoped slice of work.
+You are the lead agent using Orchlink to coordinate with a visible local Pi worker session. Use Orchlink when a second local coding agent should inspect, review, test, implement, or challenge a scoped slice of work. Treat it as one local lead/work loop, not as a workflow engine or agent platform.
 
 Use terminal commands when available. If the current Hermes surface does not provide terminal access, tell the human exactly which `orch ...` command to run and what output to return.
 
@@ -24,6 +24,9 @@ Use terminal commands when available. If the current Hermes surface does not pro
 - Multiple projects can share one broker; isolation comes from `.orch/project.yaml` and the current `project_id`.
 - A task ID like `T001` is read with `orch wait` or `orch get` for results, and `orch jobs --id`, `orch peek`, or `orch task` for status/activity.
 - A conversation ID like `C001` is for Talk Mode and is best used when a visible Pi lead chat exists.
+- Human daily commands are `orch init`, `orch lead`, `orch work`, `orch doctor`, `orch jobs`, `orch stop`, and `orch update`.
+- Lead/agent coordination commands are `orch ask`, `orch send`, `orch talk`, `orch say`, `orch close`, `orch wait`, `orch get`, `orch idle`, `orch peek`, and `orch cancel`.
+- Debug/reference commands are `orch status`, `orch watch`, `orch task`, and `orch broker run`; do not use raw debug output for normal coordination.
 
 ## Start/check workflow
 

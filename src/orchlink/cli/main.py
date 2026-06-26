@@ -25,13 +25,18 @@ from orchlink.bridge.ask import (
 )
 from orchlink.bridge.monitor import fetch_events, fetch_status, format_event
 from orchlink.broker.main import BROKER_CAPABILITIES, VERSION as BROKER_VERSION
+from orchlink.broker.state import ACTIVE_ACTIVITY_STATUSES, is_active_job_status, job_id_for, job_kind_for, job_matches_id
 from orchlink.connector.pi_connector import PiConnector, PiConnectorError
 from orchlink.project.config import (
     ProjectConfigError,
     broker_api_key,
     broker_auto_start,
+    broker_auto_stop,
     broker_host,
+    broker_require_peer_sessions,
     broker_port,
+    broker_session_grace_seconds,
+    broker_session_heartbeat_interval_seconds,
     broker_url,
     load_project_config,
     project_root,
@@ -260,8 +265,6 @@ def next_conversation_id(config: dict[str, Any]) -> str:
     return f"C{highest + 1:03d}"
 
 
-BLOCKING_JOB_STATUSES = {"PENDING", "QUEUED", "DELIVERED", "RUNNING", "IN_PROGRESS", "OPEN"}
-ACTIVE_ACTIVITY_STATUSES = {"DELIVERED", "RUNNING", "IN_PROGRESS"}
 
 
 def conversation_state(config: dict[str, Any], conversation_id: str) -> dict[str, Any] | None:
@@ -273,19 +276,15 @@ def conversation_state(config: dict[str, Any], conversation_id: str) -> dict[str
 
 
 def blocking_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [job for job in jobs if str(job.get("status") or "").upper() in BLOCKING_JOB_STATUSES]
+    return [job for job in jobs if is_active_job_status(job.get("status"))]
 
 
 def job_id(job: dict[str, Any]) -> str:
-    return str(job.get("task_id") or job.get("conversation_id") or job.get("message_id") or "-")
+    return job_id_for(job)
 
 
 def job_kind(job: dict[str, Any]) -> str:
-    if job.get("task_id"):
-        return "task"
-    if job.get("conversation_id"):
-        return "talk"
-    return str(job.get("kind") or "-")
+    return job_kind_for(job)
 
 
 def job_route(job: dict[str, Any]) -> str:
@@ -309,13 +308,7 @@ def filter_jobs(
         expected_kind = kind.lower()
         selected = [job for job in selected if job_kind(job) == expected_kind]
     if item_id:
-        selected = [
-            job
-            for job in selected
-            if str(job.get("task_id") or "") == item_id
-            or str(job.get("conversation_id") or "") == item_id
-            or str(job.get("message_id") or "") == item_id
-        ]
+        selected = [job for job in selected if job_matches_id(job, item_id)]
     return selected
 
 
@@ -421,6 +414,10 @@ def start_background_broker(config: dict[str, Any]) -> None:
     env["ORCHLINK_HOST"] = broker_host(config)
     env["ORCHLINK_PORT"] = str(broker_port(config))
     env["ORCHLINK_API_KEY"] = broker_api_key(config)
+    env["ORCHLINK_AUTO_STOP"] = "true" if broker_auto_stop(config) else "false"
+    env["ORCHLINK_REQUIRE_PEER_SESSIONS"] = "true" if broker_require_peer_sessions(config) else "false"
+    env["ORCHLINK_SESSION_HEARTBEAT_INTERVAL_SECONDS"] = str(broker_session_heartbeat_interval_seconds(config))
+    env["ORCHLINK_SESSION_GRACE_SECONDS"] = str(broker_session_grace_seconds(config))
     command = [
         sys.executable,
         "-m",

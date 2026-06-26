@@ -30,6 +30,10 @@ def default_project_config(project_dir: Path, project_id: str | None = None) -> 
             "auto_start": True,
             "host": "127.0.0.1",
             "port": 8787,
+            "auto_stop": True,
+            "require_peer_sessions": True,
+            "session_heartbeat_interval_seconds": 10,
+            "session_grace_seconds": 25,
         },
         "pi": {
             "command": "pi",

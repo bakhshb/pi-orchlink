@@ -1,11 +1,23 @@
 import os
 import shutil
+import signal
 import subprocess
+import threading
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from orchlink.connector.pi_extension import ensure_pi_extension
-from orchlink.project.config import broker_api_key, broker_url, project_root, role_agent_id, skill_path
+from orchlink.project.config import (
+    broker_api_key,
+    broker_session_grace_seconds,
+    broker_session_heartbeat_interval_seconds,
+    broker_url,
+    project_root,
+    role_agent_id,
+    skill_path,
+)
 
 
 class PiConnectorError(RuntimeError):
@@ -72,6 +84,82 @@ class PiConnector:
         )
         return env
 
+    def _broker_headers(self) -> dict[str, str]:
+        return {
+            "X-API-Key": broker_api_key(self.config),
+            "X-Orchlink-Project-ID": str(self.config.get("project_id") or "default"),
+        }
+
+    def _post_broker(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        with httpx.Client(base_url=broker_url(self.config), timeout=5) as client:
+            response = client.post(path, headers=self._broker_headers(), json=body)
+            response.raise_for_status()
+            return response.json()
+
+    def _acquire_session(self, role: str, pid: int) -> str:
+        role_key = "work" if role == "work" else "lead"
+        role_config = self.config.get(role_key) or {}
+        body = {
+            "project_id": str(self.config.get("project_id") or "default"),
+            "agent_id": role_agent_id(self.config, role_key),
+            "role": role_key,
+            "pid": pid,
+            "session_id": str(role_config.get("session_id") or role_key),
+            "lease_grace_seconds": broker_session_grace_seconds(self.config),
+        }
+        response = self._post_broker("/v1/sessions/acquire", body)
+        return str(response["session"]["lease_id"])
+
+    def _release_session(self, lease_id: str, reason: str) -> None:
+        try:
+            self._post_broker(
+                f"/v1/sessions/{lease_id}/release",
+                {"project_id": str(self.config.get("project_id") or "default"), "reason": reason},
+            )
+        except Exception:
+            return
+
+    def _heartbeat_loop(self, lease_id: str, stop_event: threading.Event) -> None:
+        interval = max(1, broker_session_heartbeat_interval_seconds(self.config))
+        while not stop_event.wait(interval):
+            try:
+                self._post_broker(
+                    f"/v1/sessions/{lease_id}/heartbeat",
+                    {"project_id": str(self.config.get("project_id") or "default")},
+                )
+            except Exception:
+                continue
+
+    def _run_pi_process(self, role: str, argv: list[str]) -> int:
+        if not self.check_available():
+            raise PiConnectorError(f"Pi command not found: {self.pi_command()}")
+        process = subprocess.Popen(argv, cwd=self._role_project_dir(role), env=self._env(role))
+        stop_event = threading.Event()
+        lease_id = ""
+        heartbeat_thread: threading.Thread | None = None
+        try:
+            try:
+                lease_id = self._acquire_session(role, process.pid)
+            except Exception:
+                process.terminate()
+                raise
+            heartbeat_thread = threading.Thread(target=self._heartbeat_loop, args=(lease_id, stop_event), daemon=True)
+            heartbeat_thread.start()
+            try:
+                return process.wait()
+            except KeyboardInterrupt:
+                try:
+                    process.send_signal(signal.SIGINT)
+                except ProcessLookupError:
+                    pass
+                return process.wait()
+        finally:
+            stop_event.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=2)
+            if lease_id:
+                self._release_session(lease_id, f"{role} session exited.")
+
     def lead_argv(self) -> list[str]:
         pi_config = self.config.get("pi") or {}
         configured_args = pi_config.get("lead_args")
@@ -111,11 +199,7 @@ class PiConnector:
         ]
 
     def run_lead(self) -> int:
-        if not self.check_available():
-            raise PiConnectorError(f"Pi command not found: {self.pi_command()}")
-        return subprocess.call(self.lead_argv(), cwd=self._role_project_dir("lead"), env=self._env("lead"))
+        return self._run_pi_process("lead", self.lead_argv())
 
     def run_work(self) -> int:
-        if not self.check_available():
-            raise PiConnectorError(f"Pi command not found: {self.pi_command()}")
-        return subprocess.call(self.work_interactive_argv(), cwd=self._role_project_dir("work"), env=self._env("work"))
+        return self._run_pi_process("work", self.work_interactive_argv())

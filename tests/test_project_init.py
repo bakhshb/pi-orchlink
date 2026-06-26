@@ -26,6 +26,10 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert data["work"]["agent_id"] == "demo.work"
     assert "timeout_seconds" not in data["work"]
     assert data["broker"]["auto_start"] is True
+    assert data["broker"]["auto_stop"] is True
+    assert data["broker"]["require_peer_sessions"] is True
+    assert data["broker"]["session_heartbeat_interval_seconds"] == 10
+    assert data["broker"]["session_grace_seconds"] == 25
     lead_skill = paths["lead_skill"].read_text(encoding="utf-8")
     work_skill = paths["work_skill"].read_text(encoding="utf-8")
     assert "not just delegate" in lead_skill

@@ -64,6 +64,26 @@ def broker_auto_start(config: dict[str, Any]) -> bool:
     return bool(broker.get("auto_start", True))
 
 
+def broker_auto_stop(config: dict[str, Any]) -> bool:
+    broker = config.get("broker") or {}
+    return bool(broker.get("auto_stop", True))
+
+
+def broker_require_peer_sessions(config: dict[str, Any]) -> bool:
+    broker = config.get("broker") or {}
+    return bool(broker.get("require_peer_sessions", True))
+
+
+def broker_session_heartbeat_interval_seconds(config: dict[str, Any]) -> int:
+    broker = config.get("broker") or {}
+    return int(broker.get("session_heartbeat_interval_seconds") or 10)
+
+
+def broker_session_grace_seconds(config: dict[str, Any]) -> int:
+    broker = config.get("broker") or {}
+    return int(broker.get("session_grace_seconds") or 25)
+
+
 def project_root(config: dict[str, Any]) -> Path:
     return Path(str(config.get("_project_root") or Path.cwd())).resolve()
 

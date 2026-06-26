@@ -1,3 +1,7 @@
+import asyncio
+import os
+import signal
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request, Security
@@ -8,12 +12,13 @@ from orchlink.broker.settings import Settings, get_settings
 from orchlink.broker.storage import MemoryMessageStore, MessageStore, MessageStoreBusy
 
 
-VERSION = "0.4.1"
+VERSION = "0.4.2"
 BROKER_CAPABILITIES = [
     "project_header_scope",
     "task_activity_endpoint",
     "scoped_task_results",
     "status_filters",
+    "session_leases",
 ]
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -41,9 +46,50 @@ def create_app(
     store: MessageStore | None = None,
     settings: Settings | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="Orchlink Broker", version=VERSION)
-    app.state.settings = settings or get_settings()
-    app.state.store = store or MemoryMessageStore()
+    settings_obj = settings or get_settings()
+    store_obj = store or MemoryMessageStore(
+        require_peer_sessions=settings_obj.require_peer_sessions,
+        session_grace_seconds=settings_obj.session_grace_seconds,
+    )
+
+    async def maybe_schedule_auto_stop(project_id: str | None = None) -> None:
+        if not settings_obj.auto_stop or app.state.shutdown_scheduled:
+            return
+        if not await app.state.store.can_auto_stop(project_id=project_id):
+            return
+        app.state.shutdown_scheduled = True
+
+        async def stop_soon() -> None:
+            await asyncio.sleep(0.5)
+            if await app.state.store.can_auto_stop(project_id=project_id):
+                os.kill(os.getpid(), signal.SIGTERM)
+            app.state.shutdown_scheduled = False
+
+        asyncio.create_task(stop_soon())
+
+    async def session_expiry_loop() -> None:
+        while True:
+            await asyncio.sleep(max(1, min(5, settings_obj.session_heartbeat_interval_seconds)))
+            expired = await app.state.store.expire_sessions()
+            if expired:
+                for session in expired:
+                    await maybe_schedule_auto_stop(str(session.get("project_id") or "default"))
+
+    @asynccontextmanager
+    async def lifespan(app_obj: FastAPI):
+        if settings_obj.auto_stop or settings_obj.require_peer_sessions:
+            app_obj.state.session_expiry_task = asyncio.create_task(session_expiry_loop())
+        try:
+            yield
+        finally:
+            task = getattr(app_obj.state, "session_expiry_task", None)
+            if task is not None:
+                task.cancel()
+
+    app = FastAPI(title="Orchlink Broker", version=VERSION, lifespan=lifespan)
+    app.state.settings = settings_obj
+    app.state.store = store_obj
+    app.state.shutdown_scheduled = False
 
     secure_router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
 
@@ -58,6 +104,51 @@ def create_app(
     ) -> dict[str, str]:
         stored_agent = await message_store.register_agent(agent.model_dump(mode="json"))
         return {"status": "registered", "agent_id": stored_agent["agent_id"]}
+
+    @secure_router.post("/sessions/acquire")
+    async def acquire_session(
+        body: dict[str, Any] = Body(default_factory=dict),
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        return {"status": "active", "session": await message_store.acquire_session(body)}
+
+    @secure_router.post("/sessions/{lease_id}/heartbeat")
+    async def heartbeat_session(
+        lease_id: str,
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        try:
+            project_id = request_project_id(request, str(body.get("project_id") or "") or None)
+            return {"status": "ok", "session": await message_store.heartbeat_session(lease_id, project_id=project_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @secure_router.post("/sessions/{lease_id}/release")
+    async def release_session(
+        lease_id: str,
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        try:
+            project_id = request_project_id(request, str(body.get("project_id") or "") or None)
+            session = await message_store.release_session(lease_id, str(body.get("reason") or ""), project_id=project_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        await maybe_schedule_auto_stop(str(session.get("project_id") or "default"))
+        return {"status": "released", "session": session}
+
+    @secure_router.get("/sessions")
+    async def sessions(
+        request: Request,
+        project_id: str | None = Query(default=None),
+        active: bool = Query(default=False),
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        project_id = request_project_id(request, project_id)
+        return {"project_id": project_id, "sessions": await message_store.list_sessions(project_id=project_id, active=active)}
 
     @secure_router.post("/messages/send")
     async def send_message(
@@ -128,13 +219,16 @@ def create_app(
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
         try:
-            return await message_store.cancel_work(
+            project_id = request_project_id(request, str(body.get("project_id") or "") or None)
+            result = await message_store.cancel_work(
                 item_id,
                 str(body.get("reason") or ""),
-                project_id=request_project_id(request, str(body.get("project_id") or "") or None),
+                project_id=project_id,
             )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        await maybe_schedule_auto_stop(project_id)
+        return result
 
     @secure_router.post("/conversations/{conversation_id}/close")
     async def close_conversation(
@@ -245,6 +339,7 @@ def create_app(
         agents = await message_store.list_agents()
         if project_id is not None:
             agents = [agent for agent in agents if str(agent.get("project_id") or "default") == project_id]
+        sessions = await message_store.list_sessions(project_id=project_id)
         active_messages = await message_store.list_active_messages(project_id=project_id)
         conversations = await message_store.list_conversations(project_id=project_id)
         jobs = await message_store.list_jobs(limit=500 if task_id is not None else limit, project_id=project_id)
@@ -261,6 +356,8 @@ def create_app(
             "broker": "ok",
             "agent_count": len(agents),
             "agents": agents,
+            "session_count": len(sessions),
+            "sessions": sessions,
             "active_message_count": len(active_messages),
             "active_messages": active_messages,
             "conversation_count": len(conversations),

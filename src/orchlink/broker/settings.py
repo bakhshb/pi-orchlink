@@ -8,8 +8,11 @@ class Settings(BaseSettings):
     host: str = Field(default="127.0.0.1", alias="ORCHLINK_HOST")
     port: int = Field(default=8787, alias="ORCHLINK_PORT")
     api_key: str = Field(default="change-me", alias="ORCHLINK_API_KEY")
-    storage: str = Field(default="memory", alias="ORCHLINK_STORAGE")
     log_level: str = Field(default="INFO", alias="ORCHLINK_LOG_LEVEL")
+    auto_stop: bool = Field(default=False, alias="ORCHLINK_AUTO_STOP")
+    require_peer_sessions: bool = Field(default=False, alias="ORCHLINK_REQUIRE_PEER_SESSIONS")
+    session_heartbeat_interval_seconds: int = Field(default=10, alias="ORCHLINK_SESSION_HEARTBEAT_INTERVAL_SECONDS")
+    session_grace_seconds: int = Field(default=25, alias="ORCHLINK_SESSION_GRACE_SECONDS")
 
     model_config = SettingsConfigDict(
         extra="ignore",

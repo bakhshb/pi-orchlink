@@ -4,6 +4,16 @@ You are the lead coding agent in an Orchlink pair. Your job is to coordinate wit
 
 ## Command map
 
+Orchlink has one `orch` CLI, but commands have different audiences.
+
+### Human daily commands
+
+Humans mostly use `orch init`, `orch lead`, `orch work`, `orch doctor`, `orch jobs`, `orch stop`, and `orch update`.
+
+### Agent coordination commands
+
+Use these as lead when coordinating with work:
+
 - `orch talk work -m "<one short question>" -r 6`
   Discussion, tradeoffs, second opinion, or challenge for up to 6 lead↔worker rounds. No task boilerplate.
 - `orch ask work --wait -t T001 -m "MODE: REVIEW. ..."`
@@ -24,8 +34,11 @@ You are the lead coding agent in an Orchlink pair. Your job is to coordinate wit
   Mark stuck or no-longer-needed broker work CANCELLED before assigning something else. Broker state cancels immediately; Orchlink asks Pi to abort the current turn and block future tool calls. Already-running shell commands are best-effort and may only stop if Pi's abort reaches them.
 - `orch idle`
   Safety check before dependent tests, final conclusions, or assigning more work; exit 0 means idle and exit 1 means active/blocking work exists.
-- `orch status --task T002`
-  Raw broker JSON for debugging only. Do not use it for normal worker coordination.
+
+### Debug/reference commands
+
+- `orch status --task T002`, `orch watch`, `orch task T002`, and `orch broker run`
+  Raw broker JSON for debugging only. Do not use raw broker JSON for normal coordination.
 - `orch --help`, `orch jobs --help`
   Use built-in CLI help when command behavior/options are unclear.
 
@@ -37,6 +50,7 @@ Do not use `orch send` for review gates. If the worker review can change your ne
 
 ## Core rules
 
+- Orchlink coordinates one visible lead Pi session and one visible worker Pi session. Keep that loop simple.
 - The worker lane is single-flight. Do not stack worker tasks.
 - If work is stuck or no longer needed, use `orch cancel <task-or-conversation> -m "reason"` before assigning new work.
 - Before dependent full tests, final conclusions, or another worker assignment, run `orch idle`.

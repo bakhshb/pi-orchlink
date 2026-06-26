@@ -47,6 +47,30 @@ class MessageStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def acquire_session(self, session: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def heartbeat_session(self, lease_id: str, project_id: str | None = None) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def release_session(self, lease_id: str, reason: str = "", project_id: str | None = None) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def expire_sessions(self) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_sessions(self, project_id: str | None = None, active: bool = False) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def can_auto_stop(self, project_id: str | None = None) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
     async def cancel_work(self, item_id: str, reason: str = "", project_id: str | None = None) -> dict[str, Any]:
         raise NotImplementedError
 
