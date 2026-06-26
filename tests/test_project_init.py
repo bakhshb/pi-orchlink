@@ -49,17 +49,17 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "orch talk work" in lead_skill
     assert "orch say C001" in lead_skill
     assert "orch close C001" in lead_skill
-    assert "MODE: DISCUSS | PLAN | DO | REVIEW" in lead_skill
-    assert "TYPE: PLAN | RESULT | BLOCKER" in lead_skill
+    assert "Do not force `MODE:`/`TASK_ID:` blocks" in lead_skill
+    assert "Do not require `TYPE:` labels" in lead_skill
     assert "# Worker Role" in work_skill
-    assert "## Modes" in work_skill
+    assert "## Task behavior" in work_skill
     assert "## TALK mode" in work_skill
-    assert "## Task modes" in work_skill
-    assert "TALK: discuss" in work_skill
+    assert "## Task replies" in work_skill
+    assert "Discuss or recommend" in work_skill
     assert "For TALK, behave like a collaborator" in work_skill
     assert "No template and no required labels" in work_skill
     assert "Do not agree by default" in work_skill
-    assert "If MODE is DO but implementation is not explicitly allowed" in work_skill
+    assert "If implementation is not explicitly allowed" in work_skill
     assert "Follow the lead's requested reply shape" in work_skill
     assert "fixed summary/changed/tests template" in work_skill
     assert "summary:" not in work_skill
@@ -78,7 +78,7 @@ def test_refresh_skills_keeps_existing_project_config(tmp_path):
     assert refreshed["config"].read_text(encoding="utf-8") == "project_id: custom\n"
     assert "# Lead Role" in refreshed["lead_skill"].read_text(encoding="utf-8")
     assert "## Task prompt shape" in refreshed["lead_skill"].read_text(encoding="utf-8")
-    assert "## Modes" in refreshed["work_skill"].read_text(encoding="utf-8")
+    assert "## Task behavior" in refreshed["work_skill"].read_text(encoding="utf-8")
 
 
 def test_cli_init_uses_current_folder_name_by_default(monkeypatch, tmp_path):
@@ -138,3 +138,8 @@ def test_project_ask_envelope_resolves_work_alias(tmp_path):
     assert envelope["delivery"] == "async"
     assert envelope["payload"]["mode"] == "PLAN"
     assert envelope["payload"]["scope"]["forbidden"] == [".git/**", ".orch/**", "node_modules/**", ".venv/**"]
+    assert envelope["payload"]["expected_reply"] == []
+
+    review_envelope = build_task_envelope(config, "work", "T002", "Please inspect my changes.", timeout_seconds=30)
+
+    assert review_envelope["payload"]["mode"] == "REVIEW"

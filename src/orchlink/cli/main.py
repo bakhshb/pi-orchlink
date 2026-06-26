@@ -630,7 +630,7 @@ def send(
     mode = infer_task_mode(message)
     if mode == "REVIEW" and not allow_async_review:
         console.print("[Orch] REVIEW is a gate by default.")
-        console.print(f"[Orch] Use blocking review: orch ask work --wait -t {task_id} -m \"MODE: REVIEW...\"")
+        console.print(f"[Orch] Use blocking review: orch ask work --wait -t {task_id} -m \"Please review ...\"")
         console.print("[Orch] Or pass --allow-async-review only if lead will not act on the review result.")
         raise typer.Exit(1)
 

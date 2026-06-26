@@ -9,20 +9,7 @@ from orchlink.broker.protocol import PROTOCOL_VERSION
 from orchlink.project.config import broker_api_key, broker_url, resolve_agent_id, role_agent_id
 
 
-DEFAULT_EXPECTED_REPLY = [
-    "type",
-    "mode",
-    "summary",
-    "workload split",
-    "decision needed",
-    "files inspected",
-    "files changed",
-    "tests run",
-    "findings",
-    "risks",
-    "open questions",
-    "recommended next step",
-]
+DEFAULT_EXPECTED_REPLY: list[str] = []
 
 TALK_EXPECTED_REPLY: list[str] = []
 
@@ -41,6 +28,16 @@ def infer_task_mode(message: str, default: str = "PLAN") -> str:
     match = re.search(r"(?im)^\s*MODE\s*:\s*(DISCUSS|PLAN|DO|REVIEW)\b", message)
     if match:
         return match.group(1).upper()
+
+    lowered = message.lower()
+    if re.search(r"\b(review|reviewing|reviewed|audit)\b", lowered) or re.search(r"\binspect\b.*\b(changes?|diff|patch|pr)\b", lowered):
+        return "REVIEW"
+    if re.search(r"\b(implement|add|fix|update|edit|change|remove|write|create)\b", lowered):
+        return "DO"
+    if re.search(r"\b(discuss|compare|decide|recommend|tradeoff|trade-off|opinion)\b", lowered):
+        return "DISCUSS"
+    if re.search(r"\b(plan|propose|approach)\b", lowered):
+        return "PLAN"
     return default
 
 

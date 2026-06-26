@@ -102,7 +102,7 @@ Use this decision order:
 Use `ask --wait` when the worker answer can change your next action.
 
 ```bash
-orch ask work --wait -t TREV001 -m "MODE: REVIEW. TASK_ID: TREV001. Context: review my staged parser change. Scope: inspect parser.py and tests/test_parser.py only. Forbidden: do not edit. Permission: inspect only. Checks: you may run python3 -m pytest tests/test_parser.py -v. Reply: verdict, risks, files inspected, tests run, and whether I can proceed."
+orch ask work --wait -t TREV001 -m "Please review my staged parser change. Inspect parser.py and tests/test_parser.py only; do not edit. You may run python3 -m pytest tests/test_parser.py -v. Reply with verdict, risks, files inspected, tests run, and whether I can proceed."
 ```
 
 Good uses:
@@ -120,7 +120,7 @@ Do not proceed past a review gate until the exact task result returns.
 Use `send` only when the worker has an independent scope and you can work elsewhere.
 
 ```bash
-orch send work -t TDO001 -m "MODE: DO. TASK_ID: TDO001. Context: add one parser edge case. Scope: edit parser.py and tests/test_parser.py only. Forbidden: no docs or unrelated files. Permission: implementation allowed. Checks: run python3 -m pytest tests/test_parser.py -v. Reply: files changed, tests run, and remaining risks."
+orch send work -t TDO001 -m "Add one parser edge case. Edit parser.py and tests/test_parser.py only; do not touch docs or unrelated files. Implementation is allowed. Run python3 -m pytest tests/test_parser.py -v and reply with files changed, tests run, and remaining risks."
 orch jobs --active
 orch wait TDO001
 ```
@@ -134,14 +134,9 @@ Rules:
 
 ## Task prompt shape
 
-Task prompts should be scoped, not templated for its own sake. Include enough information for the worker to act safely.
+Write worker prompts in natural language. Do not force `MODE:`/`TASK_ID:` blocks or a universal checklist. The `-t` CLI option already carries the task ID; the worker can infer whether you need discussion, planning, review, or implementation from your request.
 
-Always include:
-
-- `MODE: DISCUSS | PLAN | DO | REVIEW`
-- `TASK_ID: ...`
-
-Usually include:
+Usually include only what helps the worker act safely:
 
 - current context
 - exact allowed files, paths, or behavior
@@ -154,7 +149,7 @@ Optional:
 - desired reply shape, only when you care about the format
 - whether you will wait or work on a different scope, when it affects coordination
 
-Short, obvious tasks can be shorter. Risky, broad, review, or implementation tasks should include the full scoping details. Do not ask the worker to scan the whole repository unless necessary.
+Short, obvious tasks can be short. Risky, broad, review, or implementation tasks should include enough scope to prevent accidental edits. Do not ask the worker to scan the whole repository unless necessary.
 
 ## Worker replies and blockers
 
@@ -174,7 +169,7 @@ Return verdict, risks, files inspected, and tests run.
 Return files changed, tests run, and remaining risks.
 ```
 
-For task work, prefer asking the worker to start with `TYPE: PLAN | RESULT | BLOCKER` when practical. If you do not request a shape, accept a concise answer that fits the task.
+Do not require `TYPE:` labels or a fixed result schema unless you truly need them. If you do not request a shape, accept a concise answer that fits the task.
 
 If the worker returns `BLOCKER` or asks a direct question, answer it before moving on. Do not ignore worker questions.
 

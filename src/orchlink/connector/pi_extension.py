@@ -39,42 +39,23 @@ function renderWorkerTalkPrompt(message: OrchMessage): string {
 function renderWorkerTaskPrompt(message: OrchMessage): string {
   const payload = message.payload || {};
   const scope = payload.scope || {};
-  return `You are the worker coding agent in an Orchlink pair.
+  const constraints = asList(payload.constraints);
+  const expectedReply = asList(payload.expected_reply);
+  const optionalConstraints = constraints.length ? `\n\nExtra constraints from lead:\n${formatList(constraints)}` : "";
+  const optionalReply = expectedReply.length ? `\n\nLead-requested reply shape:\n${formatList(expectedReply)}` : "";
+  return `You are the worker coding agent in an Orchlink pair. Handle only task ${message.task_id || ""}.
 
-MODE:
-${payload.mode || "PLAN"}
-
-TASK_ID:
-${message.task_id || ""}
-
-INTENT:
+Lead request:
 ${payload.intent || payload.summary || ""}
 
-ALLOWED SCOPE:
+Project scope guardrails:
+Allowed:
 ${formatList(asList(scope.allowed))}
 
-FORBIDDEN SCOPE:
-${formatList(asList(scope.forbidden))}
+Forbidden:
+${formatList(asList(scope.forbidden))}${optionalConstraints}${optionalReply}
 
-CONSTRAINTS:
-${formatList(asList(payload.constraints))}
-
-EXPECTED REPLY:
-${formatList(asList(payload.expected_reply))}
-
-DELIVERY:
-${message.delivery || "async"}
-
-Rules:
-- Work only on this task. Never edit forbidden files or expand scope.
-- If MODE is PLAN, inspect and propose only. No edits.
-- If MODE is REVIEW, inspect and report only. No edits unless the lead explicitly allows them.
-- If MODE is DO, implement only inside the allowed scope.
-- Return BLOCKER with specific questions if the request is unclear, too broad, or too large to scope safely.
-- If implementation is allowed, run relevant tests.
-- Do not commit unless explicitly allowed.
-- Prefer starting task replies with: TYPE: PLAN | RESULT | BLOCKER.
-- After TYPE, follow the lead's EXPECTED REPLY shape. If none is useful, reply naturally and do not invent a fixed result template.
+Use your judgment for whether this needs discussion, planning, review, or implementation. Stay inside the requested scope, do not edit forbidden files, ask a blocker question if the request is unsafe, unclear, or too broad, and reply in the shape the lead asked for. If no shape is requested, answer naturally and concisely.
 `;
 }
 

@@ -77,7 +77,7 @@ def test_send_rejects_review_gate_by_default(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
 
-    result = runner.invoke(cli_main.app, ["send", "work", "-t", "R001", "-m", "MODE: REVIEW. Review my changes."])
+    result = runner.invoke(cli_main.app, ["send", "work", "-t", "R001", "-m", "Please review my changes."])
 
     assert result.exit_code == 1
     assert "REVIEW is a gate" in result.output
@@ -97,7 +97,7 @@ def test_send_allows_async_review_when_explicit(monkeypatch, tmp_path):
 
     result = runner.invoke(
         cli_main.app,
-        ["send", "work", "-t", "R002", "-m", "MODE: REVIEW. Async review of unrelated docs.", "--allow-async-review"],
+        ["send", "work", "-t", "R002", "-m", "Async review of unrelated docs.", "--allow-async-review"],
     )
 
     assert result.exit_code == 0

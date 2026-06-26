@@ -181,8 +181,8 @@ Humans should be able to use Orchlink without learning broker API details.
 Lead agents use these to coordinate with worker:
 
 ```bash
-orch ask work --wait -t T001 -m "MODE: REVIEW. ..."
-orch send work -t T002 -m "MODE: DO. ..."
+orch ask work --wait -t T001 -m "Please review ..."
+orch send work -t T002 -m "Implement ..."
 orch talk work -m "one short question" -r 6
 orch say C001 -m "follow-up"
 orch close C001 -m "Decision: ..."
@@ -263,7 +263,7 @@ Expected behavior:
 ### 7.3 Delegate a blocking review
 
 ```bash
-orch ask work --wait -t T001 -m "MODE: REVIEW. Review the plan. Reply with verdict, risks, files inspected, tests run."
+orch ask work --wait -t T001 -m "Review the plan. Reply with verdict, risks, files inspected, tests run."
 ```
 
 Expected behavior:
@@ -278,7 +278,7 @@ Expected behavior:
 ### 7.4 Delegate async work
 
 ```bash
-orch send work -t T002 -m "MODE: DO. Implement only the parser change. Run parser tests."
+orch send work -t T002 -m "Implement only the parser change. Run parser tests."
 ```
 
 Expected behavior:
@@ -431,7 +431,7 @@ Mode requirements:
 - DO requires explicit implementation permission.
 - If DO is requested without implementation permission, worker should inspect only and return PLAN/BLOCKER.
 - Worker should follow the lead’s requested reply shape.
-- Task replies should prefer `TYPE: PLAN | RESULT | BLOCKER` when practical.
+- Task replies should be natural by default; do not require `TYPE:` labels or a fixed result schema unless the lead asks for one.
 
 ## 10. Architecture
 
