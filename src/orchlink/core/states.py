@@ -36,7 +36,7 @@ ALLOWED_JOB_TRANSITIONS: dict[str, frozenset[str]] = {
     JobStatus.CREATED.value: frozenset({JobStatus.QUEUED.value, JobStatus.CANCELLED.value}),
     JobStatus.QUEUED.value: frozenset({JobStatus.DELIVERED.value, JobStatus.RUNNING.value, JobStatus.TIMEOUT.value, JobStatus.CANCELLED.value}),
     JobStatus.DELIVERED.value: frozenset({JobStatus.RUNNING.value, JobStatus.DONE.value, JobStatus.FAILED.value, JobStatus.TIMEOUT.value, JobStatus.CANCELLED.value}),
-    JobStatus.RUNNING.value: frozenset({JobStatus.DONE.value, JobStatus.FAILED.value, JobStatus.TIMEOUT.value, JobStatus.CANCELLED.value}),
+    JobStatus.RUNNING.value: frozenset({JobStatus.DONE.value, JobStatus.FAILED.value, JobStatus.TIMEOUT.value, JobStatus.CANCELLED.value, JobStatus.CLOSED.value}),
     JobStatus.DONE.value: frozenset(),
     JobStatus.FAILED.value: frozenset(),
     JobStatus.TIMEOUT.value: frozenset(),
