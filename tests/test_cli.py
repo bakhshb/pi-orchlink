@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from orchlink.cli import main as cli_main
-from orchlink.project.init import init_project
+from orchlink.project.init import init_project, load_skill_template
 
 
 runner = CliRunner()
@@ -679,6 +679,57 @@ def test_work_command_starts_visible_pi(monkeypatch, tmp_path):
     assert calls == ["ensure_broker", "register_worker", "run_work"]
     assert "Starting Pi worker session" in result.output
     assert "posted directly into this Pi chat" in result.output
+
+
+def test_lead_auto_refreshes_stale_project_skills(monkeypatch, tmp_path):
+    paths = init_project(tmp_path, project_id="demo")
+    paths["lead_skill"].write_text("old lead", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def run_lead(self):
+            return 0
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "register_project_role_sync", lambda config, role: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+
+    result = runner.invoke(cli_main.app, ["lead"])
+
+    assert result.exit_code == 0
+    assert "Refreshed project skills from current templates: lead.md" in result.output
+    assert paths["lead_skill"].read_text(encoding="utf-8") == load_skill_template("lead")
+    assert paths["work_skill"].read_text(encoding="utf-8") == load_skill_template("work")
+
+
+def test_work_auto_refreshes_missing_project_skills(monkeypatch, tmp_path):
+    paths = init_project(tmp_path, project_id="demo")
+    paths["work_skill"].unlink()
+    monkeypatch.chdir(tmp_path)
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+        def run_work(self):
+            return 0
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "register_project_role_sync", lambda config, role: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+
+    result = runner.invoke(cli_main.app, ["work"])
+
+    assert result.exit_code == 0
+    assert "Refreshed project skills from current templates: work.md" in result.output
+    assert paths["lead_skill"].read_text(encoding="utf-8") == load_skill_template("lead")
+    assert paths["work_skill"].read_text(encoding="utf-8") == load_skill_template("work")
 
 
 def test_work_new_uses_fresh_pi_session_id(monkeypatch, tmp_path):
