@@ -1,7 +1,7 @@
 ---
 name: orchlink
-description: Use this skill whenever Hermes should act as the lead agent for a local Pi worker through Orchlink. It covers sending scoped worker tasks, blocking review gates, async wait/get flows, worker activity checks, blockers, project scoping, stale broker recovery, and safe cancellation semantics.
-version: 1.0.2
+description: Use this skill whenever Hermes should act as the lead agent for a local Pi worker through Orchlink. It covers setup checks, sessions, ask/send/talk choice, review gates, exact wait/get results, jobs and idle, activity checks, cancellation, debug commands, project scoping, and stale-broker recovery.
+version: 1.0.3
 platforms: [linux, macos]
 metadata:
   hermes:
@@ -12,157 +12,156 @@ metadata:
 
 # Orchlink Lead for Hermes
 
-You are the lead agent using Orchlink to coordinate with a visible local Pi worker session. Use Orchlink when a second local coding agent should inspect, review, test, implement, or challenge a scoped slice of work. Treat it as one local lead/work loop, not as a workflow engine or agent platform.
+Hermes is the lead agent. Pi `work` is the visible worker agent. Use Orchlink when a second local coding agent should inspect, review, test, implement, or challenge a scoped slice of work. Treat Orchlink as one local lead/work loop, not as a workflow engine or agent platform.
 
-Use terminal commands when available. If the current Hermes surface does not provide terminal access, tell the human exactly which `orch ...` command to run and what output to return.
+Use terminal commands when available. If Hermes has no terminal access, tell the human the exact `orch ...` command to run and what output to return.
 
-## Mental model
+## Command map
 
-- Hermes is the lead brain.
-- Pi `work` is the visible worker agent.
-- Orchlink's local broker usually runs at `http://127.0.0.1:8787`.
-- Multiple projects can share one broker; isolation comes from `.orch/project.yaml` and the current `project_id`.
-- A task ID like `T001` is read with `orch wait` or `orch get` for results, and `orch jobs --id`, `orch peek`, or `orch task` for status/activity.
-- A conversation ID like `C001` is for Talk Mode and is best used when a visible Pi lead chat exists.
-- Human daily commands are `orch init`, `orch lead`, `orch work`, `orch doctor`, `orch sessions`, `orch jobs`, `orch stop`, and `orch update`.
-- Lead/agent coordination commands are `orch ask`, `orch send`, `orch talk`, `orch say`, `orch close`, `orch wait`, `orch get`, `orch idle`, `orch peek`, and `orch cancel`.
-- Debug/reference commands are `orch status`, `orch watch`, `orch task`, and `orch broker run`; do not use raw debug output for normal coordination. Prefer `orch sessions` over raw status/curl/Python parsing when checking whether lead/work Pi sessions exist.
+Human daily commands:
 
-## Start/check workflow
+- `orch init` creates `.orch/project.yaml` and generated lead/work skills for a project.
+- `orch lead` starts or reopens the visible Pi lead session. Hermes usually does not need this.
+- `orch work` starts or reopens the visible Pi worker session. Hermes usually needs this running.
+- `orch doctor` checks project config, broker compatibility, Pi command, and generated skills.
+- `orch sessions` shows registered lead/work Pi sessions. Use `orch sessions --all` for released history and `--json` only when machine-readable output helps.
+- `orch jobs` browses recent and active work in the current project.
+- `orch stop` stops the project broker when stale or when restarting sessions.
+- `orch update` updates Orchlink. Treat it as a human/operator command unless the human asks you to update.
 
-First verify the Orchlink CLI exists. Do this before any other `orch` command so you do not dead-end halfway through the workflow:
+Lead coordination commands:
+
+- `orch ask work --wait -t T001 -m "..."` sends a blocking task. Use it for reviews, decisions, discussions, and any answer that changes your next action. `orch ask --no-wait` exists, but prefer `orch send` for async work so intent is obvious.
+- `orch send work -t T002 -m "..."` sends async work only when you can safely work on a different scope while Pi works.
+- `orch wait T002` waits for one exact task result. A wait timeout does not cancel the task.
+- `orch get T002` rereads a completed task result. Use `wait` or `get` routinely, not both.
+- `orch idle` is the safety gate. Run it before dependent tests, final conclusions, or assigning more worker work.
+- `orch peek T002` shows recent activity for long-running work. It does not return the final result.
+- `orch cancel T002 -m "reason"` cancels stale or no-longer-needed work before assigning something else.
+- `orch talk`, `orch say`, and `orch close` manage Talk Mode only when a visible lead Pi chat is part of the workflow.
+
+Debug/reference commands:
+
+- `orch status` prints raw broker JSON. Use it only for debugging.
+- `orch watch` watches raw broker events. Use it only for troubleshooting routing/activity.
+- `orch task T002` shows focused route/status/activity for one task.
+- `orch broker run` runs the broker in the foreground for debugging.
+- `orch --help` and `orch jobs --help` are safe when command behavior is unclear.
+
+## Startup checklist
+
+Run these from the target project directory:
 
 ```bash
 command -v orch
+orch doctor
+orch sessions
+orch idle
 ```
 
-If this prints nothing or fails, stop. Tell the human: "Orchlink CLI is not installed or not on PATH. Install/update Orchlink first, then restart this Hermes session." If the human is developing this repo locally, suggest:
+If `command -v orch` fails, stop and tell the human to install or update Orchlink, then restart Hermes. For local development, suggest:
 
 ```bash
 cd /home/debian/projects/orchlink
 ./install.sh
 ```
 
-From the target project directory, check setup and visible sessions:
+Interpret the checks this way:
+
+- `orch doctor` must show a valid project and compatible broker. If it reports stale skills, run `orch init --refresh-skills` or follow the printed instruction.
+- `orch sessions` tells you whether visible Pi sessions exist. It answers a different question than `orch idle`.
+- `orch idle` only says whether active/blocking work exists. It can pass when no worker session is running.
+
+If the project is not initialized, ask the human to run:
 
 ```bash
-orch doctor
-orch sessions
-orch idle
+orch init
 ```
 
-If `orch doctor` reports stale skills, missing project config, missing Pi, or incompatible broker, follow its instruction before continuing.
-
-`orch sessions` confirms whether visible lead/work Pi sessions exist. `orch idle` only checks pending work; it can pass even when no worker session is running.
-
-If the worker is not running, ask the human to start a visible worker session:
+If no worker session is active, ask the human to start one in a visible terminal:
 
 ```bash
 orch work --new
 ```
 
-Do not start `orch lead` by default. Hermes can be the lead through CLI commands. Start `orch lead --new` only when the human wants a visible Pi lead chat to receive injected replies.
+Do not start `orch lead` by default. Hermes can act as lead through CLI commands. Start `orch lead --new` only when the human wants a visible Pi lead chat to receive worker replies or Talk messages.
 
-If `orch doctor` or any command reports a stale/incompatible broker, stop and restart sessions before trusting results:
+## Choosing the right command
+
+Use this decision order:
+
+1. Need a review, decision, critique, plan, or blocker answer before you continue? Use `orch ask work --wait`.
+2. Need worker implementation while you can work on a separate scope? Use `orch send`, then `orch wait` later.
+3. Need short peer discussion in a visible lead/work chat? Use Talk Mode: `orch talk`, `orch say`, `orch close`.
+4. Need to know whether it is safe to continue? Use `orch idle`.
+5. Need to inspect what is active? Use `orch jobs --active`.
+6. Need final output? Use `orch wait T002` or `orch get T002`, not `orch jobs`.
+7. Need debug internals? Use `orch task`, `orch status`, `orch watch`, or `orch broker run` only after normal commands are insufficient.
+
+## Blocking tasks with `ask`
+
+Use `ask --wait` when the worker answer can change your next action.
 
 ```bash
-orch stop
-orch work --new
+orch ask work --wait -t TREV001 -m "MODE: REVIEW. TASK_ID: TREV001. Context: review my staged parser change. Scope: inspect parser.py and tests/test_parser.py only. Forbidden: do not edit. Permission: inspect only. Checks: you may run python3 -m pytest tests/test_parser.py -v. Reply: verdict, risks, files inspected, tests run, and whether I can proceed."
 ```
 
-Add `orch lead --new` only if using a visible Pi lead session.
+Good uses:
 
-## Best commands for Hermes-as-lead
+- review gates
+- architectural disagreement
+- bug triage that affects the lead's next step
+- deciding whether to run full tests
+- unclear user requests where worker may return `BLOCKER`
 
-Use blocking ask for reviews, decisions, and discussions that affect your next action:
+Do not proceed past a review gate until the exact task result returns.
+
+## Async work with `send`
+
+Use `send` only when the worker has an independent scope and you can work elsewhere.
 
 ```bash
-orch ask work --wait -t T001 -m "MODE: REVIEW. TASK_ID: T001. ..."
-```
-
-Use async send for independent worker work:
-
-```bash
-orch send work -t T002 -m "MODE: DO. TASK_ID: T002. ..."
+orch send work -t TDO001 -m "MODE: DO. TASK_ID: TDO001. Context: add one parser edge case. Scope: edit parser.py and tests/test_parser.py only. Forbidden: no docs or unrelated files. Permission: implementation allowed. Checks: run python3 -m pytest tests/test_parser.py -v. Reply: files changed, tests run, and remaining risks."
 orch jobs --active
-orch wait T002
+orch wait TDO001
 ```
 
-Use `orch peek T002` only for long-running work where heartbeat/tool activity would help. Use `orch get T002` later only to reread or debug a completed result.
+Rules:
 
-Use `orch jobs --active` to inspect active work details after `send`; use `orch idle` as the gate before new assignments or dependent work.
+- Do not stack tasks. The worker lane is single-flight.
+- Do not send a dependent task while another task or Talk conversation is active.
+- If you no longer need active work, cancel it before assigning new work.
+- Do not use async REVIEW as a gate. If a review is unrelated and truly non-blocking, use `orch send --allow-async-review`, then verify the exact result with `orch wait TREV001` before using it.
 
-Check the lane before dependent work:
+## Task prompt shape
 
-```bash
-orch idle
-```
+Task prompts should be scoped, not templated for its own sake. Include enough information for the worker to act safely.
 
-Cancel stale/no-longer-needed work:
+Always include:
 
-```bash
-orch cancel T002 -m "reason"
-```
+- `MODE: DISCUSS | PLAN | DO | REVIEW`
+- `TASK_ID: ...`
 
-Cancellation marks broker work `CANCELLED` immediately and asks Pi to abort the current turn. Future tool calls should be blocked. Already-running shell commands are best-effort and may only stop if Pi's abort reaches them.
+Usually include:
 
-## Prefer ask/wait over Talk Mode unless needed
+- current context
+- exact allowed files, paths, or behavior
+- forbidden files, paths, or behavior
+- whether edits are allowed
+- tests or checks the worker may run
 
-Because Hermes is not a visible Pi lead chat, prefer:
+Optional:
 
-```bash
-orch ask work --wait ...
-```
+- desired reply shape, only when you care about the format
+- whether you will wait or work on a different scope, when it affects coordination
 
-for discussion, critique, and review. This prints the worker answer directly in the terminal.
+Short, obvious tasks can be shorter. Risky, broad, review, or implementation tasks should include the full scoping details. Do not ask the worker to scan the whole repository unless necessary.
 
-Use Talk Mode only if the human explicitly wants a lead/work conversation or has started `orch lead --new`:
+## Worker replies and blockers
 
-```bash
-orch talk work -m "one short question" -r 3
-orch say C001 -m "answer or follow-up"
-orch close C001 -m "Decision: ... Rationale: ... Dissent/risk accepted: ... Next step: ... Owner: ... Human approval needed: yes/no"
-```
+The lead chooses the reply shape. Do not force a fixed result template.
 
-Talk Mode messages should be short and conversational: no required template, no `MODE`, no `TASK_ID`, no task boilerplate.
-
-## Review gates
-
-Treat review as a gate if it can change your next action.
-
-Use:
-
-```bash
-orch ask work --wait -t TREV001 -m "MODE: REVIEW. TASK_ID: TREV001. ..."
-```
-
-Do not use `orch send --allow-async-review` unless the review is unrelated and you will not act on it until it returns. If async review is explicitly allowed, verify exact task identity before proceeding:
-
-```bash
-orch wait TREV001
-# or: orch get TREV001, if it already completed
-```
-
-## Task prompt checklist
-
-Task prompts should be scoped, not templated for its own sake. Include enough of these fields for the worker to act safely:
-
-- Always: `MODE: DISCUSS | PLAN | DO | REVIEW`
-- Always: `TASK_ID: ...`
-- Usually: current context
-- Usually: exact allowed files/paths
-- Usually: forbidden files/paths
-- Usually: whether edits are allowed
-- Usually: commands/tests the worker may run
-- Optional: desired reply shape, only when you care about the format
-
-Keep scopes narrow. Short, obvious tasks can be shorter. Risky, broad, review, or implementation tasks should include the full scoping details. The worker lane is single-flight; do not stack multiple tasks.
-
-## Expected worker replies
-
-Choose the reply shape that fits the task. Do not force the full structured template for every request.
-
-Examples:
+Good reply-shape requests:
 
 ```text
 Reply in 3 bullets max.
@@ -172,73 +171,121 @@ Reply in 3 bullets max.
 Return verdict, risks, files inspected, and tests run.
 ```
 
-For task work, prefer asking the worker to start with `TYPE: PLAN | RESULT | BLOCKER` when practical, then follow your requested shape. If the request is too broad, unclear, or unsafe, the worker should return `BLOCKER` with one concrete question. Answer worker questions before moving on.
+```text
+Return files changed, tests run, and remaining risks.
+```
+
+For task work, prefer asking the worker to start with `TYPE: PLAN | RESULT | BLOCKER` when practical. If you do not request a shape, accept a concise answer that fits the task.
+
+If the worker returns `BLOCKER` or asks a direct question, answer it before moving on. Do not ignore worker questions.
 
 ## Reading results safely
 
-For blocking tasks, read the `orch ask --wait` output.
+For blocking work, read the `orch ask --wait` output.
 
-For async tasks, use one result command routinely:
+For async work, use one result command routinely:
 
 ```bash
 orch wait T002
-# or: orch get T002, if it already completed
+# or, if it already completed:
+orch get T002
 ```
 
-Use `wait` or `get`, not both, unless rereading/debugging. If a visible Pi lead is running, lead chat may show the same result; treat matching task/project IDs as one result, not another thing to process.
+Use `get` later only to reread or debug a completed result. If a visible Pi lead chat also receives the same result, treat matching task/project IDs as one result.
 
-Current Orchlink refuses cross-project/unscoped results. If you see a warning about stale broker, cross-project result, or missing capabilities, stop and repair rather than trying to reason around it.
+Trust only the exact task ID in the current project. Orchlink refuses cross-project or unscoped task results. If you see a stale-broker or cross-project warning, stop and repair before continuing.
 
-Do not rely on `orch jobs` as the final result. It is a status view. Use `orch wait` or `orch get` for task output.
+## Jobs, idle, and activity
 
-In `orch jobs`, trust the job `STATUS` over activity text. Heartbeat activity means "worker was alive then"; it is shown only for active jobs and hidden after terminal jobs when stale.
-
-## Progress and activity
-
-Use `orch jobs` as the main work browser, with filters when useful. These filters inspect work details; they do not replace `orch idle` as the gate before new assignments.
+Use `orch idle` as the gate:
 
 ```bash
+orch idle
+```
+
+Exit code `0` means no active/blocking worker work. Exit code `1` means do not run dependent tests, final conclusions, or new worker assignments yet.
+
+Use `jobs` to inspect work:
+
+```bash
+orch jobs
 orch jobs --active
-orch jobs --status STATUS
+orch jobs --status DONE
 orch jobs --kind task
 orch jobs --kind talk
 orch jobs --id T002
+orch jobs --limit 20
 orch jobs --json
 ```
 
-Use activity checks for long tasks:
+`orch jobs --active` is not the same as `orch idle`: it shows details; it is not the safety gate. Use `--limit` when long sessions make the default recent list noisy.
+
+Use activity tools for long-running work:
 
 ```bash
 orch peek T002
 orch task T002
 ```
 
-`peek` is observational only and is most useful for long-running work. It does not replace `wait`, `get`, or `idle`. Treat `orch task T002` as focused status/activity until `orch jobs --id T002` fully replaces it. Treat `orch status` as raw debug JSON, not normal coordination output; for session checks, use `orch sessions` instead of raw status, curl, or ad hoc JSON/Python parsing.
+`peek` and `task` do not replace `wait`, `get`, or `idle`. In `jobs`, trust `STATUS` over activity text. Heartbeat activity means the worker was alive then; terminal jobs should not be treated as active because of stale activity.
 
-## Safety rules
+## Talk Mode
 
-- Run `orch idle` before dependent tests, final conclusions, or new worker assignments. Use `orch jobs --active` only when you need details about active work.
-- Keep Hermes-owned work and worker-owned work separate.
-- Do not print or send real API keys/secrets.
-- Do not ask the worker to scan the whole repo unless necessary.
-- Do not ignore a `BLOCKER` or direct worker question.
-- If results disagree (`jobs` vs `get`/`wait`), trust `get`/`wait` for terminal task output and inspect stale-broker warnings.
+For Hermes-as-lead, prefer `orch ask --wait` for discussion because the reply prints in the terminal.
 
-## Recovery commands
-
-Use CLI help when command behavior is unclear:
+Use Talk Mode only when a visible lead Pi session is running or the human explicitly wants a lead/work chat transcript.
 
 ```bash
-orch --help
-orch jobs --help
+orch talk work -m "one short question" -r 3
+orch say C001 -m "answer or follow-up"
+orch close C001 -m "Decision: ... Rationale: ... Dissent/risk accepted: ... Next step: ... Owner: ... Human approval needed: yes/no"
 ```
 
-Then run the readable checks first:
+Talk Mode is a conversation, not a task order:
+
+- no `MODE`
+- no `TASK_ID`
+- no scope boilerplate
+- one short question or idea per turn
+- close when there is a decision, blocker, timeout, max rounds, or no new value
+
+Do not use `orch get C001` as the normal way to follow Talk. Read the visible lead chat. Use `get` for reread/debug only if needed.
+
+## Cancellation
+
+Cancel stale or no-longer-needed work before assigning more work:
+
+```bash
+orch cancel T002 -m "reason"
+```
+
+Cancellation marks broker work `CANCELLED` and asks Pi to abort the current turn. Future tool calls should be blocked. Already-running shell commands are best-effort and may only stop if Pi's abort reaches them.
+
+After cancellation:
+
+```bash
+orch jobs --id T002
+orch idle
+```
+
+Do not assume cancelled shell commands stopped instantly.
+
+## Debug and recovery
+
+Use readable checks first:
 
 ```bash
 orch doctor
 orch sessions
+orch jobs --active
 orch idle
+```
+
+Use help when unsure:
+
+```bash
+orch --help
+orch jobs --help
 ```
 
 Use broker health only for deeper debugging:
@@ -254,9 +301,10 @@ project_header_scope
 task_activity_endpoint
 scoped_task_results
 status_filters
+session_leases
 ```
 
-If not, restart fresh:
+If Orchlink reports stale broker, missing capabilities, cross-project results, or confusing state, restart cleanly:
 
 ```bash
 orch stop
@@ -264,3 +312,24 @@ orch work --new
 ```
 
 Start `orch lead --new` too only if using a visible Pi lead chat.
+
+Raw debug commands:
+
+```bash
+orch status --task T002 --limit 20
+orch watch --iterations 1 --limit 20
+orch task T002
+orch broker run --host 127.0.0.1 --port 8787
+```
+
+Do not use raw debug output for normal coordination or session checks. Use `orch sessions` for sessions and `orch jobs`/`idle` for work state.
+
+## Safety rules
+
+- Keep Hermes-owned work and worker-owned work separate.
+- Do not expose API keys, tokens, secrets, or private logs in prompts.
+- Do not ask the worker to edit outside the allowed scope.
+- Do not run dependent full tests while worker work is active.
+- Do not make final claims until blocking reviews and active work are resolved.
+- Do not accept worker output blindly. Name the risk, disagreement, or assumption before deciding.
+- If command output is stale, cross-project, or inconsistent, stop and repair instead of guessing.
