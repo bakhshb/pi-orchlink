@@ -54,13 +54,13 @@ def test_pi_extension_uses_valid_record_type():
     assert "type OrchMessage = Record;" not in ORCHLINK_PI_EXTENSION
     assert "TYPE: CHAT_REPLY" not in ORCHLINK_PI_EXTENSION
     assert "MODE: TALK" not in ORCHLINK_PI_EXTENSION
-    assert "[Orchlink Talk] ${speaker}" not in ORCHLINK_PI_EXTENSION
-    assert "value.startsWith(\"[Orchlink Talk]\")" not in ORCHLINK_PI_EXTENSION
+    assert "[Orchlink Talk] ${speaker}" in ORCHLINK_PI_EXTENSION
+    assert "value.startsWith(\"[Orchlink Talk]\")" in ORCHLINK_PI_EXTENSION
     assert "isOrchlinkWorkerPrompt(event.text)" in ORCHLINK_PI_EXTENSION
-    assert "You are the worker coding agent in an Orchlink Talk Mode conversation" in ORCHLINK_PI_EXTENSION
-    assert "CONVERSATION_ID:" in ORCHLINK_PI_EXTENSION
-    assert "TURN:" in ORCHLINK_PI_EXTENSION
-    assert "MESSAGE:" in ORCHLINK_PI_EXTENSION
+    assert "You are the worker coding agent in a Talk Mode conversation" not in ORCHLINK_PI_EXTENSION
+    assert "CONVERSATION_ID:" not in ORCHLINK_PI_EXTENSION
+    assert "TURN:" not in ORCHLINK_PI_EXTENSION
+    assert "MESSAGE:" not in ORCHLINK_PI_EXTENSION
     assert "too broad" in ORCHLINK_PI_EXTENSION
     assert "stripChatReplyMarker" in ORCHLINK_PI_EXTENSION
     assert "pendingTask" in ORCHLINK_PI_EXTENSION
@@ -79,7 +79,7 @@ def test_pi_extension_uses_valid_record_type():
     assert "isRecoverableAssistantError" in ORCHLINK_PI_EXTENSION
     assert "ORCHLINK_RECOVERABLE_ERROR_GRACE_MS" in ORCHLINK_PI_EXTENSION
     assert "180000" in ORCHLINK_PI_EXTENSION
-    assert "WebSocket error|provider_transport_failure|transport" in ORCHLINK_PI_EXTENSION
+    assert "WebSocket error|provider_transport_failure|transport|Request timed out|timed out|timeout" in ORCHLINK_PI_EXTENSION
     assert "waiting for Pi recovery" in ORCHLINK_PI_EXTENSION
     assert "ORCHLINK_ACTIVITY_HEARTBEAT_MS" in ORCHLINK_PI_EXTENSION
     assert "postCurrentActivity" in ORCHLINK_PI_EXTENSION

@@ -33,33 +33,7 @@ function renderWorkerTalkPrompt(message: OrchMessage): string {
   const conversation = message.conversation_id || "";
   const turn = `${message.turn || 1}/${message.max_turns || 6}`;
   const text = payload.message || payload.intent || payload.topic || "";
-  return `You are the worker coding agent in an Orchlink Talk Mode conversation.
-
-MODE:
-TALK
-
-CONVERSATION_ID:
-${conversation}
-
-TURN:
-${turn}
-
-LEAD:
-${speaker}
-
-MESSAGE:
-${text}
-
-CONSTRAINTS:
-${formatList(asList(payload.constraints))}
-
-Rules:
-- Reply conversationally in 1-3 concise sentences.
-- Do not edit files or run tools unless the lead explicitly asks in this Talk turn.
-- Challenge weak assumptions and recommend a practical decision.
-- If the lead asks a direct question, answer it directly.
-- Do not use task boilerplate unless the lead asks for a structured reply.
-`;
+  return `[Orchlink Talk] ${speaker} · ${conversation} · ${turn}\n\n${text}`;
 }
 
 function renderWorkerTaskPrompt(message: OrchMessage): string {
@@ -111,7 +85,7 @@ function renderWorkerPrompt(message: OrchMessage): string {
 
 function isOrchlinkWorkerPrompt(text: any): boolean {
   const value = String(text || "");
-  return value.startsWith("You are the worker coding agent in");
+  return value.startsWith("You are the worker coding agent in") || value.startsWith("[Orchlink Talk]");
 }
 
 function stripChatReplyMarker(value: any): string {
@@ -355,7 +329,7 @@ export default function (pi: ExtensionAPI) {
   function isRecoverableAssistantError(assistantMessage: any): boolean {
     if (assistantMessage?.stopReason !== "error") return false;
     const errorText = `${assistantMessage?.errorMessage || ""} ${JSON.stringify(assistantMessage?.diagnostics || [])}`;
-    return /WebSocket error|provider_transport_failure|transport/i.test(errorText);
+    return /WebSocket error|provider_transport_failure|transport|Request timed out|timed out|timeout/i.test(errorText);
   }
 
   async function sendReply(task: OrchMessage, assistantMessage: any, ctx: any) {
