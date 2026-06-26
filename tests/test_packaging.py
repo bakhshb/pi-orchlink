@@ -26,6 +26,16 @@ def test_project_skill_templates_are_packaged_markdown_files():
     assert "LEAD_SKILL" not in (ROOT / "src" / "orchlink" / "project" / "init.py").read_text(encoding="utf-8")
 
 
+def test_adapter_skills_share_prompt_policy_text():
+    from orchlink.core.prompt_policy import TaskPromptPolicy
+
+    policy = TaskPromptPolicy()
+    for relative_path in ["skills/openclaw/orchlink/SKILL.md", "skills/hermes/orchlink/SKILL.md"]:
+        text = (ROOT / relative_path).read_text(encoding="utf-8")
+        assert policy.lead_task_prompt_guidance_markdown() in text
+        assert policy.lead_reply_guidance_markdown() in text
+
+
 def test_cli_imports_from_installable_package_and_exposes_required_commands():
     from orchlink.cli.main import app
 
