@@ -104,7 +104,8 @@ def test_pi_extension_uses_valid_record_type():
     assert "renderLeadPrompt(message), { deliverAs: \"steer\" }" in ORCHLINK_PI_EXTENSION
     assert "customType: \"orchlink\"" not in ORCHLINK_PI_EXTENSION
     assert "deliverAs: \"nextTurn\"" not in ORCHLINK_PI_EXTENSION
-    assert "Stop any unrelated work now" in ORCHLINK_PI_EXTENSION
+    assert "Recommended next step:" not in ORCHLINK_PI_EXTENSION
+    assert "Stop any unrelated work now" not in ORCHLINK_PI_EXTENSION
     assert "Prefer starting task replies with: TYPE: PLAN | RESULT | BLOCKER" not in ORCHLINK_PI_EXTENSION
     assert "If no shape is requested, answer naturally and concisely" in ORCHLINK_PI_EXTENSION
     assert "expectedReply.length" in ORCHLINK_PI_EXTENSION

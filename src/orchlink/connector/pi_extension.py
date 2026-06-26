@@ -2,12 +2,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from orchlink.core.prompt_policy import ResultPromptPolicy, TaskPromptPolicy
+from orchlink.core.prompt_policy import TaskPromptPolicy
 from orchlink.project.config import run_dir
 
 
 _TASK_PROMPT_POLICY = TaskPromptPolicy()
-_RESULT_PROMPT_POLICY = ResultPromptPolicy()
 
 
 ORCHLINK_PI_EXTENSION = r'''
@@ -16,7 +15,6 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 type OrchMessage = Record<string, any>;
 
 const ORCHLINK_WORKER_TASK_GUIDANCE = __ORCHLINK_WORKER_TASK_GUIDANCE__;
-const ORCHLINK_RESULT_RECONCILE_GUIDANCE = __ORCHLINK_RESULT_RECONCILE_GUIDANCE__;
 
 function env(name: string, fallback = ""): string {
   return process.env[name] || fallback;
@@ -107,10 +105,7 @@ Mode: ${payload.mode || type}
 Status: ${message.status || "DONE"}
 
 Worker result:
-${summary}
-
-Recommended next step:
-${ORCHLINK_RESULT_RECONCILE_GUIDANCE}`;
+${summary}`;
 }
 
 function messageText(message: any): string {
@@ -499,9 +494,6 @@ export default function (pi: ExtensionAPI) {
 '''.replace(
     "__ORCHLINK_WORKER_TASK_GUIDANCE__",
     json.dumps(_TASK_PROMPT_POLICY.worker_task_guidance()),
-).replace(
-    "__ORCHLINK_RESULT_RECONCILE_GUIDANCE__",
-    json.dumps(_RESULT_PROMPT_POLICY.lead_reconcile_guidance()),
 )
 
 

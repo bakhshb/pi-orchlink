@@ -145,5 +145,9 @@ def test_project_ask_envelope_resolves_work_alias(tmp_path):
     assert envelope["payload"]["expected_reply"] == []
 
     review_envelope = build_task_envelope(config, "work", "T002", "Please inspect my changes.", timeout_seconds=30)
+    no_edit_envelope = build_task_envelope(config, "work", "T003", "Reply in one sentence. Do not inspect files or edit anything.", timeout_seconds=30)
+    do_envelope = build_task_envelope(config, "work", "T004", "Add one parser test. Do not edit docs.", timeout_seconds=30)
 
     assert review_envelope["payload"]["mode"] == "REVIEW"
+    assert no_edit_envelope["payload"]["mode"] == "PLAN"
+    assert do_envelope["payload"]["mode"] == "DO"
