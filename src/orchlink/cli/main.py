@@ -43,6 +43,7 @@ from orchlink.project.config import (
     broker_url,
     load_project_config,
     project_root,
+    save_project_config,
     role_agent_id,
     run_dir,
 )
@@ -467,6 +468,7 @@ def with_new_pi_session(config: dict[str, Any], role: str) -> tuple[dict[str, An
     updated = dict(config)
     updated[role] = dict(config.get(role) or {})
     updated[role]["session_id"] = session_id
+    save_project_config(updated)
     return updated, session_id
 
 

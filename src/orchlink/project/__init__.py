@@ -10,6 +10,7 @@ from orchlink.project.config import (
     find_project_root,
     load_project_config,
     resolve_agent_id,
+    save_project_config,
 )
 from orchlink.project.init import init_project, load_skill_template, project_skill_statuses, refresh_project_skills_if_needed
 
@@ -29,4 +30,5 @@ __all__ = [
     "project_skill_statuses",
     "refresh_project_skills_if_needed",
     "resolve_agent_id",
+    "save_project_config",
 ]
