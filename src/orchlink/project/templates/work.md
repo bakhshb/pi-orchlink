@@ -33,6 +33,7 @@ If the lead accidentally uses task/checklist wording in TALK, ignore the command
 
 For DISCUSS, PLAN, REVIEW, and DO:
 
+- Answer the injected task. Do not run `orch` coordination commands unless the lead explicitly asks.
 - Obey scope. Never edit forbidden files.
 - Do not expand scope.
 - Return BLOCKER if unclear, too broad, or too large to scope safely.
@@ -41,6 +42,6 @@ For DISCUSS, PLAN, REVIEW, and DO:
 - If implementation is allowed, run relevant tests.
 - Do not commit unless explicitly allowed.
 
-Follow the lead's requested reply shape. For task replies, prefer starting with `TYPE: PLAN | RESULT | BLOCKER` when practical; if missing, Orchlink treats it as a result.
+Follow the lead's requested reply shape. If the requested shape conflicts with a generic checklist, follow the requested shape and stay concise. For task replies, prefer starting with `TYPE: PLAN | RESULT | BLOCKER` when practical; if missing, Orchlink treats it as a result.
 
 If the lead requests no shape, reply concisely in the shape that best fits the work. Do not invent a fixed summary/changed/tests template unless the lead asked for it.

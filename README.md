@@ -36,6 +36,7 @@ orch init      # set up this project
 orch lead      # open the lead Pi session
 orch work      # open the worker Pi session
 orch doctor    # check setup
+orch sessions  # see active lead/work Pi sessions
 orch jobs      # see recent/current work
 orch stop      # stop the project broker
 orch update    # update Orchlink
@@ -319,6 +320,7 @@ Orchlink has one `orch` command, but the commands are meant for different audien
 | `orch lead` | Start or reopen the visible lead Pi session. |
 | `orch work` | Start or reopen the visible worker Pi session. |
 | `orch doctor` | Check local setup, broker compatibility, Pi command, and generated skills. |
+| `orch sessions` | Show active lead/work Pi sessions for this project. Use `--all` to include released session history. |
 | `orch jobs` | Main browser for recent work in the current project ID. Status is authoritative. |
 | `orch stop` | Stop the project broker. |
 | `orch update` | Update Orchlink and print restart/refresh guidance. |
@@ -378,6 +380,13 @@ Use built-in help to see command and option descriptions:
 ```bash
 orch --help
 orch jobs --help
+```
+
+For checking visible Pi sessions, prefer the readable session command:
+
+```bash
+orch sessions
+orch sessions --all
 ```
 
 For broker debugging in long sessions, filter raw status output instead of dumping everything:

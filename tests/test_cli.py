@@ -436,6 +436,56 @@ def test_jobs_help_explains_options():
     assert "--json" in result.output
 
 
+def test_sessions_lists_active_project_sessions(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    def fake_broker_get_sync(config, path):
+        assert path == "/v1/sessions?active=true&project_id=demo"
+        return {
+            "project_id": "demo",
+            "sessions": [
+                {
+                    "agent_id": "demo.work",
+                    "role": "work",
+                    "status": "ACTIVE",
+                    "pid": 123,
+                    "session_id": "work-1",
+                    "last_heartbeat_at": "2026-06-23T04:42:00+00:00",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+
+    result = runner.invoke(cli_main.app, ["sessions"])
+
+    assert result.exit_code == 0
+    assert "AGENT" in result.output
+    assert "demo.work" in result.output
+    assert "ACTIVE" in result.output
+    assert "work-1" in result.output
+
+
+def test_sessions_all_and_json(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    def fake_broker_get_sync(config, path):
+        assert path == "/v1/sessions?active=false&project_id=demo"
+        return {"project_id": "demo", "sessions": [{"agent_id": "demo.lead", "status": "RELEASED"}]}
+
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+
+    result = runner.invoke(cli_main.app, ["sessions", "--all", "--json"])
+
+    assert result.exit_code == 0
+    assert '"project_id": "demo"' in result.output
+    assert '"status": "RELEASED"' in result.output
+
+
 def test_wait_help_shows_timeout_flag_only():
     result = runner.invoke(cli_main.app, ["wait", "--help"])
 

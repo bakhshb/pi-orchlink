@@ -8,7 +8,7 @@ Orchlink has one `orch` CLI, but commands have different audiences.
 
 ### Human daily commands
 
-Humans mostly use `orch init`, `orch lead`, `orch work`, `orch doctor`, `orch jobs`, `orch stop`, and `orch update`.
+Humans mostly use `orch init`, `orch lead`, `orch work`, `orch doctor`, `orch sessions`, `orch jobs`, `orch stop`, and `orch update`.
 
 ### Agent coordination commands
 
@@ -25,7 +25,7 @@ Use these as lead when coordinating with work:
 - `orch close C001 -m "Decision: ... Rationale: ... Dissent/risk accepted: ... Next step: ... Owner: ... Human approval needed: yes/no"`
   Close Talk with a compact record.
 - `orch jobs`, `orch jobs --active`, `orch jobs --status STATUS`, `orch jobs --kind task`, `orch jobs --kind talk`, `orch jobs --id T002`, `orch jobs --json`
-  Main work browser for recent, active, filtered, focused, or machine-readable broker work in the current project. Status is authoritative; active jobs can show last heartbeat/tool activity, but stale heartbeat activity is hidden after terminal jobs.
+  Main work browser for recent, active, filtered, focused, or machine-readable broker work in the current project. Use `orch idle` as the gate before assigning more work; use `jobs --active` to inspect active work details, `--id` for one task/conversation, and `--kind`/`--status` to find open or stuck work. Status is authoritative; active jobs can show last heartbeat/tool activity, but stale heartbeat activity is hidden after terminal jobs.
 - `orch wait T002` or `orch get T002`
   Read the exact task result. Use one routinely; use `get` later only to reread/debug a completed result. A wait timeout does not cancel the task.
 - `orch peek T002`
@@ -34,11 +34,13 @@ Use these as lead when coordinating with work:
   Mark stuck or no-longer-needed broker work CANCELLED before assigning something else. Broker state cancels immediately; Orchlink asks Pi to abort the current turn and block future tool calls. Already-running shell commands are best-effort and may only stop if Pi's abort reaches them.
 - `orch idle`
   Safety check before dependent tests, final conclusions, or assigning more work; exit 0 means idle and exit 1 means active/blocking work exists.
+- `orch sessions` or `orch sessions --all`
+  Human-readable check of registered lead/work Pi sessions for this project. Use this before raw `orch status` or ad hoc JSON/Python parsing when the user asks whether lead/work sessions exist.
 
 ### Debug/reference commands
 
 - `orch status --task T002`, `orch watch`, `orch task T002`, and `orch broker run`
-  Raw broker JSON for debugging only. Do not use raw broker JSON for normal coordination.
+  Raw broker JSON for debugging only. Do not use raw broker JSON for normal coordination or session checks unless `orch sessions` is insufficient.
 - `orch --help`, `orch jobs --help`
   Use built-in CLI help when command behavior/options are unclear.
 
