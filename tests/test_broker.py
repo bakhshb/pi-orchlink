@@ -599,3 +599,42 @@ def test_session_endpoints_and_peer_offline_guard():
     released = client.post(f"/v1/sessions/{lease_id}/release", headers=auth_headers(), json={"project_id": "test", "reason": "done"})
     assert released.status_code == 200
     assert released.json()["session"]["status"] == "RELEASED"
+
+
+def test_auto_stop_keeps_shared_broker_alive_when_another_project_is_active(monkeypatch):
+    killed = []
+
+    def fake_kill(pid, sig):
+        killed.append((pid, sig))
+
+    monkeypatch.setattr("orchlink.broker.main.os.kill", fake_kill)
+
+    async def run():
+        app = create_app(store=MemoryMessageStore(), settings=Settings(api_key="test-key", auto_stop=True))
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            alpha = await client.post(
+                "/v1/sessions/acquire",
+                headers=auth_headers(),
+                json={"project_id": "alpha", "agent_id": "alpha.work", "role": "work", "pid": 123},
+            )
+            beta = await client.post(
+                "/v1/sessions/acquire",
+                headers=auth_headers(),
+                json={"project_id": "beta", "agent_id": "beta.work", "role": "work", "pid": 456},
+            )
+            assert alpha.status_code == 200
+            assert beta.status_code == 200
+
+            lease_id = alpha.json()["session"]["lease_id"]
+            released = await client.post(
+                f"/v1/sessions/{lease_id}/release",
+                headers=auth_headers(),
+                json={"project_id": "alpha", "reason": "done"},
+            )
+            assert released.status_code == 200
+            await asyncio.sleep(0.7)
+
+    asyncio.run(run())
+
+    assert killed == []
