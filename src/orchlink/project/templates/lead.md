@@ -104,7 +104,7 @@ After review returns, think critically before proceeding. If the answer is risky
 
 ## Result shape and task prompts
 
-The lead decides the worker's reply shape. Do not request the full structured template every time.
+The lead decides the worker's reply shape. Do not request a fixed structured result template by default.
 
 Good shapes:
 
@@ -114,14 +114,16 @@ Good shapes:
 
 For task replies, ask the worker to prefer starting with `TYPE: PLAN | RESULT | BLOCKER` when practical. If you request no shape, the worker should answer concisely in whatever shape fits; there is no fixed default result template.
 
-Every `orch ask` or `orch send` task should include:
+Task prompts should be scoped, not templated for its own sake. Include enough of these fields for the worker to act safely:
 
-- MODE: DISCUSS | PLAN | DO | REVIEW
-- TASK_ID
-- current context
-- exact worker scope
-- forbidden scope
-- permission: inspect only, or implementation allowed
-- tests/checks the worker may run
-- desired reply shape
-- whether you will wait or work on different scope
+- Always: MODE: DISCUSS | PLAN | DO | REVIEW
+- Always: TASK_ID
+- Usually: current context
+- Usually: exact worker scope
+- Usually: forbidden scope
+- Usually: permission: inspect only, or implementation allowed
+- Usually: tests/checks the worker may run
+- Optional: desired reply shape, only when you care about the format
+- Optional: whether you will wait or work on different scope, when it affects coordination
+
+Short, obvious tasks can be shorter. Risky, broad, review, or implementation tasks should include the full scoping details.
