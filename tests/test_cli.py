@@ -350,7 +350,7 @@ def test_jobs_supports_filters_json_and_activity(monkeypatch, tmp_path):
     json_result = runner.invoke(cli_main.app, ["jobs", "--json"])
 
     assert table.exit_code == 0
-    assert seen_paths[0] == "/v1/jobs?limit=50&project_id=demo&active=true&status=OPEN&kind=talk&id=C001"
+    assert seen_paths[0] == "/v1/jobs?limit=500&project_id=demo&active=true&status=OPEN&kind=talk&id=C001"
     assert "UPDATED" in table.output
     assert "C001" in table.output
     assert "talk" in table.output
@@ -358,6 +358,32 @@ def test_jobs_supports_filters_json_and_activity(monkeypatch, tmp_path):
     assert "read:" in table.output
     assert json_result.exit_code == 0
     assert '"project_id": "demo"' in json_result.output
+
+
+def test_jobs_status_json_fetches_wide_window_before_client_filter(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    seen_paths = []
+
+    def fake_broker_get_sync(config, path):
+        seen_paths.append(path)
+        return {
+            "project_id": "demo",
+            "jobs": [
+                {"task_id": "T001", "status": "RUNNING", "from_agent": "demo.lead", "to_agent": "demo.work"},
+                {"task_id": "T002", "status": "DONE", "from_agent": "demo.lead", "to_agent": "demo.work"},
+            ],
+        }
+
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+
+    result = runner.invoke(cli_main.app, ["jobs", "--status", "DONE", "--json"])
+
+    assert result.exit_code == 0
+    assert seen_paths == ["/v1/jobs?limit=500&project_id=demo&status=DONE"]
+    assert '"task_id": "T002"' in result.output
+    assert '"task_id": "T001"' not in result.output
 
 
 def test_jobs_rejects_unknown_kind(monkeypatch, tmp_path):

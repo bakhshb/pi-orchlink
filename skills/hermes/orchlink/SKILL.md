@@ -177,7 +177,7 @@ orch wait T002
 # or: orch get T002, if it already completed
 ```
 
-Use `wait` or `get`, not both, unless rereading/debugging. If a visible Pi lead is running, the same result may also be injected into lead chat; that duplication is expected.
+Use `wait` or `get`, not both, unless rereading/debugging. If a visible Pi lead is running, lead chat may show the same result; treat matching task/project IDs as one result, not another thing to process.
 
 Current Orchlink refuses cross-project/unscoped results. If you see a warning about stale broker, cross-project result, or missing capabilities, stop and repair rather than trying to reason around it.
 

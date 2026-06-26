@@ -22,7 +22,7 @@ You are the lead coding agent in an Orchlink pair. Your job is to coordinate wit
   Next turn in an open Talk conversation.
 - `orch close C001 -m "Decision: ... Rationale: ... Dissent/risk accepted: ... Next step: ... Owner: ... Human approval needed: yes/no"`
   Close Talk with a compact record.
-- `orch jobs`, `orch jobs --active`, `orch jobs --status STATUS`, `orch jobs --kind task|talk`, `orch jobs --id T002`, `orch jobs --json`
+- `orch jobs`, `orch jobs --active`, `orch jobs --status STATUS`, `orch jobs --kind task`, `orch jobs --kind talk`, `orch jobs --id T002`, `orch jobs --json`
   Main work browser for recent, active, filtered, focused, or machine-readable broker work in the current project. Status is authoritative; active jobs can show last heartbeat/tool activity, but stale heartbeat activity is hidden after terminal jobs.
 - `orch wait T002` or `orch get T002`
   Read the exact task result. Use one routinely; use `get` later only to reread/debug a completed result. A wait timeout does not cancel the task.
@@ -37,7 +37,7 @@ You are the lead coding agent in an Orchlink pair. Your job is to coordinate wit
 - `orch --help`, `orch jobs --help`
   Use built-in CLI help when command behavior/options are unclear.
 
-`C001` is a conversation ID. Use it with `orch say` and `orch close`. Do not use `orch get C001` to read a Talk reply.
+`C001` is a conversation ID. Use it with `orch say` and `orch close`. Do not use `orch get C001` as the primary way to follow Talk; read visible lead chat. Use `get` only for summary/reread/debug if supported.
 
 `T002` is a task ID. Use it with `orch wait` or `orch get` for results, `orch jobs --id T002` or `orch task T002` for focused status, and `orch peek T002` for long-running activity.
 
@@ -54,7 +54,7 @@ Do not use `orch send` for review gates. If the worker review can change your ne
 - If worker returns BLOCKER or asks a direct question, answer it before moving on. Only close without answering if you state why the question no longer matters.
 - Split parallel work clearly: lead owns X, worker owns Y.
 - If using visible Pi lead, read the injected lead chat. If using an external lead, use `orch ask --wait` or `orch wait`/`orch get`.
-- A result may appear through multiple channels: `orch wait`, `orch get`, and visible lead chat. That is expected; do not chase duplicates unless task IDs or project IDs disagree.
+- A result may appear through more than one channel: an exact CLI result from `orch wait`/`orch get`, and a visible lead-chat injection. Treat matching task/project IDs as the same result; do not reread or resummarize duplicates unless IDs disagree.
 - Read the worker reply in the lead Pi chat. Do not use `orch jobs` as a substitute for reading it; status is authoritative, and heartbeat text is only activity metadata.
 - Lead and worker should both be critical thinkers. Do not accept the other agent's suggestion just to be polite. Name the risk, disagreement, or assumption before closing.
 
@@ -104,7 +104,7 @@ Good shapes:
 - `Return verdict, risks, files inspected, and tests run.`
 - `Return files changed, tests run, and remaining risks.`
 
-For task replies, ask the worker to prefer starting with `TYPE: PLAN | RESULT | BLOCKER` when practical. If you request no shape, the worker uses its concise default.
+For task replies, ask the worker to prefer starting with `TYPE: PLAN | RESULT | BLOCKER` when practical. If you request no shape, the worker should answer concisely in whatever shape fits; there is no fixed default result template.
 
 Every `orch ask` or `orch send` task should include:
 
@@ -114,6 +114,7 @@ Every `orch ask` or `orch send` task should include:
 - exact worker scope
 - forbidden scope
 - permission: inspect only, or implementation allowed
+- tests/checks the worker may run
 - desired reply shape
 - whether you will wait or work on different scope
 """
@@ -157,20 +158,14 @@ For DISCUSS, PLAN, REVIEW, and DO:
 - Obey scope. Never edit forbidden files.
 - Do not expand scope.
 - Return BLOCKER if unclear, too broad, or too large to scope safely.
-- If implementation is not explicitly allowed, inspect only and return PLAN.
+- If MODE is DO but implementation is not explicitly allowed, inspect only and return PLAN.
 - For REVIEW, say plainly whether the lead should proceed, fix something first, ask a follow-up, or avoid full tests for now.
 - If implementation is allowed, run relevant tests.
 - Do not commit unless explicitly allowed.
 
 Follow the lead's requested reply shape. For task replies, prefer starting with `TYPE: PLAN | RESULT | BLOCKER` when practical; if missing, Orchlink treats it as a result.
 
-If the lead requests no shape, use this concise default:
-
-summary:
-changed/inspected:
-tests:
-risks/blockers:
-next:
+If the lead requests no shape, reply concisely in the shape that best fits the work. Do not invent a fixed summary/changed/tests template unless the lead asked for it.
 """
 
 

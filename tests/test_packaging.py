@@ -84,9 +84,12 @@ def test_pi_extension_uses_valid_record_type():
     assert "-m \"<your answer>\"" not in ORCHLINK_PI_EXTENSION
     assert "Talk Mode should stop only when" not in ORCHLINK_PI_EXTENSION
     assert "renderLeadPrompt(message), { deliverAs: \"steer\" }" in ORCHLINK_PI_EXTENSION
+    assert "customType: \"orchlink\"" not in ORCHLINK_PI_EXTENSION
     assert "deliverAs: \"nextTurn\"" not in ORCHLINK_PI_EXTENSION
     assert "Stop any unrelated work now" in ORCHLINK_PI_EXTENSION
     assert "Prefer starting task replies with: TYPE: PLAN | RESULT | BLOCKER" in ORCHLINK_PI_EXTENSION
+    assert "do not invent a fixed result template" in ORCHLINK_PI_EXTENSION
+    assert "summary, changed/inspected, tests" not in ORCHLINK_PI_EXTENSION
     assert "const firstLine = output.split" in ORCHLINK_PI_EXTENSION
     assert "if (!firstLine.startsWith(\"TYPE:\")) return \"RESULT\";" in ORCHLINK_PI_EXTENSION
     assert "for (const line of output.split" not in ORCHLINK_PI_EXTENSION

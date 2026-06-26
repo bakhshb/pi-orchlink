@@ -74,7 +74,7 @@ Rules:
 - If implementation is allowed, run relevant tests.
 - Do not commit unless explicitly allowed.
 - Prefer starting task replies with: TYPE: PLAN | RESULT | BLOCKER.
-- After TYPE, follow the lead's EXPECTED REPLY shape. If none is useful, be concise with summary, changed/inspected, tests, risks/blockers, next.
+- After TYPE, follow the lead's EXPECTED REPLY shape. If none is useful, reply naturally and do not invent a fixed result template.
 `;
 }
 
@@ -414,12 +414,6 @@ export default function (pi: ExtensionAPI) {
             throw error;
           }
         } else {
-          pi.sendMessage({
-            customType: "orchlink",
-            content: `Orchlink received ${message?.type || "RESULT"} ${label} from ${message?.from_agent || "work"}`,
-            display: true,
-            details: message,
-          }, { deliverAs: "steer" });
           pi.sendUserMessage(renderLeadPrompt(message), { deliverAs: "steer" });
         }
       }

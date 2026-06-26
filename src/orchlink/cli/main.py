@@ -857,9 +857,10 @@ def jobs(
         raise typer.Exit(1)
 
     config = load_project_or_exit()
+    broker_limit = 500 if (active or status or normalized_kind or item_id) else limit
     try:
         ensure_broker_running(config)
-        body = broker_get_sync(config, jobs_query(config, limit=limit, active=active, status=status, kind=normalized_kind, item_id=item_id))
+        body = broker_get_sync(config, jobs_query(config, limit=broker_limit, active=active, status=status, kind=normalized_kind, item_id=item_id))
     except (RuntimeError, httpx.HTTPError) as exc:
         console.print(f"[Orch] {exc}")
         raise typer.Exit(1) from exc

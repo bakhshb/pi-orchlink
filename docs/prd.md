@@ -920,7 +920,8 @@ Rules:
 - Work only on the assigned task.
 - Obey allowed scope.
 - Never edit forbidden files.
-- If implementation is not explicitly allowed, inspect only and return PLAN.
+- For PLAN, DISCUSS, and REVIEW, inspect/report only; do not edit.
+- If MODE is DO but implementation is not explicitly allowed, inspect only and return PLAN.
 - If the task is unclear, return BLOCKER.
 - If implementation is allowed, run relevant tests.
 - Do not commit unless explicitly allowed.
@@ -930,13 +931,7 @@ For task replies, prefer starting with:
 
 TYPE: PLAN | RESULT | BLOCKER
 
-If the lead requests no shape, use a concise default:
-
-summary:
-changed/inspected:
-tests:
-risks/blockers:
-next:
+If the lead requests no shape, reply concisely in the shape that best fits the work. Do not invent a fixed result template unless the lead asks for one.
 
 23. Worker Task Prompt
 
@@ -968,7 +963,8 @@ Rules:
 - Work only on this task.
 - Do not expand scope.
 - Do not edit forbidden files.
-- If implementation is not explicitly allowed, inspect only and return PLAN.
+- For PLAN, DISCUSS, and REVIEW, inspect/report only; do not edit.
+- If MODE is DO but implementation is not explicitly allowed, inspect only and return PLAN.
 - If the task is unclear, return BLOCKER.
 - If implementation is allowed, run relevant tests.
 - Do not commit unless explicitly allowed.
@@ -979,13 +975,7 @@ For task replies, prefer starting with:
 
 TYPE: PLAN | RESULT | BLOCKER
 
-Then follow the lead's EXPECTED REPLY shape. If no useful shape is provided, be concise with:
-
-summary:
-changed/inspected:
-tests:
-risks/blockers:
-next:
+Then follow the lead's EXPECTED REPLY shape. If no useful shape is provided, reply naturally and do not invent a fixed result template.
 
 24. Security
 

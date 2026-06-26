@@ -52,7 +52,7 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "orch say C001" in lead_skill
     assert "orch close C001" in lead_skill
     assert "`C001` is a conversation ID" in lead_skill
-    assert "Do not use `orch get C001`" in lead_skill
+    assert "Do not use `orch get C001` as the primary way to follow Talk" in lead_skill
     assert "Talk Mode is a conversation" in lead_skill
     assert "Do not summarize after the first worker reply" in lead_skill
     assert "Stop conditions" in lead_skill
@@ -60,6 +60,9 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "do not do an exhaustive scan" in lead_skill
     assert "no TASK_ID" in lead_skill
     assert "MODE: DISCUSS | PLAN | DO | REVIEW" in lead_skill
+    assert "orch jobs --kind task`" in lead_skill
+    assert "orch jobs --kind talk`" in lead_skill
+    assert "tests/checks the worker may run" in lead_skill
     assert "desired reply shape" in lead_skill
     assert "TYPE: PLAN | RESULT | BLOCKER" in lead_skill
     assert "## Modes" in work_skill
@@ -72,9 +75,11 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "read every file" in work_skill
     assert "Stop conditions for TALK" in work_skill
     assert "proceed, fix something first" in work_skill
+    assert "If MODE is DO but implementation is not explicitly allowed" in work_skill
     assert "Follow the lead's requested reply shape" in work_skill
-    assert "summary:" in work_skill
-    assert "changed/inspected:" in work_skill
+    assert "fixed summary/changed/tests template" in work_skill
+    assert "summary:" not in work_skill
+    assert "changed/inspected:" not in work_skill
     assert "TYPE: CHAT_REPLY" not in work_skill
 
 

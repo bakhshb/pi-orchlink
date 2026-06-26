@@ -217,3 +217,11 @@ Pass criteria:
 - `orch status --task ...` is scoped to the current project and treated as debug-only raw JSON.
 
 Record failures with the exact command, task/conversation ID, broker health output, and relevant `orch jobs`/`orch get` output.
+
+## Local validation record
+
+2026-06-26, project `orchlink`:
+
+- Talk smoke: `orch talk` conversation `C001` delivered a plain worker reply (`orchlink.work · C001 · 2/4`), `orch close C001 ...` closed cleanly, and `orch idle` reported idle.
+- Cancellation before more work: `TCANCEL-DRILL-001` reached `RUNNING` with heartbeat activity, `orch cancel` moved it to `CANCELLED`, terminal `orch jobs --id` did not present stale heartbeat as active work, and `orch idle` reported idle.
+- Cancellation during a shell command: `TCANCEL-SHELL-002` showed `tool_call bash: python3 -c "import time; time.sleep(30)"`, `orch cancel` moved it to `CANCELLED`, and after the command window the task remained `CANCELLED` with `tool_result ... Tool finished with error`. In this run the abort reached the shell command, but docs should still describe already-running shell commands as best-effort.

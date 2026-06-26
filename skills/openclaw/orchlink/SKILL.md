@@ -131,7 +131,7 @@ orch wait T002
 # or: orch get T002, if it already completed
 ```
 
-Use `wait` or `get`, not both, unless rereading/debugging. If a visible Pi lead is running, the same result may also be injected into lead chat; that duplication is expected.
+Use `wait` or `get`, not both, unless rereading/debugging. If a visible Pi lead is running, lead chat may show the same result; treat matching task/project IDs as one result, not another thing to process.
 
 Trust only results matching the current project and exact task ID. Current Orchlink refuses cross-project/unscoped results; if you see that warning, stop and restart the broker/sessions before continuing.
 
@@ -173,7 +173,7 @@ For task work, prefer asking the worker to start with `TYPE: PLAN | RESULT | BLO
 - Run `orch idle` before dependent tests, final conclusions, or assigning more worker work.
 - Keep lead and worker scopes separate.
 - Do not expose API keys or secrets in prompts, outputs, or logs.
-- Use `orch jobs` as the main work browser; use `orch jobs --active` for open/running/blocking work, `orch jobs --status STATUS` for one broker state, `orch jobs --kind task|talk` for task/Talk filtering, `orch jobs --id T002` for focused lookup, and `orch jobs --json` for machine-readable output.
+- Use `orch jobs` as the main work browser; use `orch jobs --active` for open/running/blocking work, `orch jobs --status STATUS` for one broker state, `orch jobs --kind task` or `orch jobs --kind talk` for task/Talk filtering, `orch jobs --id T002` for focused lookup, and `orch jobs --json` for machine-readable output.
 - Do not rely on `orch jobs` alone for final results; use `orch wait` or `orch get`.
 - Treat `orch task T002` as focused status/activity until `orch jobs --id T002` fully replaces it.
 - Treat `orch status` as raw debug JSON, not normal coordination output.
