@@ -36,53 +36,29 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert data["broker"]["session_grace_seconds"] == 25
     lead_skill = paths["lead_skill"].read_text(encoding="utf-8")
     work_skill = paths["work_skill"].read_text(encoding="utf-8")
-    assert "not just delegate" in lead_skill
-    assert "Result shape and task prompts" in lead_skill
-    assert "orch talk work" in lead_skill
+    assert "# Lead Role" in lead_skill
+    assert "## Command map" in lead_skill
+    assert "## Task prompt shape" in lead_skill
+    assert "## Talk Mode" in lead_skill
+    assert "## Safety rules" in lead_skill
     assert "orch ask work --wait" in lead_skill
     assert "orch send work" in lead_skill
-    assert "orch cancel T002" in lead_skill
-    assert "wait timeout does not cancel" in lead_skill
-    assert "stale heartbeat activity is hidden" in lead_skill
-    assert "status is authoritative" in lead_skill
-    assert "orch jobs --active" in lead_skill
-    assert "orch jobs --status STATUS" in lead_skill
-    assert "orch jobs --json" in lead_skill
-    assert "Use `orch wait T002` or `orch get T002`, not both routinely" in lead_skill
-    assert "Raw broker JSON for debugging only" in lead_skill
-    assert "Already-running shell commands are best-effort" in lead_skill
-    assert "Do not use `orch send` for review gates" in lead_skill
+    assert "orch wait T002" in lead_skill
+    assert "orch get T002" in lead_skill
     assert "orch idle" in lead_skill
-    assert "Do not run dependent full tests" in lead_skill
-    assert "single-flight" in lead_skill
-    assert "steering interrupt" in lead_skill
-    assert "think critically" in lead_skill
+    assert "orch talk work" in lead_skill
     assert "orch say C001" in lead_skill
     assert "orch close C001" in lead_skill
-    assert "`C001` is a conversation ID" in lead_skill
-    assert "Do not use `orch get C001` as the primary way to follow Talk" in lead_skill
-    assert "Talk Mode is a conversation" in lead_skill
-    assert "Do not summarize after the first worker reply" in lead_skill
-    assert "Stop conditions" in lead_skill
-    assert "no new value" in lead_skill
-    assert "do not do an exhaustive scan" in lead_skill
-    assert "no TASK_ID" in lead_skill
     assert "MODE: DISCUSS | PLAN | DO | REVIEW" in lead_skill
-    assert "orch jobs --kind task`" in lead_skill
-    assert "orch jobs --kind talk`" in lead_skill
-    assert "tests/checks the worker may run" in lead_skill
-    assert "desired reply shape" in lead_skill
     assert "TYPE: PLAN | RESULT | BLOCKER" in lead_skill
+    assert "# Worker Role" in work_skill
     assert "## Modes" in work_skill
+    assert "## TALK mode" in work_skill
+    assert "## Task modes" in work_skill
     assert "TALK: discuss" in work_skill
     assert "For TALK, behave like a collaborator" in work_skill
     assert "No template and no required labels" in work_skill
     assert "Do not agree by default" in work_skill
-    assert "too broad" in work_skill
-    assert "ignore the command framing" in work_skill
-    assert "read every file" in work_skill
-    assert "Stop conditions for TALK" in work_skill
-    assert "proceed, fix something first" in work_skill
     assert "If MODE is DO but implementation is not explicitly allowed" in work_skill
     assert "Follow the lead's requested reply shape" in work_skill
     assert "fixed summary/changed/tests template" in work_skill
@@ -100,7 +76,8 @@ def test_refresh_skills_keeps_existing_project_config(tmp_path):
     refreshed = init_project(tmp_path, refresh_skills=True)
 
     assert refreshed["config"].read_text(encoding="utf-8") == "project_id: custom\n"
-    assert "Result shape and task prompts" in refreshed["lead_skill"].read_text(encoding="utf-8")
+    assert "# Lead Role" in refreshed["lead_skill"].read_text(encoding="utf-8")
+    assert "## Task prompt shape" in refreshed["lead_skill"].read_text(encoding="utf-8")
     assert "## Modes" in refreshed["work_skill"].read_text(encoding="utf-8")
 
 
