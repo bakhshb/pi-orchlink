@@ -39,6 +39,13 @@ def load_project_config(project_root: Path | None = None) -> dict[str, Any]:
     return config
 
 
+def save_project_config(config: dict[str, Any]) -> Path:
+    path = Path(str(config.get("_config_path") or project_config_path(Path(str(config.get("_project_root") or Path.cwd())))))
+    persisted = {key: value for key, value in config.items() if not str(key).startswith("_")}
+    path.write_text(yaml.safe_dump(persisted, sort_keys=False), encoding="utf-8")
+    return path
+
+
 def broker_url(config: dict[str, Any]) -> str:
     broker = config.get("broker") or {}
     return str(os.getenv("ORCHLINK_BROKER_URL") or broker.get("url") or "http://127.0.0.1:8787")

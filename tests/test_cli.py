@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from typer.testing import CliRunner
 
 from orchlink.cli import main as cli_main
+from orchlink.project.config import load_project_config
 from orchlink.project.init import init_project, load_skill_template
 
 
@@ -807,7 +808,37 @@ def test_work_new_uses_fresh_pi_session_id(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert calls == ["work-20260621-010203"]
+    assert load_project_config(tmp_path)["work"]["session_id"] == "work-20260621-010203"
     assert "New Pi worker session: work-20260621-010203" in result.output
+
+
+def test_lead_new_persists_fresh_pi_session_id(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main.time, "strftime", lambda fmt: "20260621-010203")
+    calls = []
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+        def run_lead(self):
+            calls.append(self.config["lead"]["session_id"])
+            return 0
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "register_project_role_sync", lambda config, role: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+
+    result = runner.invoke(cli_main.app, ["lead", "--new"])
+
+    assert result.exit_code == 0
+    assert calls == ["lead-20260621-010203"]
+    assert load_project_config(tmp_path)["lead"]["session_id"] == "lead-20260621-010203"
+    assert "New Pi lead session: lead-20260621-010203" in result.output
 
 
 def test_update_runs_git_and_reinstalls_package(monkeypatch, tmp_path):
