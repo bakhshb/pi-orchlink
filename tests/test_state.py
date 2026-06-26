@@ -1,5 +1,6 @@
 from orchlink.broker.state import (
     JOB_STATUS_LIFECYCLE,
+    canonical_job_event_for_broker_event,
     is_active_job_status,
     is_active_session_status,
     is_busy_status,
@@ -60,3 +61,29 @@ def test_reply_job_status_maps_protocol_replies_to_job_statuses():
     assert reply_job_status("BLOCKER", "FAILED") == "FAILED"
     assert reply_job_status("RESULT", "TIMEOUT") == "FAILED"
     assert reply_job_status("CHAT_CLOSE", "DONE") == "CLOSED"
+
+
+def test_broker_task_events_map_to_canonical_job_events():
+    base = {"project_id": "demo", "task_id": "T001"}
+
+    assert canonical_job_event_for_broker_event("message_queued", {**base, "status": "QUEUED"}) == {
+        "type": "QUEUED",
+        "status": "QUEUED",
+        "kind": "task",
+        "job_id": "T001",
+        "project_id": "demo",
+        "source_type": "message_queued",
+    }
+    assert canonical_job_event_for_broker_event("message_delivered", {**base, "status": "DELIVERED"})["type"] == "DELIVERED"
+    assert canonical_job_event_for_broker_event("worker_activity", {**base, "status": "RUNNING"})["type"] == "STARTED"
+    assert canonical_job_event_for_broker_event("reply_received", {**base, "status": "COMPLETED"})["type"] == "REPLIED"
+    assert canonical_job_event_for_broker_event("work_cancelled", {**base, "status": "CANCELLED"})["type"] == "CANCELLED"
+    assert canonical_job_event_for_broker_event("timeout", {**base, "status": "TIMEOUT"})["type"] == "TIMED_OUT"
+
+
+def test_broker_canonical_job_event_mapper_skips_open_talk_jobs():
+    assert canonical_job_event_for_broker_event(
+        "reply_received",
+        {"project_id": "demo", "conversation_id": "C001", "status": "OPEN"},
+    ) is None
+    assert canonical_job_event_for_broker_event("conversation_closed", {"project_id": "demo", "conversation_id": "C001", "status": "CLOSED"}) is None

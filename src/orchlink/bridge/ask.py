@@ -154,6 +154,83 @@ async def post_envelope(config: dict[str, Any], envelope: dict[str, Any], wait: 
         }
 
 
+class WorkerBridge:
+    """Object-oriented bridge for lead→worker task and talk envelopes."""
+
+    def __init__(self, config: dict[str, Any], worker: str) -> None:
+        self.config = config
+        self.worker = worker
+
+    async def ask(self, task_id: str, message: str, timeout_seconds: int = 1800, wait: bool = True) -> dict[str, Any]:
+        envelope = build_task_envelope(
+            config=self.config,
+            worker=self.worker,
+            task_id=task_id,
+            message=message,
+            timeout_seconds=timeout_seconds,
+            delivery="blocking" if wait else "async",
+        )
+        return await post_envelope(self.config, envelope, wait=wait)
+
+    async def send(self, task_id: str, message: str, timeout_seconds: int = 1800) -> dict[str, Any]:
+        envelope = build_task_envelope(
+            config=self.config,
+            worker=self.worker,
+            task_id=task_id,
+            message=message,
+            timeout_seconds=timeout_seconds,
+            delivery="async",
+        )
+        return await post_envelope(self.config, envelope, wait=False)
+
+    async def start_talk(
+        self,
+        conversation_id: str,
+        message: str,
+        max_turns: int = 6,
+        timeout_seconds: int = 1800,
+        wait: bool = False,
+    ) -> dict[str, Any]:
+        envelope = build_chat_envelope(
+            config=self.config,
+            worker=self.worker,
+            conversation_id=conversation_id,
+            message=message,
+            message_type="CHAT_START",
+            turn=1,
+            max_turns=max_turns,
+            timeout_seconds=timeout_seconds,
+        )
+        return await post_envelope(self.config, envelope, wait=wait)
+
+    async def say_talk(self, conversation_id: str, message: str, turn: int, max_turns: int, timeout_seconds: int = 1800) -> dict[str, Any]:
+        envelope = build_chat_envelope(
+            config=self.config,
+            worker=self.worker,
+            conversation_id=conversation_id,
+            message=message,
+            message_type="CHAT_TURN",
+            turn=turn,
+            max_turns=max_turns,
+            timeout_seconds=timeout_seconds,
+        )
+        return await post_envelope(self.config, envelope, wait=False)
+
+    async def close_talk(self, conversation_id: str, message: str, turn: int, max_turns: int, timeout_seconds: int = 1800) -> dict[str, Any]:
+        envelope = build_chat_envelope(
+            config=self.config,
+            worker=self.worker,
+            conversation_id=conversation_id,
+            message=message,
+            message_type="CHAT_CLOSE",
+            turn=turn,
+            max_turns=max_turns,
+            timeout_seconds=timeout_seconds,
+            requires_reply=False,
+        )
+        return await post_envelope(self.config, envelope, wait=False)
+
+
 async def ask_worker(
     config: dict[str, Any],
     worker: str,
@@ -162,15 +239,7 @@ async def ask_worker(
     timeout_seconds: int = 1800,
     wait: bool = True,
 ) -> dict[str, Any]:
-    envelope = build_task_envelope(
-        config=config,
-        worker=worker,
-        task_id=task_id,
-        message=message,
-        timeout_seconds=timeout_seconds,
-        delivery="blocking" if wait else "async",
-    )
-    return await post_envelope(config, envelope, wait=wait)
+    return await WorkerBridge(config, worker).ask(task_id, message, timeout_seconds, wait=wait)
 
 
 async def send_worker(
@@ -180,15 +249,7 @@ async def send_worker(
     message: str,
     timeout_seconds: int = 1800,
 ) -> dict[str, Any]:
-    envelope = build_task_envelope(
-        config=config,
-        worker=worker,
-        task_id=task_id,
-        message=message,
-        timeout_seconds=timeout_seconds,
-        delivery="async",
-    )
-    return await post_envelope(config, envelope, wait=False)
+    return await WorkerBridge(config, worker).send(task_id, message, timeout_seconds)
 
 
 async def start_talk(
@@ -200,17 +261,7 @@ async def start_talk(
     timeout_seconds: int = 1800,
     wait: bool = False,
 ) -> dict[str, Any]:
-    envelope = build_chat_envelope(
-        config=config,
-        worker=worker,
-        conversation_id=conversation_id,
-        message=message,
-        message_type="CHAT_START",
-        turn=1,
-        max_turns=max_turns,
-        timeout_seconds=timeout_seconds,
-    )
-    return await post_envelope(config, envelope, wait=wait)
+    return await WorkerBridge(config, worker).start_talk(conversation_id, message, max_turns, timeout_seconds, wait=wait)
 
 
 async def say_talk(
@@ -222,17 +273,7 @@ async def say_talk(
     max_turns: int,
     timeout_seconds: int = 1800,
 ) -> dict[str, Any]:
-    envelope = build_chat_envelope(
-        config=config,
-        worker=worker,
-        conversation_id=conversation_id,
-        message=message,
-        message_type="CHAT_TURN",
-        turn=turn,
-        max_turns=max_turns,
-        timeout_seconds=timeout_seconds,
-    )
-    return await post_envelope(config, envelope, wait=False)
+    return await WorkerBridge(config, worker).say_talk(conversation_id, message, turn, max_turns, timeout_seconds)
 
 
 async def close_talk(
@@ -244,18 +285,7 @@ async def close_talk(
     max_turns: int,
     timeout_seconds: int = 1800,
 ) -> dict[str, Any]:
-    envelope = build_chat_envelope(
-        config=config,
-        worker=worker,
-        conversation_id=conversation_id,
-        message=message,
-        message_type="CHAT_CLOSE",
-        turn=turn,
-        max_turns=max_turns,
-        timeout_seconds=timeout_seconds,
-        requires_reply=False,
-    )
-    return await post_envelope(config, envelope, wait=False)
+    return await WorkerBridge(config, worker).close_talk(conversation_id, message, turn, max_turns, timeout_seconds)
 
 
 def ask_worker_sync(

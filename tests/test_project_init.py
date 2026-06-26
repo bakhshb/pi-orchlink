@@ -5,6 +5,7 @@ from typer.testing import CliRunner
 
 from orchlink.bridge.ask import build_chat_envelope, build_task_envelope
 from orchlink.cli.main import app
+from orchlink.connector.pi_connector import PiConnector
 from orchlink.project.config import load_project_config
 from orchlink.project.init import init_project
 
@@ -25,9 +26,12 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert data["lead"]["agent_id"] == "demo.lead"
     assert data["work"]["agent_id"] == "demo.work"
     assert "timeout_seconds" not in data["work"]
+    assert data["pi"]["session_dir"] == ".orch/run/pi-sessions"
     assert data["broker"]["auto_start"] is True
     assert data["broker"]["auto_stop"] is True
     assert data["broker"]["require_peer_sessions"] is True
+    assert data["broker"]["store_backend"] == "memory"
+    assert data["broker"]["store_path"] == ".orch/run/orchlink-journal.jsonl"
     assert data["broker"]["session_heartbeat_interval_seconds"] == 10
     assert data["broker"]["session_grace_seconds"] == 25
     lead_skill = paths["lead_skill"].read_text(encoding="utf-8")
@@ -112,6 +116,19 @@ def test_cli_init_uses_current_folder_name_by_default(monkeypatch, tmp_path):
     assert config["project_id"] == "sample-project"
     assert (project_dir / ".orch" / "skills" / "lead.md").is_file()
     assert (project_dir / ".orch" / "skills" / "work.md").is_file()
+
+
+def test_pi_connector_defaults_to_project_local_session_dir(tmp_path):
+    init_project(tmp_path, project_id="demo")
+    config = load_project_config(tmp_path)
+    config["pi"].pop("session_dir")
+
+    argv = PiConnector(config).lead_argv()
+
+    session_dir = tmp_path / ".orch" / "run" / "pi-sessions"
+    assert "--session-dir" in argv
+    assert argv[argv.index("--session-dir") + 1] == str(session_dir)
+    assert session_dir.is_dir()
 
 
 def test_chat_envelope_summarizes_topic_without_duplicating_full_message(tmp_path):

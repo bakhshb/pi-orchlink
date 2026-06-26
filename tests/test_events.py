@@ -128,6 +128,19 @@ def test_events_endpoint_shows_request_reply_flow():
         assert "message_queued" in event_types
         assert "message_delivered" in event_types
         assert "reply_received" in event_types
+        queued = next(event for event in events if event["type"] == "message_queued")
+        delivered = next(event for event in events if event["type"] == "message_delivered")
+        replied = next(event for event in events if event["type"] == "reply_received")
+        assert queued["job_event"]["type"] == "QUEUED"
+        assert delivered["job_event"]["type"] == "DELIVERED"
+        assert replied["job_event"] == {
+            "type": "REPLIED",
+            "status": "DONE",
+            "kind": "task",
+            "job_id": "T001",
+            "project_id": "demo",
+            "source_type": "reply_received",
+        }
         assert events_response.json()["last_event_id"] == events[-1]["id"]
 
     asyncio.run(run())

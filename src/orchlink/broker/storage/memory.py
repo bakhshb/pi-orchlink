@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -8,6 +9,7 @@ from orchlink.broker.state import (
     BUSY_MESSAGE_STATUSES,
     TERMINAL_MESSAGE_STATUSES,
     WORKER_BOUND_TYPES,
+    canonical_job_event_for_broker_event,
     is_active_job_status,
     is_active_session_status,
     is_busy_status,
@@ -17,7 +19,10 @@ from orchlink.broker.state import (
     job_matches_id,
     reply_job_status,
 )
+from orchlink.broker.state_machine import BrokerStateMachine
 from orchlink.broker.storage.base import MessageStore, MessageStoreBusy
+from orchlink.core.models import Job, Session
+from orchlink.core.views import talk_job_to_wire, task_job_to_wire
 
 
 class MemoryMessageStore(MessageStore):
@@ -28,8 +33,11 @@ class MemoryMessageStore(MessageStore):
         self._inboxes: dict[str, asyncio.Queue[dict[str, Any]]] = {}
         self._active_messages: dict[str, dict[str, Any]] = {}
         self._tasks: dict[str, dict[str, Any]] = {}
+        self._task_jobs: dict[str, Job] = {}
         self._results_by_task: dict[str, dict[str, Any]] = {}
         self._conversations: dict[str, dict[str, Any]] = {}
+        self._talk_jobs: dict[str, Job] = {}
+        self._state_machine = BrokerStateMachine()
         self._pending_replies: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._task_waiters: dict[str, list[asyncio.Future[dict[str, Any]]]] = {}
         self._events: list[dict[str, Any]] = []
@@ -113,6 +121,9 @@ class MemoryMessageStore(MessageStore):
             "preview": str(preview or "")[:300],
             **fields,
         }
+        job_event = canonical_job_event_for_broker_event(event_type, fields)
+        if job_event is not None:
+            event["job_event"] = job_event
         self._next_event_id += 1
         self._events.append(event)
         if len(self._events) > 1000:
@@ -259,6 +270,32 @@ class MemoryMessageStore(MessageStore):
     def _job_kind(self, job: dict[str, Any]) -> str:
         return job_kind_for(job)
 
+    def _task_job_for_message_locked(self, message: dict[str, Any]) -> Job | None:
+        task_id = message.get("task_id")
+        if not task_id:
+            return None
+        project_id = self._project_id(message)
+        task_key = self._task_key(project_id, str(task_id))
+        existing_job = self._task_jobs.get(task_key)
+        if existing_job is not None:
+            return existing_job
+        if task_key not in self._tasks and message.get("type") != "TASK":
+            return None
+        job = self._state_machine.tasks.create(message, project_id=project_id, mode=self._job_mode(message))
+        self._task_jobs[task_key] = job
+        return job
+
+    def _task_transition_path(self, current_status: str, target_status: str) -> list[Any]:
+        return self._state_machine.tasks.transition_path(current_status, target_status)
+
+    def _transition_task_job_locked(self, message: dict[str, Any], status: str) -> Job | None:
+        job = self._task_job_for_message_locked(message)
+        if job is None:
+            return None
+        job = self._state_machine.tasks.transition(job, status)
+        self._task_jobs[self._task_key(job.project_id, job.id)] = job
+        return job
+
     def _hide_stale_heartbeat_locked(self, job: dict[str, Any]) -> dict[str, Any]:
         status = str(job.get("status") or "").upper()
         if job.get("last_activity_type") == "heartbeat" and status not in ACTIVE_ACTIVITY_STATUSES:
@@ -300,13 +337,29 @@ class MemoryMessageStore(MessageStore):
         preview = str(activity.get("detail") or activity.get("phase") or activity.get("activity_type") or "")[:300]
 
         if conversation_id:
-            conversation = self._conversations.get(self._conversation_key(project_id, conversation_id))
+            conversation_key = self._conversation_key(project_id, conversation_id)
+            conversation = self._conversations.get(conversation_key)
             if conversation:
                 conversation["updated_at"] = timestamp
                 conversation["last_activity_at"] = timestamp
                 conversation["last_activity_type"] = activity.get("activity_type")
                 conversation["last_activity_tool"] = activity.get("tool_name")
                 conversation["last_activity_preview"] = preview
+                talk_job = self._talk_jobs.get(conversation_key)
+                if talk_job is not None:
+                    payload = dict(talk_job.payload or {})
+                    payload.update(
+                        {
+                            "updated_at": timestamp,
+                            "last_activity_at": timestamp,
+                            "last_activity_type": activity.get("activity_type"),
+                            "last_activity_tool": activity.get("tool_name"),
+                            "last_activity_preview": preview,
+                        }
+                    )
+                    talk_job = self._state_machine.talk.with_payload(talk_job, payload, turn=talk_job.turn, max_turns=talk_job.max_turns)
+                    self._talk_jobs[conversation_key] = talk_job
+                    self._conversations[conversation_key] = talk_job_to_wire(talk_job)
 
         target_message: dict[str, Any] | None = None
         if message_id:
@@ -352,30 +405,33 @@ class MemoryMessageStore(MessageStore):
             return
         project_id = self._project_id(message)
         task_key = self._task_key(project_id, str(task_id))
+        job = self._transition_task_job_locked(message, status)
+        if job is None:
+            return
         now = self._now()
         existing = self._tasks.get(task_key, {})
-        is_reply = bool(existing) and message.get("type") != "TASK"
-        self._tasks[task_key] = {
-            "kind": "task",
-            "project_id": project_id,
-            "task_id": str(task_id),
-            "conversation_id": message.get("conversation_id") or existing.get("conversation_id"),
-            "mode": existing.get("mode") if is_reply else self._job_mode(message),
-            "delivery": existing.get("delivery") if is_reply else message.get("delivery", "async"),
-            "status": status,
-            "from_agent": existing.get("from_agent") if is_reply else message.get("from_agent"),
-            "to_agent": existing.get("to_agent") if is_reply else message.get("to_agent"),
-            "created_at": existing.get("created_at") or now,
+        existing_payload = dict(job.payload or {})
+        is_reply = bool(existing_payload or existing) and message.get("type") != "TASK"
+        payload = {
+            "conversation_id": message.get("conversation_id") or existing_payload.get("conversation_id") or existing.get("conversation_id"),
+            "mode": (existing_payload.get("mode") or existing.get("mode")) if is_reply else self._job_mode(message),
+            "delivery": (existing_payload.get("delivery") or existing.get("delivery")) if is_reply else message.get("delivery", "async"),
+            "from_agent": (existing_payload.get("from_agent") or existing.get("from_agent")) if is_reply else message.get("from_agent"),
+            "to_agent": (existing_payload.get("to_agent") or existing.get("to_agent")) if is_reply else message.get("to_agent"),
+            "created_at": existing_payload.get("created_at") or existing.get("created_at") or now,
             "updated_at": now,
             "preview": self._message_preview(message)[:300],
-            "message_id": existing.get("message_id") if is_reply else message.get("message_id"),
-            "correlation_id": message.get("correlation_id") or existing.get("correlation_id"),
+            "message_id": (existing_payload.get("message_id") or existing.get("message_id")) if is_reply else message.get("message_id"),
+            "correlation_id": message.get("correlation_id") or existing_payload.get("correlation_id") or existing.get("correlation_id"),
             "message_type": message.get("type"),
-            "last_activity_at": message.get("last_activity_at") or existing.get("last_activity_at"),
-            "last_activity_type": message.get("last_activity_type") or existing.get("last_activity_type"),
-            "last_activity_tool": message.get("last_activity_tool") or existing.get("last_activity_tool"),
-            "last_activity_preview": message.get("last_activity_preview") or existing.get("last_activity_preview"),
+            "last_activity_at": message.get("last_activity_at") or existing_payload.get("last_activity_at") or existing.get("last_activity_at"),
+            "last_activity_type": message.get("last_activity_type") or existing_payload.get("last_activity_type") or existing.get("last_activity_type"),
+            "last_activity_tool": message.get("last_activity_tool") or existing_payload.get("last_activity_tool") or existing.get("last_activity_tool"),
+            "last_activity_preview": message.get("last_activity_preview") or existing_payload.get("last_activity_preview") or existing.get("last_activity_preview"),
         }
+        job = self._state_machine.tasks.with_payload(job, payload)
+        self._task_jobs[task_key] = job
+        self._tasks[task_key] = task_job_to_wire(job)
 
     def _touch_conversation_locked(self, message: dict[str, Any], status: str | None = None) -> None:
         conversation_id = message.get("conversation_id")
@@ -388,40 +444,42 @@ class MemoryMessageStore(MessageStore):
         conversation_key = self._conversation_key(project_id, str(conversation_id))
         now = self._now()
         existing = self._conversations.get(conversation_key, {})
+        job = self._talk_jobs.get(conversation_key)
+        if job is None:
+            job = self._state_machine.talk.create(message, project_id=project_id)
+
         next_status = status or existing.get("status") or "OPEN"
         if message_type == "CHAT_CLOSE":
             next_status = "CLOSED"
         elif next_status not in {"CLOSED", "TIMEOUT", "FAILED", "CANCELLED"}:
             next_status = "OPEN"
-        turn = int(message.get("turn") or existing.get("turn") or 1)
-        max_turns = int(message.get("max_turns") or existing.get("max_turns") or 6)
+        turn = int(message.get("turn") or existing.get("turn") or job.turn or 1)
+        max_turns = int(message.get("max_turns") or existing.get("max_turns") or job.max_turns or 6)
         if turn >= max_turns and message_type == "CHAT_REPLY":
             next_status = "CLOSED"
-        participants = existing.get("participants") or []
+        participants = list(existing.get("participants") or (job.payload or {}).get("participants") or [])
         for agent in (message.get("from_agent"), message.get("to_agent")):
             if agent and agent not in participants:
                 participants.append(agent)
-        self._conversations[conversation_key] = {
-            "kind": "talk",
-            "conversation_id": str(conversation_id),
-            "project_id": project_id,
+        job = self._state_machine.talk.transition(job, next_status)
+        payload = {
             "participants": participants,
-            "mode": "TALK",
-            "status": next_status,
-            "turn": turn,
-            "max_turns": max_turns,
-            "from_agent": existing.get("from_agent") or message.get("from_agent"),
-            "to_agent": existing.get("to_agent") or message.get("to_agent"),
-            "created_at": existing.get("created_at") or now,
+            "wire_status": next_status,
+            "from_agent": existing.get("from_agent") or (job.payload or {}).get("from_agent") or message.get("from_agent"),
+            "to_agent": existing.get("to_agent") or (job.payload or {}).get("to_agent") or message.get("to_agent"),
+            "created_at": existing.get("created_at") or (job.payload or {}).get("created_at") or now,
             "updated_at": now,
             "last_message_preview": self._message_preview(message)[:300],
             "preview": self._message_preview(message)[:300],
             "message_type": message_type,
-            "last_activity_at": existing.get("last_activity_at"),
-            "last_activity_type": existing.get("last_activity_type"),
-            "last_activity_tool": existing.get("last_activity_tool"),
-            "last_activity_preview": existing.get("last_activity_preview"),
+            "last_activity_at": existing.get("last_activity_at") or (job.payload or {}).get("last_activity_at"),
+            "last_activity_type": existing.get("last_activity_type") or (job.payload or {}).get("last_activity_type"),
+            "last_activity_tool": existing.get("last_activity_tool") or (job.payload or {}).get("last_activity_tool"),
+            "last_activity_preview": existing.get("last_activity_preview") or (job.payload or {}).get("last_activity_preview"),
         }
+        job = self._state_machine.talk.with_payload(job, payload, turn=turn, max_turns=max_turns)
+        self._talk_jobs[conversation_key] = job
+        self._conversations[conversation_key] = talk_job_to_wire(job)
 
     def _assert_conversation_can_receive_locked(self, message: dict[str, Any]) -> None:
         message_type = str(message.get("type") or "")
@@ -711,19 +769,21 @@ class MemoryMessageStore(MessageStore):
             self._expire_timed_out_messages_locked()
             now = self._now()
             lease_id = str(session.get("lease_id") or f"lease-{uuid.uuid4()}")
-            stored = {
-                "lease_id": lease_id,
-                "project_id": str(session.get("project_id") or "default"),
-                "agent_id": str(session.get("agent_id") or ""),
-                "role": str(session.get("role") or ""),
-                "pid": session.get("pid"),
-                "session_id": session.get("session_id"),
-                "status": "ACTIVE",
-                "created_at": now,
-                "updated_at": now,
-                "last_heartbeat_at": now,
-                "lease_grace_seconds": int(session.get("lease_grace_seconds") or self.session_grace_seconds),
-            }
+            stored = asdict(
+                Session(
+                    lease_id=lease_id,
+                    project_id=str(session.get("project_id") or "default"),
+                    agent_id=str(session.get("agent_id") or ""),
+                    role=str(session.get("role") or "work"),
+                    pid=session.get("pid"),
+                    session_id=session.get("session_id"),
+                    status="ACTIVE",
+                    created_at=now,
+                    updated_at=now,
+                    last_heartbeat_at=now,
+                    lease_grace_seconds=int(session.get("lease_grace_seconds") or self.session_grace_seconds),
+                )
+            )
             self._sessions[lease_id] = stored
             self._append_event_locked(
                 "session_acquired",
@@ -842,8 +902,20 @@ class MemoryMessageStore(MessageStore):
                     matches = [item for item in self._conversations.values() if item.get("conversation_id") == item_id]
                     conversation = matches[0] if len(matches) == 1 else None
                 if conversation and conversation.get("status") == "OPEN":
-                    conversation["status"] = "CANCELLED"
-                    conversation["updated_at"] = self._now()
+                    self._touch_conversation_locked(
+                        {
+                            "project_id": conversation.get("project_id"),
+                            "conversation_id": item_id,
+                            "from_agent": conversation.get("from_agent"),
+                            "to_agent": conversation.get("to_agent"),
+                            "type": "CHAT_TURN",
+                            "turn": conversation.get("turn"),
+                            "max_turns": conversation.get("max_turns"),
+                            "payload": {"summary": reason or "Conversation cancelled."},
+                        },
+                        status="CANCELLED",
+                    )
+                    conversation = self._conversations.get(self._conversation_key(str(conversation.get("project_id") or "default"), item_id), conversation)
                     self._append_event_locked(
                         "work_cancelled",
                         project_id=conversation.get("project_id"),
@@ -902,11 +974,16 @@ class MemoryMessageStore(MessageStore):
                 conversation = matches[0] if len(matches) == 1 else None
             if conversation is None:
                 raise ValueError(f"Conversation not found: {conversation_id}")
-            conversation["status"] = "CLOSED"
-            conversation["updated_at"] = self._now()
-            if message:
-                conversation["last_message_preview"] = self._message_preview(message)[:300]
-                conversation["preview"] = conversation["last_message_preview"]
+            close_message = dict(message or {})
+            close_message.setdefault("project_id", conversation.get("project_id"))
+            close_message.setdefault("conversation_id", conversation_id)
+            close_message.setdefault("from_agent", conversation.get("from_agent"))
+            close_message.setdefault("to_agent", conversation.get("to_agent"))
+            close_message.setdefault("type", "CHAT_CLOSE")
+            close_message.setdefault("turn", min(int(conversation.get("turn") or 1) + 1, int(conversation.get("max_turns") or 6)))
+            close_message.setdefault("max_turns", int(conversation.get("max_turns") or 6))
+            self._touch_conversation_locked(close_message, status="CLOSED")
+            conversation = self._conversations.get(self._conversation_key(str(conversation.get("project_id") or "default"), conversation_id), conversation)
             self._append_event_locked(
                 "conversation_closed",
                 project_id=conversation.get("project_id"),

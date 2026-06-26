@@ -414,6 +414,19 @@ orch lead
 orch work
 ```
 
+Optional local JSONL snapshots can be enabled for broker state recovery:
+
+```yaml
+broker:
+  store_backend: jsonl
+  store_path: .orch/run/orchlink-journal.jsonl
+```
+
+The default store is `memory`. The `jsonl` store is still intentionally simple:
+it writes full local snapshots, may grow over time, and can redeliver in-flight
+non-terminal work after a broker restart. Completed task results and queued work
+are restored.
+
 ## Security
 
 - The broker listens on `127.0.0.1` by default.

@@ -84,6 +84,16 @@ def broker_session_grace_seconds(config: dict[str, Any]) -> int:
     return int(broker.get("session_grace_seconds") or 25)
 
 
+def broker_store_backend(config: dict[str, Any]) -> str:
+    broker = config.get("broker") or {}
+    return str(broker.get("store_backend") or "memory")
+
+
+def broker_store_path(config: dict[str, Any]) -> str:
+    broker = config.get("broker") or {}
+    return str(broker.get("store_path") or ".orch/run/orchlink-journal.jsonl")
+
+
 def project_root(config: dict[str, Any]) -> Path:
     return Path(str(config.get("_project_root") or Path.cwd())).resolve()
 

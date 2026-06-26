@@ -24,6 +24,7 @@ from orchlink.bridge.ask import (
     start_talk_sync,
 )
 from orchlink.bridge.monitor import fetch_events, fetch_status, format_event
+from orchlink.cli.client import BrokerClient
 from orchlink.broker.main import BROKER_CAPABILITIES, VERSION as BROKER_VERSION
 from orchlink.broker.state import ACTIVE_ACTIVITY_STATUSES, is_active_job_status, job_id_for, job_kind_for, job_matches_id
 from orchlink.connector.pi_connector import PiConnector, PiConnectorError
@@ -37,6 +38,8 @@ from orchlink.project.config import (
     broker_port,
     broker_session_grace_seconds,
     broker_session_heartbeat_interval_seconds,
+    broker_store_backend,
+    broker_store_path,
     broker_url,
     load_project_config,
     project_root,
@@ -121,17 +124,11 @@ def fetch_events_sync(url: str, api_key: str, since: int = 0, limit: int = 50, p
 
 
 def broker_get_sync(config: dict[str, Any], path: str) -> dict[str, Any]:
-    with httpx.Client(base_url=broker_url(config), timeout=None) as client:
-        response = client.get(path, headers=broker_headers(config))
-        response.raise_for_status()
-        return response.json()
+    return BrokerClient(config).get(path)
 
 
 def broker_post_sync(config: dict[str, Any], path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-    with httpx.Client(base_url=broker_url(config), timeout=None) as client:
-        response = client.post(path, headers=broker_headers(config), json=body or {})
-        response.raise_for_status()
-        return response.json()
+    return BrokerClient(config).post(path, body)
 
 
 def current_project_id(config: dict[str, Any]) -> str:
@@ -418,6 +415,11 @@ def start_background_broker(config: dict[str, Any]) -> None:
     env["ORCHLINK_REQUIRE_PEER_SESSIONS"] = "true" if broker_require_peer_sessions(config) else "false"
     env["ORCHLINK_SESSION_HEARTBEAT_INTERVAL_SECONDS"] = str(broker_session_heartbeat_interval_seconds(config))
     env["ORCHLINK_SESSION_GRACE_SECONDS"] = str(broker_session_grace_seconds(config))
+    env["ORCHLINK_STORE_BACKEND"] = broker_store_backend(config)
+    store_path = Path(broker_store_path(config))
+    if not store_path.is_absolute():
+        store_path = project_root(config) / store_path
+    env["ORCHLINK_STORE_PATH"] = str(store_path)
     command = [
         sys.executable,
         "-m",
@@ -510,8 +512,13 @@ def broker_run(
     host: Annotated[str, typer.Option("--host", help="Host interface to bind.")] = "127.0.0.1",
     port: Annotated[int, typer.Option("--port", help="TCP port to bind.")] = 8787,
     reload: Annotated[bool, typer.Option("--reload", help="Enable uvicorn auto-reload for development.")] = False,
+    store_backend: Annotated[str, typer.Option("--store-backend", help="Store backend: memory or jsonl.")] = "memory",
+    store_path: Annotated[str, typer.Option("--store-path", help="Path for jsonl store snapshots.")] = ".orch/run/orchlink-journal.jsonl",
 ) -> None:
+    os.environ["ORCHLINK_STORE_BACKEND"] = store_backend
+    os.environ["ORCHLINK_STORE_PATH"] = store_path
     console.print(f"[Orch] Starting broker: http://{host}:{port}")
+    console.print(f"[Orch] Store: {store_backend} ({store_path})")
     uvicorn.run("orchlink.broker.main:app", host=host, port=port, reload=reload)
 
 
@@ -1136,6 +1143,7 @@ def doctor() -> None:
         console.print(f".orch/project.yaml: found ({config.get('_config_path')})")
         console.print(f"Project ID: {current_project_id(config)}")
         console.print(f"Broker URL: {broker_url(config)}")
+        console.print(f"Broker store: {broker_store_backend(config)} ({broker_store_path(config)})")
         console.print(f"Broker reachable: {'yes' if info else 'no'}")
         if info:
             console.print(f"Broker version: {info.get('version', 'unknown')} ({'compatible' if broker_compatible(info) else 'stale'})")

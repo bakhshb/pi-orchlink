@@ -34,9 +34,12 @@ def default_project_config(project_dir: Path, project_id: str | None = None) -> 
             "require_peer_sessions": True,
             "session_heartbeat_interval_seconds": 10,
             "session_grace_seconds": 25,
+            "store_backend": "memory",
+            "store_path": ".orch/run/orchlink-journal.jsonl",
         },
         "pi": {
             "command": "pi",
+            "session_dir": ".orch/run/pi-sessions",
         },
         "lead": {
             "agent_id": f"{resolved_project_id}.lead",

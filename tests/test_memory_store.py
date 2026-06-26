@@ -1,9 +1,12 @@
 import asyncio
+import json
 
 import pytest
 
 from orchlink.broker.storage import MessageStoreBusy
+from orchlink.broker.storage.jsonl import JsonlMessageStore
 from orchlink.broker.storage.memory import MemoryMessageStore
+from orchlink.core.models import Job, JobEventType
 
 
 def task_message(**overrides):
@@ -79,6 +82,109 @@ def test_enqueue_then_get_next_message():
         assert received["message_id"] == message["message_id"]
         assert received["status"] == "DELIVERED"
         assert active_messages[0]["status"] == "DELIVERED"
+
+    asyncio.run(run())
+
+
+def test_jsonl_store_records_mutating_operations(tmp_path):
+    async def run():
+        journal_path = tmp_path / "orchlink.jsonl"
+        store = JsonlMessageStore(journal_path)
+
+        await store.enqueue_message(task_message())
+        await store.get_next_message("demo.work", wait_seconds=1)
+        await store.save_reply("msg-0001", reply_message())
+
+        records = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
+        assert [record["operation"] for record in records] == ["enqueue_message", "save_reply"]
+        assert records[-1]["result"]["status"] == "reply_received"
+        assert records[-1]["snapshot"]["tasks"]["default:TEST-001"]["status"] == "DONE"
+
+    asyncio.run(run())
+
+
+def test_jsonl_store_restores_completed_task_results(tmp_path):
+    async def run():
+        journal_path = tmp_path / "orchlink.jsonl"
+        store = JsonlMessageStore(journal_path)
+        await store.enqueue_message(task_message(project_id="demo"))
+        await store.save_reply("msg-0001", {**reply_message(), "project_id": "demo"})
+
+        restored = JsonlMessageStore(journal_path)
+        result = await restored.get_task_result("TEST-001", project_id="demo")
+        jobs = await restored.list_jobs(project_id="demo")
+
+        assert result["status"] == "DONE"
+        assert result["reply"]["payload"]["summary"] == "Inspection complete."
+        assert jobs[0]["status"] == "DONE"
+
+    asyncio.run(run())
+
+
+def test_jsonl_store_restores_queued_work_to_inbox(tmp_path):
+    async def run():
+        journal_path = tmp_path / "orchlink.jsonl"
+        store = JsonlMessageStore(journal_path)
+        await store.enqueue_message(task_message(project_id="demo"))
+
+        restored = JsonlMessageStore(journal_path)
+        delivered = await restored.get_next_message("demo.work", wait_seconds=1)
+
+        assert delivered is not None
+        assert delivered["task_id"] == "TEST-001"
+        assert delivered["status"] == "DELIVERED"
+
+    asyncio.run(run())
+
+
+def test_task_lifecycle_is_backed_by_canonical_job_model():
+    async def run():
+        store = MemoryMessageStore()
+        await store.enqueue_message(task_message(project_id="demo"))
+        queued_job = store._task_jobs["demo:TEST-001"]
+
+        await store.get_next_message("demo.work", wait_seconds=1)
+        delivered_job = store._task_jobs["demo:TEST-001"]
+
+        await store.record_activity(
+            {
+                "project_id": "demo",
+                "agent_id": "demo.work",
+                "message_id": "msg-0001",
+                "task_id": "TEST-001",
+                "activity_type": "tool_call",
+                "tool_name": "read",
+            }
+        )
+        running_job = store._task_jobs["demo:TEST-001"]
+
+        await store.save_reply("msg-0001", {**reply_message(), "project_id": "demo"})
+        done_job = store._task_jobs["demo:TEST-001"]
+
+        assert isinstance(done_job, Job)
+        assert [queued_job.status, delivered_job.status, running_job.status, done_job.status] == [
+            "QUEUED",
+            "DELIVERED",
+            "RUNNING",
+            "DONE",
+        ]
+        assert done_job is not running_job
+
+    asyncio.run(run())
+
+
+def test_task_transition_path_is_deterministic_for_non_adjacent_failure():
+    store = MemoryMessageStore()
+
+    assert store._task_transition_path("QUEUED", "FAILED") == [JobEventType.DELIVERED, JobEventType.FAILED]
+
+
+def test_orphan_reply_does_not_create_canonical_task_job():
+    async def run():
+        store = MemoryMessageStore()
+        await store.save_reply("missing-message", reply_message())
+
+        assert "default:TEST-001" not in store._task_jobs
 
     asyncio.run(run())
 

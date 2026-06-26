@@ -3,6 +3,7 @@ import shutil
 import signal
 import subprocess
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +21,48 @@ from orchlink.project.config import (
 )
 
 
+DEFAULT_PI_SESSION_DIR = ".orch/run/pi-sessions"
+
+
 class PiConnectorError(RuntimeError):
     """Raised when Orchlink cannot launch the configured Pi command."""
+
+
+@dataclass
+class PiSessionLease:
+    """Broker lease and heartbeat for one visible Pi process."""
+
+    connector: "PiConnector"
+    role: str
+    pid: int
+    lease_id: str = ""
+    stop_event: threading.Event | None = None
+    heartbeat_thread: threading.Thread | None = None
+
+    def acquire(self) -> "PiSessionLease":
+        self.lease_id = self.connector._acquire_session(self.role, self.pid)
+        self.stop_event = threading.Event()
+        self.heartbeat_thread = threading.Thread(
+            target=self.connector._heartbeat_loop,
+            args=(self.lease_id, self.stop_event),
+            daemon=True,
+        )
+        self.heartbeat_thread.start()
+        return self
+
+    def release(self, reason: str) -> None:
+        if self.stop_event is not None:
+            self.stop_event.set()
+        if self.heartbeat_thread is not None:
+            self.heartbeat_thread.join(timeout=2)
+        if self.lease_id:
+            self.connector._release_session(self.lease_id, reason)
+
+    def __enter__(self) -> "PiSessionLease":
+        return self.acquire()
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.release(f"{self.role} session exited.")
 
 
 class PiConnector:
@@ -50,7 +91,7 @@ class PiConnector:
         role_config = self.config.get(role) or {}
         session_id = str(role_config.get("session_id") or role)
         args = ["--session-id", session_id]
-        session_dir = (self.config.get("pi") or {}).get("session_dir")
+        session_dir = (self.config.get("pi") or {}).get("session_dir", DEFAULT_PI_SESSION_DIR)
         if session_dir:
             session_path = Path(str(session_dir))
             if not session_path.is_absolute():
@@ -134,17 +175,12 @@ class PiConnector:
         if not self.check_available():
             raise PiConnectorError(f"Pi command not found: {self.pi_command()}")
         process = subprocess.Popen(argv, cwd=self._role_project_dir(role), env=self._env(role))
-        stop_event = threading.Event()
-        lease_id = ""
-        heartbeat_thread: threading.Thread | None = None
         try:
             try:
-                lease_id = self._acquire_session(role, process.pid)
+                lease = PiSessionLease(self, role, process.pid).acquire()
             except Exception:
                 process.terminate()
                 raise
-            heartbeat_thread = threading.Thread(target=self._heartbeat_loop, args=(lease_id, stop_event), daemon=True)
-            heartbeat_thread.start()
             try:
                 return process.wait()
             except KeyboardInterrupt:
@@ -153,12 +189,10 @@ class PiConnector:
                 except ProcessLookupError:
                     pass
                 return process.wait()
-        finally:
-            stop_event.set()
-            if heartbeat_thread is not None:
-                heartbeat_thread.join(timeout=2)
-            if lease_id:
-                self._release_session(lease_id, f"{role} session exited.")
+            finally:
+                lease.release(f"{role} session exited.")
+        except Exception:
+            raise
 
     def lead_argv(self) -> list[str]:
         pi_config = self.config.get("pi") or {}

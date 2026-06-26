@@ -6,57 +6,47 @@ store can import the same constants without changing protocol strings.
 
 from typing import Any
 
-
-# Target canonical Job lifecycle. CREATED is a domain lifecycle state, not a
-# protocol status currently emitted by the broker.
-JOB_STATUS_LIFECYCLE = (
-    "CREATED",
-    "QUEUED",
-    "DELIVERED",
-    "RUNNING",
-    "DONE",
-    "FAILED",
-    "TIMEOUT",
-    "CANCELLED",
-    "CLOSED",
+from orchlink.core.models import JobEvent, JobEventType
+from orchlink.core.states import (
+    ACTIVE_ACTIVITY_STATUSES,
+    ACTIVE_JOB_STATUSES,
+    BUSY_MESSAGE_STATUSES,
+    FAILED_STATUSES,
+    JOB_STATUS_LIFECYCLE,
+    TERMINAL_MESSAGE_STATUSES,
+    is_active_activity_status,
+    is_active_job_status,
+    is_busy_status,
+    is_terminal_status,
+    normalize_status,
+    reply_job_status,
 )
+
 
 JOB_KIND_TASK = "task"
 JOB_KIND_TALK = "talk"
 
-FAILED_STATUSES = {"FAILED", "TIMEOUT", "CANCELLED"}
-BUSY_MESSAGE_STATUSES = {"PENDING", "QUEUED", "DELIVERED", "RUNNING", "IN_PROGRESS"}
-ACTIVE_ACTIVITY_STATUSES = {"DELIVERED", "RUNNING", "IN_PROGRESS"}
-ACTIVE_JOB_STATUSES = BUSY_MESSAGE_STATUSES | {"OPEN"}
-TERMINAL_MESSAGE_STATUSES = {"DONE", "COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "CLOSED"}
 TALK_MESSAGE_TYPES = {"CHAT_START", "CHAT_TURN", "CHAT_REPLY", "CHAT_CLOSE"}
 WORKER_BOUND_TYPES = {"TASK", "CHAT_START", "CHAT_TURN", "CHAT_CLOSE"}
 SESSION_ACTIVE_STATUS = "ACTIVE"
 SESSION_TERMINAL_STATUSES = {"RELEASED", "EXPIRED"}
 
-
-def normalize_status(value: object) -> str:
-    return str(value or "").upper()
+TASK_STATUS_JOB_EVENTS: dict[str, JobEventType] = {
+    "PENDING": JobEventType.QUEUED,
+    "QUEUED": JobEventType.QUEUED,
+    "DELIVERED": JobEventType.DELIVERED,
+    "RUNNING": JobEventType.STARTED,
+    "IN_PROGRESS": JobEventType.STARTED,
+    "DONE": JobEventType.REPLIED,
+    "COMPLETED": JobEventType.REPLIED,
+    "FAILED": JobEventType.FAILED,
+    "TIMEOUT": JobEventType.TIMED_OUT,
+    "CANCELLED": JobEventType.CANCELLED,
+}
 
 
 def normalize_message_type(value: object) -> str:
     return str(value or "").upper()
-
-
-def is_busy_status(value: object) -> bool:
-    return normalize_status(value) in BUSY_MESSAGE_STATUSES
-
-
-def is_terminal_status(value: object) -> bool:
-    return normalize_status(value) in TERMINAL_MESSAGE_STATUSES
-
-
-def is_active_job_status(value: object) -> bool:
-    return normalize_status(value) in ACTIVE_JOB_STATUSES
-
-
-def is_active_activity_status(value: object) -> bool:
-    return normalize_status(value) in ACTIVE_ACTIVITY_STATUSES
 
 
 def is_active_session_status(value: object) -> bool:
@@ -87,9 +77,22 @@ def job_matches_id(item: dict[str, Any], item_id: str) -> bool:
     )
 
 
-def reply_job_status(message_type: object, reply_status: object = "DONE") -> str:
-    if normalize_message_type(message_type) == "CHAT_CLOSE":
-        return "CLOSED"
-    if normalize_status(reply_status or "DONE") in FAILED_STATUSES:
-        return "FAILED"
-    return "DONE"
+def canonical_job_event_for_broker_event(event_type: str, fields: dict[str, Any]) -> dict[str, Any] | None:
+    task_id = fields.get("task_id")
+    if not task_id:
+        return None
+    job_event_type = TASK_STATUS_JOB_EVENTS.get(normalize_status(fields.get("status")))
+    if job_event_type is None:
+        return None
+    project_id = str(fields.get("project_id") or "default")
+    job_id = str(task_id)
+    event = JobEvent(type=job_event_type, project_id=project_id, job_id=job_id)
+    return {
+        "type": event.type.value,
+        "status": event.status,
+        "kind": JOB_KIND_TASK,
+        "job_id": event.job_id,
+        "project_id": event.project_id,
+        "source_type": event_type,
+    }
+

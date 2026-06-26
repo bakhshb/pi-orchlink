@@ -9,10 +9,10 @@ from fastapi.security import APIKeyHeader
 
 from orchlink.broker.protocol import AgentRegistration, MessageEnvelope, envelope_to_dict
 from orchlink.broker.settings import Settings, get_settings
-from orchlink.broker.storage import MemoryMessageStore, MessageStore, MessageStoreBusy
+from orchlink.broker.storage import JsonlMessageStore, MemoryMessageStore, MessageStore, MessageStoreBusy
 
 
-VERSION = "0.4.2"
+VERSION = "0.4.3"
 BROKER_CAPABILITIES = [
     "project_header_scope",
     "task_activity_endpoint",
@@ -42,15 +42,28 @@ def request_project_id(request: Request, explicit: str | None = None) -> str | N
     return str(value) if value else None
 
 
+def create_store(settings: Settings) -> MessageStore:
+    backend = str(settings.store_backend or "memory").lower()
+    if backend == "memory":
+        return MemoryMessageStore(
+            require_peer_sessions=settings.require_peer_sessions,
+            session_grace_seconds=settings.session_grace_seconds,
+        )
+    if backend == "jsonl":
+        return JsonlMessageStore(
+            path=settings.store_path,
+            require_peer_sessions=settings.require_peer_sessions,
+            session_grace_seconds=settings.session_grace_seconds,
+        )
+    raise ValueError(f"Unsupported broker store backend: {settings.store_backend}")
+
+
 def create_app(
     store: MessageStore | None = None,
     settings: Settings | None = None,
 ) -> FastAPI:
     settings_obj = settings or get_settings()
-    store_obj = store or MemoryMessageStore(
-        require_peer_sessions=settings_obj.require_peer_sessions,
-        session_grace_seconds=settings_obj.session_grace_seconds,
-    )
+    store_obj = store or create_store(settings_obj)
 
     async def maybe_schedule_auto_stop(project_id: str | None = None) -> None:
         if not settings_obj.auto_stop or app.state.shutdown_scheduled:
