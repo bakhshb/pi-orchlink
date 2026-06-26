@@ -29,13 +29,23 @@ class TaskPromptPolicy:
             r"\binspect\b.*\b(changes?|diff|patch|pr)\b", lowered
         ):
             return "REVIEW"
-        if re.search(r"\b(implement|add|fix|update|edit|change|remove|write|create)\b", lowered):
+
+        implementation_text = self._without_negated_implementation_phrases(lowered)
+        if re.search(r"\b(implement|add|fix|update|edit|change|remove|write|create)\b", implementation_text):
             return "DO"
         if re.search(r"\b(discuss|compare|decide|recommend|tradeoff|trade-off|opinion)\b", lowered):
             return "DISCUSS"
         if re.search(r"\b(plan|propose|approach)\b", lowered):
             return "PLAN"
         return (default or self.default_mode).upper()
+
+    def _without_negated_implementation_phrases(self, message: str) -> str:
+        text = re.sub(
+            r"\b(?:do not|don't|never)\b[^.;\n]*\b(?:implement|add|fix|update|edit|change|remove|write|create)\b[^.;\n]*",
+            "",
+            message,
+        )
+        return re.sub(r"\b(?:no edits?|no editing|no implementation|without edits?|without editing)\b", "", text)
 
     def normalize_mode(self, mode: str | None, message: str) -> str:
         selected = (mode or self.infer_mode(message)).upper()
@@ -108,15 +118,3 @@ Short, obvious tasks can be short. Risky, broad, review, or implementation tasks
         for marker, value in replacements.items():
             rendered = rendered.replace(marker, value)
         return rendered
-
-
-@dataclass(frozen=True)
-class ResultPromptPolicy:
-    """Central policy for how delivered worker results steer the lead."""
-
-    def lead_reconcile_guidance(self) -> str:
-        return (
-            "Stop any unrelated work now and reconcile this with your current state before calling more tools. "
-            "If it changes the plan, state what changed. If it leaves open questions, ask a follow-up. "
-            "If it confirms the plan, continue with the agreed workload split."
-        )
