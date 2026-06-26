@@ -65,16 +65,16 @@ def create_app(
     settings_obj = settings or get_settings()
     store_obj = store or create_store(settings_obj)
 
-    async def maybe_schedule_auto_stop(project_id: str | None = None) -> None:
+    async def maybe_schedule_auto_stop() -> None:
         if not settings_obj.auto_stop or app.state.shutdown_scheduled:
             return
-        if not await app.state.store.can_auto_stop(project_id=project_id):
+        if not await app.state.store.can_auto_stop():
             return
         app.state.shutdown_scheduled = True
 
         async def stop_soon() -> None:
             await asyncio.sleep(0.5)
-            if await app.state.store.can_auto_stop(project_id=project_id):
+            if await app.state.store.can_auto_stop():
                 os.kill(os.getpid(), signal.SIGTERM)
             app.state.shutdown_scheduled = False
 
@@ -85,8 +85,7 @@ def create_app(
             await asyncio.sleep(max(1, min(5, settings_obj.session_heartbeat_interval_seconds)))
             expired = await app.state.store.expire_sessions()
             if expired:
-                for session in expired:
-                    await maybe_schedule_auto_stop(str(session.get("project_id") or "default"))
+                await maybe_schedule_auto_stop()
 
     @asynccontextmanager
     async def lifespan(app_obj: FastAPI):
@@ -150,7 +149,7 @@ def create_app(
             session = await message_store.release_session(lease_id, str(body.get("reason") or ""), project_id=project_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        await maybe_schedule_auto_stop(str(session.get("project_id") or "default"))
+        await maybe_schedule_auto_stop()
         return {"status": "released", "session": session}
 
     @secure_router.get("/sessions")
@@ -240,7 +239,7 @@ def create_app(
             )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        await maybe_schedule_auto_stop(project_id)
+        await maybe_schedule_auto_stop()
         return result
 
     @secure_router.post("/conversations/{conversation_id}/close")
