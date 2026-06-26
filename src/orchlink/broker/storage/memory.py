@@ -267,9 +267,6 @@ class MemoryMessageStore(MessageStore):
             return "TALK"
         return "PLAN"
 
-    def _job_kind(self, job: dict[str, Any]) -> str:
-        return job_kind_for(job)
-
     def _task_job_for_message_locked(self, message: dict[str, Any]) -> Job | None:
         task_id = message.get("task_id")
         if not task_id:
@@ -284,9 +281,6 @@ class MemoryMessageStore(MessageStore):
         job = self._state_machine.tasks.create(message, project_id=project_id, mode=self._job_mode(message))
         self._task_jobs[task_key] = job
         return job
-
-    def _task_transition_path(self, current_status: str, target_status: str) -> list[Any]:
-        return self._state_machine.tasks.transition_path(current_status, target_status)
 
     def _transition_task_job_locked(self, message: dict[str, Any], status: str) -> Job | None:
         job = self._task_job_for_message_locked(message)

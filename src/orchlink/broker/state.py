@@ -14,7 +14,6 @@ from orchlink.core.states import (
     FAILED_STATUSES,
     JOB_STATUS_LIFECYCLE,
     TERMINAL_MESSAGE_STATUSES,
-    is_active_activity_status,
     is_active_job_status,
     is_busy_status,
     is_terminal_status,
@@ -29,8 +28,6 @@ JOB_KIND_TALK = "talk"
 TALK_MESSAGE_TYPES = {"CHAT_START", "CHAT_TURN", "CHAT_REPLY", "CHAT_CLOSE"}
 WORKER_BOUND_TYPES = {"TASK", "CHAT_START", "CHAT_TURN", "CHAT_CLOSE"}
 SESSION_ACTIVE_STATUS = "ACTIVE"
-SESSION_TERMINAL_STATUSES = {"RELEASED", "EXPIRED"}
-
 TASK_STATUS_JOB_EVENTS: dict[str, JobEventType] = {
     "PENDING": JobEventType.QUEUED,
     "QUEUED": JobEventType.QUEUED,

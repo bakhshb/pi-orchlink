@@ -85,8 +85,6 @@ class TaskJobStateMachine:
 class TalkJobStateMachine:
     """Create canonical talk jobs while preserving legacy OPEN wire status."""
 
-    terminal_wire_statuses = {"CLOSED", "TIMEOUT", "FAILED", "CANCELLED"}
-
     def create(self, message: dict[str, Any], project_id: str, mode: str = "TALK") -> Job:
         conversation_id = str(message.get("conversation_id") or "")
         return Job(

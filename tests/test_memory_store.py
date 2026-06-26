@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from orchlink.broker.state_machine import TaskJobStateMachine
 from orchlink.broker.storage import MessageStoreBusy
 from orchlink.broker.storage.jsonl import JsonlMessageStore
 from orchlink.broker.storage.memory import MemoryMessageStore
@@ -174,9 +175,9 @@ def test_task_lifecycle_is_backed_by_canonical_job_model():
 
 
 def test_task_transition_path_is_deterministic_for_non_adjacent_failure():
-    store = MemoryMessageStore()
+    state_machine = TaskJobStateMachine()
 
-    assert store._task_transition_path("QUEUED", "FAILED") == [JobEventType.DELIVERED, JobEventType.FAILED]
+    assert state_machine.transition_path("QUEUED", "FAILED") == [JobEventType.DELIVERED, JobEventType.FAILED]
 
 
 def test_orphan_reply_does_not_create_canonical_task_job():

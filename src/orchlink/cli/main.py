@@ -140,10 +140,6 @@ def project_query(config: dict[str, Any], prefix: str = "?") -> str:
     return f"{prefix}project_id={project_id}"
 
 
-def broker_headers(config: dict[str, Any]) -> dict[str, str]:
-    return {"X-API-Key": broker_api_key(config), "X-Orchlink-Project-ID": current_project_id(config)}
-
-
 def activity_query(config: dict[str, Any], item_id: str | None = None, limit: int = 10) -> str:
     path = f"/v1/activity?limit={limit}{project_query(config, '&')}"
     if item_id:
