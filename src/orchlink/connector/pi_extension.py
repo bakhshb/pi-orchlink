@@ -95,6 +95,11 @@ function renderWorkerPrompt(message: OrchMessage): string {
   return renderWorkerTaskPrompt(message);
 }
 
+function isOrchlinkWorkerPrompt(text: any): boolean {
+  const value = String(text || "");
+  return value.startsWith("You are the worker coding agent in") || value.startsWith("[Orchlink Talk]");
+}
+
 function stripChatReplyMarker(value: any): string {
   let text = String(value || "").trim();
   let previous = "";
@@ -454,7 +459,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("input", async (event, ctx) => {
     if (role !== "work" || !pendingTask) return;
     if (event.source !== "extension") return;
-    if (!String(event.text || "").startsWith("You are the worker coding agent in")) return;
+    if (!isOrchlinkWorkerPrompt(event.text)) return;
     currentTask = pendingTask;
     pendingTask = undefined;
     rememberAbortContext(ctx);
