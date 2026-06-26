@@ -52,6 +52,8 @@ orch close C001 -m "Decision: reject unknown flags explicitly. Rationale: easier
 
 Pass criteria:
 
+- Worker receives only the short Talk header plus the lead message.
+- Lead receives only the short Talk header plus the worker reply.
 - Worker reply arrives in the lead Pi chat after `talk`.
 - Worker reply arrives again after `say`.
 - Worker answers the new context rather than repeating the first answer.
@@ -92,9 +94,12 @@ orch send work -t TEDIT001 -m "MODE: DO. TASK_ID: TEDIT001. Add one tiny parser 
 Observe progress:
 
 ```bash
-orch jobs
+orch jobs --active
+orch jobs --id TEDIT001
+# Use peek only if the task runs long enough for activity to be useful.
 orch peek TEDIT001
 orch wait TEDIT001 --timeout 300
+# Optional deliberate reread/debug check; do not use both wait and get routinely.
 orch get TEDIT001
 ```
 
@@ -108,7 +113,8 @@ Pass criteria:
 
 - Worker edits only the allowed files.
 - Worker reports tests run.
-- `orch wait TEDIT001` and `orch get TEDIT001` return the same project/task result.
+- `orch wait TEDIT001` returns the exact project/task result.
+- Optional `orch get TEDIT001` rereads the same completed result.
 - Review completes before lead proceeds.
 - `orch idle` reports idle afterward.
 
@@ -152,18 +158,62 @@ Pass criteria:
 - Worker does not expose hidden chain-of-thought.
 - Worker does not edit files.
 
+## 6. Jobs filters and CLI help
+
+Goal: prove `jobs` is the main browser and help text is discoverable.
+
+```bash
+orch jobs
+orch jobs --active
+orch jobs --status DONE
+orch jobs --kind task
+orch jobs --kind talk
+orch jobs --id TEDIT001
+orch jobs --json
+orch jobs --help
+```
+
+Pass criteria:
+
+- Default `orch jobs` shows recent terminal and active rows for the current project.
+- `--active` shows only open/running/blocking work.
+- `--status` filters to the requested broker status.
+- `--kind task` and `--kind talk` separate task and Talk rows.
+- `--id` focuses the expected item.
+- `--json` returns machine-readable jobs output.
+- Help describes the command and its options.
+- If activity is shown, job `STATUS` is treated as authoritative; stale heartbeat text is not shown as proof that terminal work is still running.
+
+## 7. Cancellation drill
+
+Goal: document the real cancellation boundary without claiming stronger interruption than measured.
+
+```bash
+orch send work -t TCANCEL001 -m "MODE: DO. TASK_ID: TCANCEL001. Wait 30 seconds, then reply RESULT. Do not edit files."
+orch cancel TCANCEL001 -m "manual cancellation drill"
+orch jobs --id TCANCEL001
+```
+
+Pass criteria:
+
+- Broker state becomes `CANCELLED` quickly.
+- A steering cancellation message is delivered to Pi if the task reached the worker.
+- Future tool calls are blocked after cancellation.
+- Any already-running shell command behavior is recorded as best-effort, not a guaranteed immediate stop.
+
 ## Final checks
 
 ```bash
 orch jobs
+orch jobs --active
 orch idle
 orch status --task TEDIT001 --limit 20
 ```
 
 Pass criteria:
 
-- No pending jobs.
+- No pending/active jobs.
 - No cross-project jobs appear.
-- `orch status --task ...` is scoped to the current project.
+- `orch status --task ...` is scoped to the current project and treated as debug-only raw JSON.
 
 Record failures with the exact command, task/conversation ID, broker health output, and relevant `orch jobs`/`orch get` output.

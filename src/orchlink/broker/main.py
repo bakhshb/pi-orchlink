@@ -194,10 +194,24 @@ def create_app(
         request: Request,
         limit: int = Query(default=50, ge=1, le=500),
         project_id: str | None = Query(default=None),
+        active: bool = Query(default=False),
+        status: str | None = Query(default=None),
+        kind: str | None = Query(default=None, pattern="^(task|talk)$"),
+        item_id: str | None = Query(default=None, alias="id"),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
         project_id = request_project_id(request, project_id)
-        return {"project_id": project_id, "jobs": await message_store.list_jobs(limit=limit, project_id=project_id)}
+        return {
+            "project_id": project_id,
+            "jobs": await message_store.list_jobs(
+                limit=limit,
+                project_id=project_id,
+                active=active,
+                status=status.upper() if status else None,
+                kind=kind,
+                item_id=item_id,
+            ),
+        }
 
     @secure_router.get("/tasks/{task_id}")
     async def get_task(

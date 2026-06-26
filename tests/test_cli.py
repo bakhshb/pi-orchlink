@@ -316,6 +316,100 @@ def test_jobs_get_and_wait_commands(monkeypatch, tmp_path):
     assert "Done." in wait_result.output
 
 
+def test_jobs_supports_filters_json_and_activity(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    seen_paths = []
+
+    def fake_broker_get_sync(config, path):
+        seen_paths.append(path)
+        return {
+            "project_id": "demo",
+            "jobs": [
+                {
+                    "kind": "talk",
+                    "conversation_id": "C001",
+                    "mode": "TALK",
+                    "status": "OPEN",
+                    "from_agent": "demo.lead",
+                    "to_agent": "demo.work",
+                    "updated_at": "2026-06-23T04:42:00+00:00",
+                    "preview": "Should we simplify?",
+                    "last_activity_at": "2026-06-23T04:42:01+00:00",
+                    "last_activity_type": "tool_call",
+                    "last_activity_tool": "read",
+                    "last_activity_preview": "src/foo.py",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+
+    table = runner.invoke(cli_main.app, ["jobs", "--active", "--kind", "talk", "--status", "open", "--id", "C001"])
+    json_result = runner.invoke(cli_main.app, ["jobs", "--json"])
+
+    assert table.exit_code == 0
+    assert seen_paths[0] == "/v1/jobs?limit=50&project_id=demo&active=true&status=OPEN&kind=talk&id=C001"
+    assert "UPDATED" in table.output
+    assert "C001" in table.output
+    assert "talk" in table.output
+    assert "last activity" in table.output
+    assert "read:" in table.output
+    assert json_result.exit_code == 0
+    assert '"project_id": "demo"' in json_result.output
+
+
+def test_jobs_rejects_unknown_kind(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_main.app, ["jobs", "--kind", "chat"])
+
+    assert result.exit_code == 1
+    assert "--kind must be 'task' or 'talk'" in result.output
+
+
+def test_job_activity_line_hides_only_terminal_heartbeat():
+    job = {
+        "status": "RUNNING",
+        "last_activity_at": "2026-06-23T04:42:00+00:00",
+        "last_activity_type": "heartbeat",
+        "last_activity_preview": "Worker still active.",
+    }
+
+    assert "Worker still active" in cli_main.job_activity_line(job)
+
+    done_job = {**job, "status": "DONE"}
+    assert cli_main.job_activity_line(done_job) == ""
+
+    done_tool_job = {**job, "status": "DONE", "last_activity_type": "tool_call", "last_activity_tool": "read", "last_activity_preview": "src/foo.py"}
+    assert "read: src/foo.py" in cli_main.job_activity_line(done_tool_job)
+
+
+def test_root_help_explains_commands():
+    result = runner.invoke(cli_main.app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "Start or reopen the visible Pi lead session" in result.output
+    assert "Send a task to work and wait" in result.output
+    assert "Show recent tasks and Talk conversations" in result.output
+    assert "Print raw broker status JSON" in result.output
+
+
+def test_jobs_help_explains_options():
+    result = runner.invoke(cli_main.app, ["jobs", "--help"])
+
+    assert result.exit_code == 0
+    assert "Show recent tasks and Talk conversations" in result.output
+    assert "Maximum number of recent jobs to show" in result.output
+    assert "--active" in result.output
+    assert "--status" in result.output
+    assert "--kind" in result.output
+    assert "--id" in result.output
+    assert "--json" in result.output
+
+
 def test_wait_help_shows_timeout_flag_only():
     result = runner.invoke(cli_main.app, ["wait", "--help"])
 

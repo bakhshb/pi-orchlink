@@ -7,7 +7,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from typing import Annotated, Any
 
 import httpx
@@ -196,8 +196,23 @@ def format_activity(activity: dict[str, Any]) -> str:
     return f"[{stamp}] {kind} ({age}) {preview}".rstrip()
 
 
+def stale_heartbeat(job: dict[str, Any]) -> bool:
+    status = str(job.get("status") or "").upper()
+    return job.get("last_activity_type") == "heartbeat" and status not in ACTIVE_ACTIVITY_STATUSES
+
+
+def sanitize_job(job: dict[str, Any]) -> dict[str, Any]:
+    clean = dict(job)
+    if stale_heartbeat(clean):
+        clean.pop("last_activity_at", None)
+        clean.pop("last_activity_type", None)
+        clean.pop("last_activity_tool", None)
+        clean.pop("last_activity_preview", None)
+    return clean
+
+
 def job_activity_line(job: dict[str, Any]) -> str:
-    if not job.get("last_activity_at"):
+    if stale_heartbeat(job) or not job.get("last_activity_at"):
         return ""
     activity = {
         "time": job.get("last_activity_at"),
@@ -246,6 +261,7 @@ def next_conversation_id(config: dict[str, Any]) -> str:
 
 
 BLOCKING_JOB_STATUSES = {"PENDING", "QUEUED", "DELIVERED", "RUNNING", "IN_PROGRESS", "OPEN"}
+ACTIVE_ACTIVITY_STATUSES = {"DELIVERED", "RUNNING", "IN_PROGRESS"}
 
 
 def conversation_state(config: dict[str, Any], conversation_id: str) -> dict[str, Any] | None:
@@ -258,6 +274,69 @@ def conversation_state(config: dict[str, Any], conversation_id: str) -> dict[str
 
 def blocking_jobs(jobs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [job for job in jobs if str(job.get("status") or "").upper() in BLOCKING_JOB_STATUSES]
+
+
+def job_id(job: dict[str, Any]) -> str:
+    return str(job.get("task_id") or job.get("conversation_id") or job.get("message_id") or "-")
+
+
+def job_kind(job: dict[str, Any]) -> str:
+    if job.get("task_id"):
+        return "task"
+    if job.get("conversation_id"):
+        return "talk"
+    return str(job.get("kind") or "-")
+
+
+def job_route(job: dict[str, Any]) -> str:
+    return f"{job.get('from_agent', '-')} → {job.get('to_agent', '-')}"
+
+
+def filter_jobs(
+    jobs: list[dict[str, Any]],
+    active: bool = False,
+    status: str | None = None,
+    kind: str | None = None,
+    item_id: str | None = None,
+) -> list[dict[str, Any]]:
+    selected = list(jobs)
+    if active:
+        selected = blocking_jobs(selected)
+    if status:
+        expected_status = status.upper()
+        selected = [job for job in selected if str(job.get("status") or "").upper() == expected_status]
+    if kind:
+        expected_kind = kind.lower()
+        selected = [job for job in selected if job_kind(job) == expected_kind]
+    if item_id:
+        selected = [
+            job
+            for job in selected
+            if str(job.get("task_id") or "") == item_id
+            or str(job.get("conversation_id") or "") == item_id
+            or str(job.get("message_id") or "") == item_id
+        ]
+    return selected
+
+
+def jobs_query(
+    config: dict[str, Any],
+    limit: int = 50,
+    active: bool = False,
+    status: str | None = None,
+    kind: str | None = None,
+    item_id: str | None = None,
+) -> str:
+    params: dict[str, str] = {"limit": str(limit), "project_id": current_project_id(config)}
+    if active:
+        params["active"] = "true"
+    if status:
+        params["status"] = status.upper()
+    if kind:
+        params["kind"] = kind.lower()
+    if item_id:
+        params["id"] = item_id
+    return f"/v1/jobs?{urlencode(params)}"
 
 
 def run_update(ref: str, reinstall_only: bool = False) -> None:
@@ -423,19 +502,19 @@ def load_project_or_exit() -> dict[str, Any]:
         raise typer.Exit(1) from exc
 
 
-@broker_app.command("run")
+@broker_app.command("run", help="Run the local Orchlink broker HTTP server in the foreground.")
 def broker_run(
-    host: Annotated[str, typer.Option("--host")] = "127.0.0.1",
-    port: Annotated[int, typer.Option("--port")] = 8787,
-    reload: Annotated[bool, typer.Option("--reload")] = False,
+    host: Annotated[str, typer.Option("--host", help="Host interface to bind.")] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="TCP port to bind.")] = 8787,
+    reload: Annotated[bool, typer.Option("--reload", help="Enable uvicorn auto-reload for development.")] = False,
 ) -> None:
     console.print(f"[Orch] Starting broker: http://{host}:{port}")
     uvicorn.run("orchlink.broker.main:app", host=host, port=port, reload=reload)
 
 
-@app.command("init")
+@app.command("init", help="Create .orch project config and generated lead/work skills.")
 def init_command(
-    project_id: Annotated[str | None, typer.Option("--project-id")] = None,
+    project_id: Annotated[str | None, typer.Option("--project-id", help="Explicit project ID; defaults to current folder name.")] = None,
     force: Annotated[bool, typer.Option("--force", help="Overwrite config and skills.")] = False,
     refresh_skills: Annotated[bool, typer.Option("--refresh-skills", help="Rewrite lead/work skills without changing project config.")] = False,
 ) -> None:
@@ -446,7 +525,7 @@ def init_command(
     console.print(f"[Orch] Worker skill: {paths['work_skill']}")
 
 
-@app.command()
+@app.command(help="Start or reopen the visible Pi lead session for this project.")
 def lead(
     new: Annotated[bool, typer.Option("--new", help="Start a new Pi lead session instead of reopening the saved lead session.")] = False,
 ) -> None:
@@ -469,7 +548,7 @@ def lead(
     raise typer.Exit(exit_code)
 
 
-@app.command()
+@app.command(help="Start or reopen the visible Pi worker session for this project.")
 def work(
     new: Annotated[bool, typer.Option("--new", help="Start a new Pi worker session instead of reopening the saved worker session.")] = False,
 ) -> None:
@@ -503,12 +582,12 @@ def print_async_guidance(config: dict[str, Any], worker_id: str, task_id: str) -
     console.print(f"[Orch] Read result: orch get {task_id}")
 
 
-@app.command()
+@app.command(help="Send a task to work and wait by default; use for reviews and decisions.")
 def ask(
     worker_id: str,
-    task_id: Annotated[str, typer.Option("--task", "--task-id", "-t")],
-    message: Annotated[str, typer.Option("--msg", "--message", "-m")],
-    timeout: Annotated[int, typer.Option("--timeout")] = 1800,
+    task_id: Annotated[str, typer.Option("--task", "--task-id", "-t", help="Exact task ID to assign, such as T001.")],
+    message: Annotated[str, typer.Option("--msg", "--message", "-m", help="Task prompt for the worker.")],
+    timeout: Annotated[int, typer.Option("--timeout", help="Seconds to wait for the worker reply.")] = 1800,
     wait: Annotated[bool, typer.Option("--wait/--no-wait", help="Wait in this shell for the reply. Use orch send for async tasks.")] = True,
 ) -> None:
     config = load_project_or_exit()
@@ -530,12 +609,12 @@ def ask(
     console.print_json(json.dumps(response))
 
 
-@app.command()
+@app.command(help="Send an async task to work when the lead can continue on another scope.")
 def send(
     worker_id: str,
-    task_id: Annotated[str, typer.Option("--task", "--task-id", "-t")],
-    message: Annotated[str, typer.Option("--msg", "--message", "-m")],
-    timeout: Annotated[int, typer.Option("--timeout")] = 1800,
+    task_id: Annotated[str, typer.Option("--task", "--task-id", "-t", help="Exact task ID to assign, such as T002.")],
+    message: Annotated[str, typer.Option("--msg", "--message", "-m", help="Task prompt for the worker.")],
+    timeout: Annotated[int, typer.Option("--timeout", help="Task timeout in seconds.")] = 1800,
     allow_async_review: Annotated[bool, typer.Option("--allow-async-review", help="Allow REVIEW through async send. Use only when review is not a gate.")] = False,
 ) -> None:
     mode = infer_task_mode(message)
@@ -660,12 +739,12 @@ def _print_conversation_body(conversation: dict[str, Any]) -> None:
         console.print(f"[Orch] Close: orch close {conversation_id} -m \"Decision: ...\"")
 
 
-@app.command()
+@app.command(help="Start a visible Talk Mode discussion with work.")
 def talk(
     worker_id: str,
-    message: Annotated[str, typer.Option("--msg", "--message", "-m")],
+    message: Annotated[str, typer.Option("--msg", "--message", "-m", help="First Talk message to send.")],
     rounds: Annotated[int, typer.Option("--rounds", "-r", min=1, max=6, help="Number of lead↔worker back-and-forth rounds.")] = 6,
-    timeout: Annotated[int, typer.Option("--timeout")] = 1800,
+    timeout: Annotated[int, typer.Option("--timeout", help="Conversation turn timeout in seconds.")] = 1800,
 ) -> None:
     require_nonempty_talk_message(message, "Talk")
     config = load_project_or_exit()
@@ -692,11 +771,11 @@ def talk(
     console.print("[Orch] Close only when the discussion reaches a decision: orch close " + conversation_id + " -m \"...\"")
 
 
-@app.command()
+@app.command(help="Send the next message in an open Talk Mode conversation.")
 def say(
     conversation_id: str,
-    message: Annotated[str, typer.Option("--msg", "--message", "-m")],
-    timeout: Annotated[int, typer.Option("--timeout")] = 1800,
+    message: Annotated[str, typer.Option("--msg", "--message", "-m", help="Next Talk message to send.")],
+    timeout: Annotated[int, typer.Option("--timeout", help="Conversation turn timeout in seconds.")] = 1800,
 ) -> None:
     require_nonempty_talk_message(message, "Say")
     config = load_project_or_exit()
@@ -731,11 +810,11 @@ def say(
     console.print("[Orch] Continue with another orch say if the discussion is not resolved; close when there is a decision.")
 
 
-@app.command()
+@app.command(help="Close a Talk Mode conversation with a decision or summary.")
 def close(
     conversation_id: str,
-    message: Annotated[str, typer.Option("--msg", "--message", "-m")] = "",
-    timeout: Annotated[int, typer.Option("--timeout")] = 1800,
+    message: Annotated[str, typer.Option("--msg", "--message", "-m", help="Optional final decision or summary.")] = "",
+    timeout: Annotated[int, typer.Option("--timeout", help="Close message timeout in seconds.")] = 1800,
 ) -> None:
     config = load_project_or_exit()
     try:
@@ -763,31 +842,50 @@ def close(
         console.print(message)
 
 
-@app.command()
-def jobs(limit: Annotated[int, typer.Option("--limit")] = 50) -> None:
+@app.command(help="Show recent tasks and Talk conversations for the current project.")
+def jobs(
+    limit: Annotated[int, typer.Option("--limit", help="Maximum number of recent jobs to show.")] = 50,
+    active: Annotated[bool, typer.Option("--active", help="Show only pending/running/open work.")] = False,
+    status: Annotated[str | None, typer.Option("--status", help="Show only jobs with this status.")] = None,
+    kind: Annotated[str | None, typer.Option("--kind", help="Show only task or talk jobs.")] = None,
+    item_id: Annotated[str | None, typer.Option("--id", help="Show one task/conversation/message ID.")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Print raw jobs JSON.")] = False,
+) -> None:
+    normalized_kind = kind.lower() if kind else None
+    if normalized_kind and normalized_kind not in {"task", "talk"}:
+        console.print("[Orch] --kind must be 'task' or 'talk'.")
+        raise typer.Exit(1)
+
     config = load_project_or_exit()
     try:
         ensure_broker_running(config)
-        body = broker_get_sync(config, f"/v1/jobs?limit={limit}{project_query(config, '&')}")
+        body = broker_get_sync(config, jobs_query(config, limit=limit, active=active, status=status, kind=normalized_kind, item_id=item_id))
     except (RuntimeError, httpx.HTTPError) as exc:
         console.print(f"[Orch] {exc}")
         raise typer.Exit(1) from exc
-    console.print("ID\tKIND\tMODE\tSTATUS\tROUTE\tCREATED\tPREVIEW")
+    body["jobs"] = [sanitize_job(job) for job in filter_jobs(body.get("jobs", []), active=active, status=status, kind=normalized_kind, item_id=item_id)[:limit]]
+    if json_output:
+        console.print_json(json.dumps(body))
+        return
+
+    console.print("ID\tKIND\tMODE\tSTATUS\tUPDATED\tROUTE\tPREVIEW")
     for job in body.get("jobs", []):
-        job_id = job.get("task_id") or job.get("conversation_id") or "-"
         preview = str(job.get("preview") or job.get("last_message_preview") or "")
         console.print(
-            f"{job_id}\t{job.get('kind', '-')}\t{job.get('mode', '-')}\t{job.get('status', '-')}\t"
-            f"{job.get('from_agent', '-')} → {job.get('to_agent', '-')}\t{job.get('created_at', '-')}\t{preview}"
+            f"{job_id(job)}\t{job_kind(job)}\t{job.get('mode', '-')}\t{job.get('status', '-')}\t"
+            f"{human_age(job.get('updated_at') or job.get('created_at'))}\t{job_route(job)}\t{preview}"
         )
+        activity = job_activity_line(job)
+        if activity:
+            console.print(f"  last activity: {activity}")
 
 
-@app.command()
-def idle(limit: Annotated[int, typer.Option("--limit")] = 50) -> None:
+@app.command(help="Exit 0 if the worker lane is idle; exit 1 if active work exists.")
+def idle(limit: Annotated[int, typer.Option("--limit", help="Maximum number of recent jobs to inspect.")] = 50) -> None:
     config = load_project_or_exit()
     try:
         ensure_broker_running(config)
-        body = broker_get_sync(config, f"/v1/jobs?limit={limit}{project_query(config, '&')}")
+        body = broker_get_sync(config, jobs_query(config, limit=limit, active=True))
     except (RuntimeError, httpx.HTTPError) as exc:
         console.print(f"[Orch] {exc}")
         raise typer.Exit(1) from exc
@@ -799,9 +897,8 @@ def idle(limit: Annotated[int, typer.Option("--limit")] = 50) -> None:
 
     console.print("[Orch] Worker is not idle. Pending worker work exists:")
     for job in pending:
-        job_id = job.get("task_id") or job.get("conversation_id") or "-"
         preview = str(job.get("preview") or job.get("last_message_preview") or "")
-        console.print(f"- {job_id} {job.get('kind', '-')} {job.get('mode', '-')} {job.get('status', '-')}: {preview}")
+        console.print(f"- {job_id(job)} {job_kind(job)} {job.get('mode', '-')} {job.get('status', '-')}: {preview}")
         activity = job_activity_line(job)
         if activity:
             console.print(f"  last activity: {activity}")
@@ -809,10 +906,10 @@ def idle(limit: Annotated[int, typer.Option("--limit")] = 50) -> None:
     raise typer.Exit(1)
 
 
-@app.command()
+@app.command(help="Show recent worker activity for a long-running task or conversation.")
 def peek(
     item_id: str,
-    limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 10,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=100, help="Maximum activity rows to show.")] = 10,
 ) -> None:
     config = load_project_or_exit()
     try:
@@ -856,12 +953,12 @@ def get_command(item_id: str) -> None:
     _print_task_body(body)
 
 
-@app.command("wait")
+@app.command("wait", help="Wait for one exact task result; timeout does not cancel the task.")
 def wait_command(
     task_id: str,
-    timeout: Annotated[int, typer.Option("--timeout")] = 1800,
+    timeout: Annotated[int, typer.Option("--timeout", help="Maximum seconds to wait in this shell.")] = 1800,
     progress: Annotated[bool, typer.Option("--progress/--no-progress", help="Print worker activity while waiting.")] = True,
-    poll_seconds: Annotated[int, typer.Option("--poll-seconds", min=1, max=60)] = 5,
+    poll_seconds: Annotated[int, typer.Option("--poll-seconds", min=1, max=60, help="Seconds between progress polls.")] = 5,
 ) -> None:
     config = load_project_or_exit()
     try:
@@ -916,10 +1013,10 @@ def wait_command(
             last_activity_id = activity_id
 
 
-@app.command()
+@app.command(help="Mark active work CANCELLED and ask Pi to stop the current turn.")
 def cancel(
     item_id: str,
-    reason: Annotated[str, typer.Option("--reason", "-m")] = "Cancelled by lead.",
+    reason: Annotated[str, typer.Option("--reason", "-m", help="Reason recorded with the cancellation.")] = "Cancelled by lead.",
 ) -> None:
     config = load_project_or_exit()
     try:
@@ -935,7 +1032,7 @@ def cancel(
         console.print(f"[Orch] Messages: {', '.join(str(item) for item in cancelled)}")
 
 
-@app.command()
+@app.command(help="Update this Orchlink install from git and reinstall the package.")
 def update(
     ref: Annotated[str, typer.Option("--ref", help="Git branch, tag, or commit to update to.")] = "main",
     reinstall_only: Annotated[bool, typer.Option("--reinstall-only", help="Only reinstall the current checkout into the venv.")] = False,
@@ -957,11 +1054,11 @@ def update(
     console.print("[Orch]   orch work --new")
 
 
-@app.command()
+@app.command(help="Watch raw broker events for debugging worker activity and routing.")
 def watch(
-    interval_seconds: Annotated[float, typer.Option("--interval-seconds")] = 2.0,
+    interval_seconds: Annotated[float, typer.Option("--interval-seconds", help="Seconds between event polls.")] = 2.0,
     iterations: Annotated[int, typer.Option("--iterations", help="0 means watch forever.")] = 0,
-    limit: Annotated[int, typer.Option("--limit")] = 50,
+    limit: Annotated[int, typer.Option("--limit", help="Maximum events to fetch per poll.")] = 50,
 ) -> None:
     config = load_project_or_exit()
     try:
@@ -984,16 +1081,16 @@ def watch(
         time.sleep(interval_seconds)
 
 
-@app.command()
+@app.command(help="Stop the background broker process for this project.")
 def stop() -> None:
     config = load_project_or_exit()
     stop_pid_file(broker_pid_path(config), "broker")
 
 
-@app.command()
+@app.command(help="Print raw broker status JSON for debugging; not normal coordination output.")
 def status(
-    broker_url_option: Annotated[str, typer.Option("--broker-url")] = "http://127.0.0.1:8787",
-    api_key: Annotated[str, typer.Option("--api-key")] = "change-me",
+    broker_url_option: Annotated[str, typer.Option("--broker-url", help="Broker base URL to query.")] = "http://127.0.0.1:8787",
+    api_key: Annotated[str, typer.Option("--api-key", help="Broker API key.")] = "change-me",
     project_id: Annotated[str | None, typer.Option("--project-id", help="Filter to one project_id.")] = None,
     all_projects: Annotated[bool, typer.Option("--all-projects", help="Do not apply the current project_id filter.")] = False,
     task_id: Annotated[str | None, typer.Option("--task", help="Filter jobs/messages/events to one task ID.")] = None,
@@ -1017,7 +1114,7 @@ def status(
     console.print_json(json.dumps(response))
 
 
-@app.command()
+@app.command(help="Check local Orchlink project setup, broker compatibility, and generated skills.")
 def doctor() -> None:
     console.print("Orchlink doctor")
     console.print(f"Package file: {Path(__file__).resolve()}")

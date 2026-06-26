@@ -431,6 +431,60 @@ def test_cancel_completed_task_reports_terminal_status():
     assert "already DONE" in response.json()["detail"]
 
 
+def test_jobs_filters_active_status_kind_and_id():
+    client = make_client()
+    task = {
+        "protocol": "orch-a2a-v1",
+        "message_id": "msg-jobs-1",
+        "correlation_id": "req-jobs-1",
+        "project_id": "demo",
+        "conversation_id": "demo-tasks",
+        "task_id": "T010",
+        "from_agent": "demo.lead",
+        "to_agent": "demo.work",
+        "type": "TASK",
+        "status": "PENDING",
+        "turn": 1,
+        "max_turns": 6,
+        "requires_reply": True,
+        "timeout_seconds": 1800,
+        "delivery": "async",
+        "payload": {"mode": "PLAN", "intent": "Inspect."},
+    }
+    reply = {
+        **task,
+        "message_id": "reply-jobs-1",
+        "from_agent": "demo.work",
+        "to_agent": "demo.lead",
+        "type": "RESULT",
+        "status": "COMPLETED",
+        "requires_reply": False,
+        "payload": {"summary": "Done."},
+    }
+    talk = {
+        **task,
+        "message_id": "msg-jobs-talk",
+        "correlation_id": "req-jobs-talk",
+        "conversation_id": "C001",
+        "task_id": None,
+        "type": "CHAT_START",
+        "delivery": "conversation",
+        "payload": {"mode": "TALK", "message": "Discuss."},
+    }
+    client.post("/v1/messages/send", headers=auth_headers(), json=task)
+    client.post("/v1/messages/msg-jobs-1/reply", headers=auth_headers(), json=reply)
+    client.post("/v1/messages/send", headers=auth_headers(), json=talk)
+
+    active = client.get("/v1/jobs?project_id=demo&active=true", headers=auth_headers()).json()["jobs"]
+    done_tasks = client.get("/v1/jobs?project_id=demo&status=DONE&kind=task", headers=auth_headers()).json()["jobs"]
+    one_talk = client.get("/v1/jobs?project_id=demo&id=C001", headers=auth_headers()).json()["jobs"]
+
+    assert [job["conversation_id"] for job in active] == ["C001"]
+    assert [job["task_id"] for job in done_tasks] == ["T010"]
+    assert one_talk[0]["kind"] == "talk"
+    assert one_talk[0]["conversation_id"] == "C001"
+
+
 def test_status_filters_task_and_events_since():
     client = make_client()
     first = {
