@@ -1,13 +1,22 @@
+import json
 from pathlib import Path
 from typing import Any
 
+from orchlink.core.prompt_policy import ResultPromptPolicy, TaskPromptPolicy
 from orchlink.project.config import run_dir
+
+
+_TASK_PROMPT_POLICY = TaskPromptPolicy()
+_RESULT_PROMPT_POLICY = ResultPromptPolicy()
 
 
 ORCHLINK_PI_EXTENSION = r'''
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type OrchMessage = Record<string, any>;
+
+const ORCHLINK_WORKER_TASK_GUIDANCE = __ORCHLINK_WORKER_TASK_GUIDANCE__;
+const ORCHLINK_RESULT_RECONCILE_GUIDANCE = __ORCHLINK_RESULT_RECONCILE_GUIDANCE__;
 
 function env(name: string, fallback = ""): string {
   return process.env[name] || fallback;
@@ -55,7 +64,7 @@ ${formatList(asList(scope.allowed))}
 Forbidden:
 ${formatList(asList(scope.forbidden))}${optionalConstraints}${optionalReply}
 
-Use your judgment for whether this needs discussion, planning, review, or implementation. Stay inside the requested scope, do not edit forbidden files, ask a blocker question if the request is unsafe, unclear, or too broad, and reply in the shape the lead asked for. If no shape is requested, answer naturally and concisely.
+${ORCHLINK_WORKER_TASK_GUIDANCE}
 `;
 }
 
@@ -101,7 +110,7 @@ Worker result:
 ${summary}
 
 Recommended next step:
-Stop any unrelated work now and reconcile this with your current state before calling more tools. If it changes the plan, state what changed. If it leaves open questions, ask a follow-up. If it confirms the plan, continue with the agreed workload split.`;
+${ORCHLINK_RESULT_RECONCILE_GUIDANCE}`;
 }
 
 function messageText(message: any): string {
@@ -487,7 +496,13 @@ export default function (pi: ExtensionAPI) {
     clearAbortContext();
   });
 }
-'''
+'''.replace(
+    "__ORCHLINK_WORKER_TASK_GUIDANCE__",
+    json.dumps(_TASK_PROMPT_POLICY.worker_task_guidance()),
+).replace(
+    "__ORCHLINK_RESULT_RECONCILE_GUIDANCE__",
+    json.dumps(_RESULT_PROMPT_POLICY.lead_reconcile_guidance()),
+)
 
 
 def ensure_pi_extension(config: dict[str, Any]) -> Path:

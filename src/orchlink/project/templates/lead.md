@@ -113,22 +113,7 @@ Rules:
 
 ## Task prompt shape
 
-Write worker prompts in natural language. Do not force `MODE:`/`TASK_ID:` blocks or a universal checklist. The `-t` CLI option already carries the task ID; the worker can infer whether you need discussion, planning, review, or implementation from your request.
-
-Usually include only what helps the worker act safely:
-
-- current context
-- exact allowed files, paths, or behavior
-- forbidden files, paths, or behavior
-- whether edits are allowed
-- tests or checks the worker may run
-
-Optional:
-
-- desired reply shape, only when you care about the format
-- whether you will wait or work on a different scope, when it affects coordination
-
-Short, obvious tasks can be short. Risky, broad, review, or implementation tasks should include enough scope to prevent accidental edits. Do not ask the worker to scan the whole repository unless necessary.
+{{LEAD_TASK_PROMPT_GUIDANCE}}
 
 ## Worker replies and blockers
 
@@ -148,7 +133,7 @@ Return verdict, risks, files inspected, and tests run.
 Return files changed, tests run, and remaining risks.
 ```
 
-Do not require `TYPE:` labels or a fixed result schema unless you truly need them. If you do not request a shape, accept a concise answer that fits the task.
+{{LEAD_REPLY_GUIDANCE}}
 
 If the worker returns `BLOCKER` or asks a direct question, answer it before moving on. Do not ignore worker questions. Only close or proceed without answering if you state why the question no longer matters.
 

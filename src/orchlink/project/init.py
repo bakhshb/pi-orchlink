@@ -4,6 +4,7 @@ from typing import Any
 
 import yaml
 
+from orchlink.core.prompt_policy import TaskPromptPolicy
 from orchlink.project.config import ORCH_DIR_NAME
 
 
@@ -15,7 +16,8 @@ def load_skill_template(role: str) -> str:
     if role not in SKILL_ROLES:
         raise ValueError(f"Unsupported skill role: {role}")
     try:
-        return files("orchlink.project").joinpath("templates", f"{role}.md").read_text(encoding="utf-8")
+        template = files("orchlink.project").joinpath("templates", f"{role}.md").read_text(encoding="utf-8")
+        return TaskPromptPolicy().render_markdown_template(template)
     except FileNotFoundError as exc:
         raise RuntimeError(f"Missing Orchlink skill template for {role}. Reinstall or update Orchlink.") from exc
 

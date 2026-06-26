@@ -5,6 +5,7 @@ from typer.testing import CliRunner
 
 from orchlink.bridge.ask import build_chat_envelope, build_task_envelope
 from orchlink.cli.main import app
+from orchlink.core.prompt_policy import TaskPromptPolicy
 from orchlink.connector.pi_connector import PiConnector
 from orchlink.project.config import load_project_config
 from orchlink.project.init import init_project
@@ -49,8 +50,10 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "orch talk work" in lead_skill
     assert "orch say C001" in lead_skill
     assert "orch close C001" in lead_skill
-    assert "Do not force `MODE:`/`TASK_ID:` blocks" in lead_skill
-    assert "Do not require `TYPE:` labels" in lead_skill
+    policy = TaskPromptPolicy()
+    assert policy.lead_task_prompt_guidance_markdown() in lead_skill
+    assert policy.lead_reply_guidance_markdown() in lead_skill
+    assert "{{" not in lead_skill
     assert "# Worker Role" in work_skill
     assert "## Task behavior" in work_skill
     assert "## TALK mode" in work_skill
@@ -60,7 +63,8 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "No template and no required labels" in work_skill
     assert "Do not agree by default" in work_skill
     assert "If implementation is not explicitly allowed" in work_skill
-    assert "Follow the lead's requested reply shape" in work_skill
+    assert policy.worker_reply_guidance_markdown() in work_skill
+    assert "{{" not in work_skill
     assert "fixed summary/changed/tests template" in work_skill
     assert "summary:" not in work_skill
     assert "changed/inspected:" not in work_skill

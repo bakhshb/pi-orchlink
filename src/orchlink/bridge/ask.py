@@ -1,19 +1,18 @@
 import asyncio
-import re
 import uuid
 from typing import Any
 
 import httpx
 
 from orchlink.broker.protocol import PROTOCOL_VERSION
+from orchlink.core.prompt_policy import TaskPromptPolicy
 from orchlink.project.config import broker_api_key, broker_url, resolve_agent_id, role_agent_id
 
 
-DEFAULT_EXPECTED_REPLY: list[str] = []
-
+TASK_PROMPT_POLICY = TaskPromptPolicy()
+DEFAULT_EXPECTED_REPLY: list[str] = TASK_PROMPT_POLICY.default_expected_reply()
 TALK_EXPECTED_REPLY: list[str] = []
-
-VALID_TASK_MODES = {"DISCUSS", "PLAN", "DO", "REVIEW"}
+VALID_TASK_MODES = set(TASK_PROMPT_POLICY.valid_task_modes)
 
 
 def summarize_chat_topic(message: str, limit: int = 120) -> str:
@@ -25,20 +24,7 @@ def summarize_chat_topic(message: str, limit: int = 120) -> str:
 
 
 def infer_task_mode(message: str, default: str = "PLAN") -> str:
-    match = re.search(r"(?im)^\s*MODE\s*:\s*(DISCUSS|PLAN|DO|REVIEW)\b", message)
-    if match:
-        return match.group(1).upper()
-
-    lowered = message.lower()
-    if re.search(r"\b(review|reviewing|reviewed|audit)\b", lowered) or re.search(r"\binspect\b.*\b(changes?|diff|patch|pr)\b", lowered):
-        return "REVIEW"
-    if re.search(r"\b(implement|add|fix|update|edit|change|remove|write|create)\b", lowered):
-        return "DO"
-    if re.search(r"\b(discuss|compare|decide|recommend|tradeoff|trade-off|opinion)\b", lowered):
-        return "DISCUSS"
-    if re.search(r"\b(plan|propose|approach)\b", lowered):
-        return "PLAN"
-    return default
+    return TASK_PROMPT_POLICY.infer_mode(message, default=default)
 
 
 def _base_envelope(config: dict[str, Any], to_agent: str, timeout_seconds: int) -> dict[str, Any]:
@@ -69,9 +55,7 @@ def build_task_envelope(
 ) -> dict[str, Any]:
     project_id = str(config.get("project_id") or "default")
     scope = config.get("scope") or {"allowed": ["**/*"], "forbidden": []}
-    selected_mode = (mode or infer_task_mode(message)).upper()
-    if selected_mode not in VALID_TASK_MODES:
-        selected_mode = "PLAN"
+    selected_mode = TASK_PROMPT_POLICY.normalize_mode(mode, message)
     envelope = _base_envelope(config, resolve_agent_id(config, worker), timeout_seconds)
     return {
         **envelope,
@@ -84,7 +68,7 @@ def build_task_envelope(
             "intent": message,
             "scope": scope,
             "constraints": [],
-            "expected_reply": DEFAULT_EXPECTED_REPLY,
+            "expected_reply": TASK_PROMPT_POLICY.default_expected_reply(),
         },
     }
 
@@ -118,13 +102,7 @@ def build_chat_envelope(
             "topic": summarize_chat_topic(message) if message_type == "CHAT_START" else "",
             "message": message,
             "transcript_preview": transcript_preview,
-            "constraints": [
-                "Reply conversationally.",
-                "Do not edit files.",
-                "Challenge weak assumptions.",
-                "Recommend a practical decision.",
-                "Do not read every file for a vague repo-opinion question; use high-signal files or ask before a broad scan.",
-            ],
+            "constraints": TASK_PROMPT_POLICY.talk_constraints(),
             "expected_reply": TALK_EXPECTED_REPLY,
         },
     }
