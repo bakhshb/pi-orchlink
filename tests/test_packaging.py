@@ -37,7 +37,7 @@ def test_adapter_skills_share_prompt_policy_text():
         assert policy.lead_task_prompt_guidance_markdown() in text
         assert policy.lead_reply_guidance_markdown() in text
         assert "references/review-gates.md" in text
-        assert "/orch compact-phase" in text
+        assert "Pi's native `/compact` command" in text
 
 
 def test_cli_imports_from_installable_package_and_exposes_required_commands():
@@ -97,10 +97,14 @@ def test_pi_extension_uses_valid_record_type():
     assert "waiting for Pi recovery" in ORCHLINK_PI_EXTENSION
     assert "ORCHLINK_ACTIVITY_HEARTBEAT_MS" in ORCHLINK_PI_EXTENSION
     assert "postCurrentActivity" in ORCHLINK_PI_EXTENSION
-    assert "pi.registerCommand(\"orch\"" in ORCHLINK_PI_EXTENSION
-    assert "compact-phase" in ORCHLINK_PI_EXTENSION
+    assert "pi.registerCommand(\"orch\"" not in ORCHLINK_PI_EXTENSION
+    assert "compact-phase" not in ORCHLINK_PI_EXTENSION
     assert "phaseCompactionInstructions" in ORCHLINK_PI_EXTENSION
     assert "ctx.compact" in ORCHLINK_PI_EXTENSION
+    assert "ORCHLINK_AUTO_COMPACT_PHASES" in ORCHLINK_PI_EXTENSION
+    assert "pendingReviewCompaction" in ORCHLINK_PI_EXTENSION
+    assert "looksLikeReviewReconciliation" in ORCHLINK_PI_EXTENSION
+    assert "Orchlink auto phase compaction started." in ORCHLINK_PI_EXTENSION
     assert "current goal ID" in ORCHLINK_PI_EXTENSION
     assert "pointers to durable .orch/ state files" in ORCHLINK_PI_EXTENSION
     assert "pi.on(\"tool_call\"" in ORCHLINK_PI_EXTENSION
@@ -130,12 +134,11 @@ def test_pi_extension_has_session_before_compact_hook_with_state_pointer_summary
     from orchlink.connector.pi_extension import ORCHLINK_PI_EXTENSION
 
     # The hook is registered and produces a custom Orchlink state-pointer summary
-    # only when a phase compaction has been requested by /orch compact-phase.
+    # for normal Pi compaction and auto review-phase compaction.
     assert 'pi.on("session_before_compact"' in ORCHLINK_PI_EXTENSION
     assert "orchlinkCompactionSummary" in ORCHLINK_PI_EXTENSION
-    assert "phaseCompactionRequested" in ORCHLINK_PI_EXTENSION
-    # When the flag is set, the hook returns a custom compaction object carrying
-    # the state-pointer summary instead of falling back to default compaction.
+    assert "normalizeCompactionInstructions" in ORCHLINK_PI_EXTENSION
+    assert "source: autoPhase ? \"auto-review\" : \"pi-compact\"" in ORCHLINK_PI_EXTENSION
     assert "compaction: {" in ORCHLINK_PI_EXTENSION
     assert "firstKeptEntryId" in ORCHLINK_PI_EXTENSION
     assert "## Orchlink state" in ORCHLINK_PI_EXTENSION

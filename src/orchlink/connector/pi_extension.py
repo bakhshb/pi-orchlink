@@ -209,8 +209,8 @@ function summarizeToolInput(toolName: string, input: any): string {
 }
 
 function phaseCompactionInstructions(note: string): string {
-  const phaseNote = note.trim() || "Phase reviewed and closed.";
-  return `This is an Orchlink phase boundary. Compact old context while preserving the state needed for the next phase.
+  const phaseNote = note.trim() || "Pi compaction requested.";
+  return `This is an Orchlink-aware compaction. Compact old context while preserving the state needed for the next phase.
 
 Preserve:
 - completed phase summary
@@ -227,6 +227,12 @@ Preserve:
 
 Phase note:
 ${phaseNote}`;
+}
+
+function normalizeCompactionInstructions(value: string): string {
+  const text = String(value || "").trim();
+  if (text.includes("Orchlink-aware compaction") || text.includes("Orchlink phase boundary")) return text;
+  return phaseCompactionInstructions(text || "Pi compaction requested.");
 }
 
 function orchlinkCompactionSummary(instructions: string, role: string, projectId: string, currentTask: OrchMessage | undefined): string {
@@ -254,6 +260,32 @@ ${instructions}
 3. If scope or blocker details are unclear, ask one specific unblock question.`;
 }
 
+function autoReviewCompactionEnabled(): boolean {
+  const value = env("ORCHLINK_AUTO_COMPACT_PHASES", "review").toLowerCase().trim();
+  return ["1", "true", "yes", "review", "reviews", "phase", "phases"].includes(value);
+}
+
+function isReviewResult(message: OrchMessage): boolean {
+  const payload = message.payload || {};
+  return String(payload.mode || "").toUpperCase() === "REVIEW" && !isChatRequest(message);
+}
+
+function looksLikeReviewReconciliation(output: string): boolean {
+  const text = String(output || "").trim();
+  if (!text) return false;
+  return /(^|\n)\s*(Review reconciled|Decision|Blocked)\s*:/i.test(text);
+}
+
+function autoCompactionNote(review: OrchMessage, output: string): string {
+  const taskId = review.task_id || "review";
+  const firstLine = String(output || "").split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) || "Review reconciled.";
+  return truncate(`Auto review phase compacted after ${taskId}. ${firstLine}`, 600);
+}
+
+function hasActiveStatus(value: any): boolean {
+  return ["PENDING", "QUEUED", "DELIVERED", "RUNNING", "IN_PROGRESS", "OPEN"].includes(String(value || "").toUpperCase());
+}
+
 export default function (pi: ExtensionAPI) {
   const role = env("ORCHLINK_PI_ROLE");
   const agentId = env("ORCHLINK_AGENT_ID");
@@ -271,41 +303,33 @@ export default function (pi: ExtensionAPI) {
   let activityUnsupported = false;
   let phaseCompactionRequested = false;
   let phaseCompactionCustomInstructions = "";
+  let pendingReviewCompaction: OrchMessage | undefined;
   const recoveryGraceMs = Math.max(1000, Number(env("ORCHLINK_RECOVERABLE_ERROR_GRACE_MS", "180000")) || 180000);
   const activityHeartbeatMs = Math.max(5000, Number(env("ORCHLINK_ACTIVITY_HEARTBEAT_MS", "15000")) || 15000);
 
-  pi.registerCommand("orch", {
-    description: "Orchlink helpers. Use: /orch compact-phase <phase summary>",
-    handler: async (args, ctx) => {
-      const text = String(args || "").trim();
-      const match = text.match(/^compact-phase\b\s*(.*)$/s);
-      if (!match) {
-        ctx.ui.notify("Usage: /orch compact-phase <reviewed phase summary>", "info");
-        return;
-      }
-      const note = match[1] || "";
-      phaseCompactionRequested = true;
-      phaseCompactionCustomInstructions = phaseCompactionInstructions(note);
-      ctx.compact({
-        customInstructions: phaseCompactionCustomInstructions,
-        onComplete: () => {
-          phaseCompactionRequested = false;
-          phaseCompactionCustomInstructions = "";
-          ctx.ui.notify("Orchlink phase compaction completed.", "info");
-        },
-        onError: (error: any) => {
-          phaseCompactionRequested = false;
-          phaseCompactionCustomInstructions = "";
-          ctx.ui.notify(`Orchlink phase compaction failed: ${error?.message || error}`, "error");
-        },
-      });
-      ctx.ui.notify("Orchlink phase compaction started.", "info");
-    },
-  });
+  function requestAutoPhaseCompaction(note: string, ctx: any) {
+    if (phaseCompactionRequested) return;
+    phaseCompactionRequested = true;
+    phaseCompactionCustomInstructions = phaseCompactionInstructions(note);
+    ctx.compact({
+      customInstructions: phaseCompactionCustomInstructions,
+      onComplete: () => {
+        phaseCompactionRequested = false;
+        phaseCompactionCustomInstructions = "";
+        ctx.ui.notify("Orchlink auto phase compaction completed.", "info");
+      },
+      onError: (error: any) => {
+        phaseCompactionRequested = false;
+        phaseCompactionCustomInstructions = "";
+        ctx.ui.notify(`Orchlink phase compaction failed: ${error?.message || error}`, "error");
+      },
+    });
+    ctx.ui.notify("Orchlink auto phase compaction started.", "info");
+  }
 
   pi.on("session_before_compact", async (event: any) => {
-    const instructions = String(event?.customInstructions || phaseCompactionCustomInstructions || "");
-    if (!phaseCompactionRequested) return;
+    const autoPhase = phaseCompactionRequested;
+    const instructions = normalizeCompactionInstructions(String(event?.customInstructions || phaseCompactionCustomInstructions || ""));
     phaseCompactionRequested = false;
     phaseCompactionCustomInstructions = "";
     const preparation = event?.preparation || {};
@@ -317,6 +341,7 @@ export default function (pi: ExtensionAPI) {
         tokensBefore: preparation.tokensBefore || 0,
         details: {
           orchlink: true,
+          source: autoPhase ? "auto-review" : "pi-compact",
           projectId,
           role,
           taskId: currentTask?.task_id || null,
@@ -457,6 +482,12 @@ export default function (pi: ExtensionAPI) {
     return String(conversation?.status || "").toUpperCase();
   }
 
+  async function projectHasActiveWork(): Promise<boolean> {
+    const projectQuery = `project_id=${encodeURIComponent(String(projectId || "default"))}`;
+    const body = await getJson(`/v1/jobs?limit=500&${projectQuery}`);
+    return (body.jobs || []).some((job: any) => hasActiveStatus(job.status || job.wire_status));
+  }
+
   async function checkCurrentTaskCancellation(ctx?: any): Promise<boolean> {
     if (stopped || !currentTask || cancelNoticeSent) return false;
     const status = await currentWorkStatus(currentTask);
@@ -501,6 +532,10 @@ export default function (pi: ExtensionAPI) {
             throw error;
           }
         } else {
+          if (autoReviewCompactionEnabled() && isReviewResult(message)) {
+            (message as any)._orchlinkReceivedAt = Date.now();
+            pendingReviewCompaction = message;
+          }
           pi.sendUserMessage(renderLeadPrompt(message), { deliverAs: "steer" });
         }
       }
@@ -562,6 +597,30 @@ export default function (pi: ExtensionAPI) {
       tool_name: toolName,
     });
     void checkCurrentTaskCancellation(ctx).catch((error) => console.error(`[orchlink] cancel check failed: ${error?.message || error}`));
+  });
+
+  pi.on("message_end", async (event, ctx) => {
+    if (role !== "lead" || !pendingReviewCompaction) return;
+    if (event.message.role !== "assistant") return;
+    if ((event.message as any).stopReason === "toolUse") return;
+    const receivedAt = Number((pendingReviewCompaction as any)._orchlinkReceivedAt || Date.now());
+    if (Date.now() - receivedAt > 30 * 60 * 1000) {
+      pendingReviewCompaction = undefined;
+      return;
+    }
+    const output = messageText(event.message);
+    if (!looksLikeReviewReconciliation(output)) return;
+    const review = pendingReviewCompaction;
+    pendingReviewCompaction = undefined;
+    try {
+      if (await projectHasActiveWork()) {
+        ctx.ui.notify("Orchlink skipped auto compaction because project work is still active.", "info");
+        return;
+      }
+      requestAutoPhaseCompaction(autoCompactionNote(review, output), ctx);
+    } catch (error: any) {
+      ctx.ui.notify(`Orchlink auto compaction skipped: ${error?.message || error}`, "error");
+    }
   });
 
   pi.on("message_end", async (event, ctx) => {

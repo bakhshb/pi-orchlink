@@ -26,11 +26,15 @@ If the answer is risky, blocked, or unclear, ask a follow-up or use Talk Mode.
 
 ## Phase compaction after review
 
-After a full review is reconciled and you have stated the decision/next step, compact the phase when running inside Pi:
+After a full review is reconciled and you have stated the decision/next step, close the phase with a clear marker:
 
 ```text
-/orch compact-phase "Review reconciled: <decision>. Tests: <summary>. Next: <next step>."
+Review reconciled: <decision>. Tests: <summary>. Next: <next step>.
 ```
+
+In a Pi lead session, Orchlink auto-compacts after a delivered review when the next assistant response contains `Review reconciled:`, `Decision:`, or `Blocked:` and no project work is still active. You can disable this with `ORCHLINK_AUTO_COMPACT_PHASES=off`.
+
+For manual compaction, use Pi's native `/compact` command. Orchlink's `session_before_compact` hook makes normal Pi compaction preserve Orchlink state pointers, current task/goal context, and durable `.orch/` paths.
 
 Do this after the conclusion, not before.
 

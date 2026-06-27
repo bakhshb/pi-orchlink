@@ -1,6 +1,6 @@
 # Orchlink full manual smoke test
 
-Use this plan when validating a real visible lead/work Pi pair before a release or after changing coordination behavior. It is intentionally broader than a quick smoke: it exercises every documented `orch` command surface, the main broker/session/storage paths, and the real Pi handoff paths that unit tests cannot prove.
+Use this plan when validating a real visible lead/work Pi pair before a release or after changing coordination behavior. It is intentionally broader than a quick smoke: it exercises every documented `orch` command surface, Goal Mode, generated skill references, compaction hooks, the main broker/session/storage paths, and the real Pi handoff paths that unit tests cannot prove.
 
 This is still not a mathematical proof of every timing race. Treat the full validation as:
 
@@ -36,7 +36,7 @@ orch broker run --help
 
 for cmd in \
   init lead work ask send task talk say close jobs sessions idle peek get wait \
-  cancel update watch stop status doctor; do
+  cancel update watch stop status doctor goal; do
   orch "$cmd" --help >/tmp/orch-help-$cmd.txt || exit 1
 done
 ```
@@ -47,6 +47,7 @@ Pass criteria:
 - Help text distinguishes human commands from debug/agent coordination commands where relevant.
 - `orch wait --help` documents `--timeout`, `--progress/--no-progress`, and `--poll-seconds`.
 - `orch jobs --help` documents `--active`, `--status`, `--kind`, `--id`, and `--json`.
+- `orch goal --help` lists `start`, `derive`, `review`, `gate`, `work`, `show`, `audit`, `signoff`, `trial`, and `trials`.
 
 ## 2. Create a throwaway project
 
@@ -76,9 +77,10 @@ orch doctor
 
 Pass criteria:
 
-- `.orch/project.yaml`, `.orch/skills/lead.md`, and `.orch/skills/work.md` exist.
+- `.orch/project.yaml`, `.orch/skills/lead.md`, `.orch/skills/work.md`, and `.orch/skills/references/*.md` exist.
 - `orch doctor` reports the project config and generated skills.
-- Broker compatibility is current. Expected health includes version `0.4.3` or newer and capabilities including:
+- `orch doctor` reports `lead.md: current`, `work.md: current`, `references/: current`, and `Project .orch files: current`.
+- Broker compatibility is current. Expected health includes version `0.5.0` or newer and capabilities including:
 
 ```text
 project_header_scope
@@ -92,6 +94,7 @@ Also verify skill refresh paths:
 
 ```bash
 printf 'stale\n' > .orch/skills/lead.md
+printf 'stale\n' > .orch/skills/references/goal-mode.md
 orch doctor
 orch init --refresh-skills
 orch doctor
@@ -101,8 +104,8 @@ orch doctor
 
 Pass criteria:
 
-- `doctor` detects the stale skill.
-- `init --refresh-skills` repairs skills without changing the project identity.
+- `doctor` detects stale generated skills or references.
+- `init --refresh-skills` repairs skills and references without changing the project identity.
 - `init --force --project-id smoke-full` completes cleanly.
 
 ## 3. Update/install lifecycle
@@ -171,10 +174,11 @@ Pass criteria:
 
 Goal: prove real lead/work sessions register with the broker and stale skills auto-refresh when sessions start.
 
-Before starting sessions, deliberately stale one generated skill:
+Before starting sessions, deliberately stale one generated skill and one generated reference:
 
 ```bash
 printf 'stale\n' > .orch/skills/work.md
+printf 'stale\n' > .orch/skills/references/review-gates.md
 ```
 
 Terminal A:
@@ -204,7 +208,7 @@ orch doctor
 Pass criteria:
 
 - Lead and worker visible Pi sessions start.
-- Starting `lead` or `work` refreshes stale/missing generated skills.
+- Starting `lead` or `work` refreshes stale/missing generated skills and references.
 - `orch sessions` shows active lead/work registrations for `smoke-full`.
 - `orch sessions --all` includes released history if any exists.
 - `orch sessions --json` is machine-readable.
@@ -216,14 +220,14 @@ Goal: prove `ask`, `send`, `wait`, `get`, progress polling, and exact task IDs.
 Blocking ask:
 
 ```bash
-orch ask work --wait -t TASK-BLOCKING-001 -m "MODE: PLAN. TASK_ID: TASK-BLOCKING-001. Current context: smoke test. Exact scope: inspect no files. Forbidden scope: do not edit. Permission: inspect only. Tests/checks: none. Desired reply shape: RESULT in one sentence. I will wait."
+orch ask work --wait -t TASK-BLOCKING-001 -m "Smoke test only. Inspect no files and make no edits. Reply in one sentence confirming you received TASK-BLOCKING-001."
 orch get TASK-BLOCKING-001
 ```
 
 Async send and wait:
 
 ```bash
-orch send work -t TASK-ASYNC-001 -m "MODE: PLAN. TASK_ID: TASK-ASYNC-001. Current context: smoke test. Exact scope: inspect no files. Forbidden scope: do not edit. Permission: inspect only. Tests/checks: none. Desired reply shape: RESULT after a short acknowledgement. I will wait by exact task ID."
+orch send work -t TASK-ASYNC-001 -m "Smoke test only. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-ASYNC-001."
 orch jobs --id TASK-ASYNC-001
 orch wait TASK-ASYNC-001 --timeout 300 --poll-seconds 1
 orch get TASK-ASYNC-001
@@ -232,14 +236,14 @@ orch get TASK-ASYNC-001
 Ask without waiting:
 
 ```bash
-orch ask work --no-wait -t TASK-ASK-NOWAIT-001 -m "MODE: PLAN. TASK_ID: TASK-ASK-NOWAIT-001. Current context: smoke test for ask --no-wait. Exact scope: inspect no files. Forbidden scope: do not edit. Permission: inspect only. Tests/checks: none. Desired reply shape: RESULT. I will wait later."
+orch ask work --no-wait -t TASK-ASK-NOWAIT-001 -m "Smoke test for ask --no-wait. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-ASK-NOWAIT-001."
 orch wait TASK-ASK-NOWAIT-001 --timeout 300 --no-progress
 ```
 
 Wait timeout does not cancel:
 
 ```bash
-orch send work -t TASK-WAIT-TIMEOUT-001 -m "MODE: DO. TASK_ID: TASK-WAIT-TIMEOUT-001. Current context: smoke test. Exact scope: wait 10 seconds, then reply RESULT. Forbidden scope: do not edit. Permission: no edits. Tests/checks: none. Desired reply shape: RESULT."
+orch send work -t TASK-WAIT-TIMEOUT-001 -m "Smoke test wait timeout. Do not edit files. Wait about 10 seconds, then reply that TASK-WAIT-TIMEOUT-001 completed."
 orch wait TASK-WAIT-TIMEOUT-001 --timeout 2 --poll-seconds 1
 orch jobs --active
 orch wait TASK-WAIT-TIMEOUT-001 --timeout 60
@@ -251,7 +255,7 @@ Missing-result and failed-result display:
 orch get TASK-DOES-NOT-EXIST || true
 orch wait TASK-DOES-NOT-EXIST --timeout 1 --no-progress || true
 
-orch ask work --wait -t TASK-FAILED-STDERR-001 -m "MODE: DO. TASK_ID: TASK-FAILED-STDERR-001. Current context: failed-result display smoke. Exact scope: run python3 -c 'import sys; sys.stderr.write(\"smoke-stderr\\n\"); sys.exit(3)' and report the command failure. Forbidden scope: do not edit. Permission: command only. Tests/checks: the failing command itself. Desired reply shape: FAILED with stderr included if your harness exposes it. I will wait."
+orch ask work --wait -t TASK-FAILED-STDERR-001 -m "Smoke test failed-result display. Do not edit files. Run python3 -c 'import sys; sys.stderr.write(\"smoke-stderr\\n\"); sys.exit(3)' and report the command failure, including stderr if your harness exposes it."
 orch get TASK-FAILED-STDERR-001 || true
 ```
 
@@ -273,26 +277,26 @@ Goal: prove unclear work is blocked and review defaults are safe.
 BLOCKER path:
 
 ```bash
-orch ask work --wait -t TASK-BLOCKER-001 -m "MODE: DO. TASK_ID: TASK-BLOCKER-001. Improve the parser broadly. No specific files, behavior, or acceptance criteria are provided. Return BLOCKER if this is too unclear."
+orch ask work --wait -t TASK-BLOCKER-001 -m "Improve the parser broadly. I am not giving specific files, behavior, or acceptance criteria. Return BLOCKER if this is too unclear to scope safely."
 ```
 
 Review rejection through async send:
 
 ```bash
-orch send work -t TASK-REVIEW-REJECT-001 -m "MODE: REVIEW. TASK_ID: TASK-REVIEW-REJECT-001. Review the previous change. Do not edit."
+orch send work -t TASK-REVIEW-REJECT-001 -m "Please review the previous change. Do not edit."
 ```
 
 Explicit async review, only for non-gating checks:
 
 ```bash
-orch send work --allow-async-review -t TASK-REVIEW-ASYNC-001 -m "MODE: REVIEW. TASK_ID: TASK-REVIEW-ASYNC-001. Current context: smoke test. Exact scope: inspect no files. Forbidden scope: do not edit. Permission: inspect only. Tests/checks: none. Desired reply shape: RESULT with no findings. This review is not a gate."
+orch send work --allow-async-review -t TASK-REVIEW-ASYNC-001 -m "Non-gating smoke review. Inspect no files and make no edits. Reply with no findings for TASK-REVIEW-ASYNC-001."
 orch wait TASK-REVIEW-ASYNC-001 --timeout 300
 ```
 
 Blocking review gate:
 
 ```bash
-orch ask work --wait -t TASK-REVIEW-GATE-001 -m "MODE: REVIEW. TASK_ID: TASK-REVIEW-GATE-001. Current context: smoke test. Exact scope: review only orch_task.py and tests/test_orch_task.py. Forbidden scope: do not edit. Permission: inspect only. Tests/checks: none. Desired reply shape: RESULT with verdict, risks, files inspected, and whether lead can proceed. I will wait."
+orch ask work --wait -t TASK-REVIEW-GATE-001 -m "Please review only orch_task.py and tests/test_orch_task.py. Do not edit. Return verdict, risks, files inspected, and whether I can proceed."
 ```
 
 Pass criteria:
@@ -307,7 +311,7 @@ Pass criteria:
 Goal: prove worker can make a scoped edit and report verification.
 
 ```bash
-orch send work -t TASK-EDIT-001 -m "MODE: DO. TASK_ID: TASK-EDIT-001. Current context: throwaway parser project. Exact scope: add one tiny parser behavior and one focused test. Only edit orch_task.py and tests/test_orch_task.py. Forbidden scope: do not edit .orch, docs, install files, or unrelated tests. Permission: implementation allowed only in the two allowed files. Tests/checks: run python3 -m pytest tests/test_orch_task.py -v. Desired reply shape: RESULT with files changed, tests run, and remaining risks. I will inspect status while you work."
+orch send work -t TASK-EDIT-001 -m "In this throwaway parser project, add one tiny parser behavior and one focused test. Edit only orch_task.py and tests/test_orch_task.py. Do not edit .orch, docs, install files, or unrelated tests. Run python3 -m pytest tests/test_orch_task.py -v. Return files changed, tests run, and remaining risks."
 orch jobs --active
 orch jobs --id TASK-EDIT-001
 orch task TASK-EDIT-001
@@ -319,7 +323,7 @@ python3 -m pytest tests/test_orch_task.py -v
 Then gate the change:
 
 ```bash
-orch ask work --wait -t TASK-EDIT-REVIEW-001 -m "MODE: REVIEW. TASK_ID: TASK-EDIT-REVIEW-001. Current context: review TASK-EDIT-001. Exact scope: review only orch_task.py and tests/test_orch_task.py. Forbidden scope: do not edit. Permission: inspect only. Tests/checks: you may run python3 -m pytest tests/test_orch_task.py -v. Desired reply shape: RESULT with findings, risks, files inspected, tests run, and whether lead can proceed. I will wait."
+orch ask work --wait -t TASK-EDIT-REVIEW-001 -m "Please review TASK-EDIT-001. Inspect only orch_task.py and tests/test_orch_task.py. Do not edit. You may run python3 -m pytest tests/test_orch_task.py -v. Return findings, risks, files inspected, tests run, and whether I can proceed."
 ```
 
 Pass criteria:
@@ -329,6 +333,201 @@ Pass criteria:
 - `orch task` reports route/status/activity while the task exists.
 - `peek` reports activity if activity was recorded; no activity is acceptable for very short tasks.
 - Review result arrives before the lead treats the edit as accepted.
+
+## 8A. Goal Mode: goal loop to verified done
+
+Goal: prove a real goal can move from source artifact to approved acceptance criteria, worker execution, objective check evidence, and `done` status. This is the key smoke for the loop-engineering promise: set a goal, work until acceptance criteria prove it is done.
+
+Create a small goal source and deterministic check:
+
+```bash
+cat > goal-prd.md <<'MD'
+# Parser goal
+
+Implement support for --name=value flags in the teaching parser.
+
+Acceptance:
+- parse_flags(['--mode=fast']) returns {'mode': 'fast'}.
+- Existing boolean flag behavior keeps working.
+MD
+
+cat > check_goal.py <<'PY'
+from orch_task import parse_flags
+
+assert parse_flags(['--mode=fast']) == {'mode': 'fast'}
+assert parse_flags(['--verbose']) == {'verbose': True}
+PY
+
+orch goal start "Support equals flags" --prd goal-prd.md
+```
+
+Write concrete artifacts for the smoke goal. This avoids relying on LLM-derived AC wording for the required path while still exercising the real goal runner:
+
+````bash
+cat > .orch/goals/G001/acceptance.md <<'MD'
+# Acceptance
+
+```yaml
+acceptance:
+  - id: AC-1
+    text: --name=value flags return the value string while existing boolean flags still work
+    type: objective
+    priority: core
+    depends_on: []
+    check: python3 check_goal.py
+    source: goal-prd.md
+    confidence: high
+    status: pending
+```
+MD
+
+cat > .orch/goals/G001/plan.md <<'MD'
+# Plan
+
+1. Update `parse_flags` in `orch_task.py` to split `--name=value` arguments.
+2. Preserve existing boolean flag behavior.
+3. Run `python3 check_goal.py` and `python3 -m pytest tests/test_orch_task.py -v`.
+MD
+
+cat > .orch/goals/G001/coverage.md <<'MD'
+# Coverage
+
+- Source requirement `--name=value` -> AC-1 -> plan step 1 -> `python3 check_goal.py`.
+- Source requirement existing boolean behavior -> AC-1 -> plan step 2 -> `python3 check_goal.py`.
+- Uncovered: none.
+MD
+````
+
+Review, approve, and run the goal loop:
+
+```bash
+orch goal review G001
+orch goal gate G001 approve
+orch goal work G001 --until done --max-steps 3 --timeout 600
+orch goal show G001
+python3 check_goal.py
+python3 -m pytest tests/test_orch_task.py -v
+```
+
+Record trial metadata and audit evidence:
+
+```bash
+orch goal trial G001 --baseline 4 --outcome done --caught-gap AC-1 --deferrals 0 --evidence-quality good --note "manual smoke goal loop"
+orch goal trials G001
+orch goal audit G001 --timeout 600
+orch goal show G001
+```
+
+Subjective signoff path, using a separate goal:
+
+````bash
+orch goal start "Subjective docs signoff" --text "Confirm the README wording is clear enough for a human."
+cat > .orch/goals/G002/acceptance.md <<'MD'
+# Acceptance
+
+```yaml
+acceptance:
+  - id: AC-1
+    text: Human agrees the wording is clear enough for this smoke test
+    type: subjective
+    priority: core
+    depends_on: []
+    check: ""
+    source: inline
+    confidence: high
+    status: pending
+```
+MD
+cat > .orch/goals/G002/plan.md <<'MD'
+# Plan
+
+1. Ask for human signoff.
+MD
+orch goal gate G002 approve
+orch goal work G002 --until done --max-steps 1
+orch goal signoff G002 AC-1 --note "manual smoke signoff"
+orch goal show G002
+````
+
+Pass criteria:
+
+- `orch goal start` creates `.orch/goals/G001/{source.md,acceptance.md,plan.md,goal.yaml,history.jsonl}`.
+- `orch goal review` shows source, AC, plan, coverage, and no uncovered warning.
+- `orch goal gate G001 approve` moves the goal to ready.
+- `orch goal work G001 --until done` dispatches a worker task, verifies `python3 check_goal.py`, records evidence, and marks the goal `done`.
+- Worker edits only `orch_task.py` and/or `tests/test_orch_task.py` for the goal task.
+- `orch goal show G001` shows evidence for AC-1.
+- `trial`/`trials` records and lists the real smoke trial.
+- `audit` writes `.orch/goals/G001/audit.md` and does not change a done goal into a false state.
+- Subjective goal pauses for signoff, then `signoff` marks it done.
+
+Extended derivation path, required when derivation prompts/parsing changed:
+
+```bash
+orch goal start "Derived smoke goal" --prd goal-prd.md --derive --timeout 600
+orch goal review G003
+```
+
+Pass criteria for derivation:
+
+- Worker derivation writes non-vague `acceptance.md`, `plan.md`, and optional `coverage.md`.
+- The artifacts mention concrete `--name=value` behavior, not generic "work on everything" language.
+- If artifacts are vague, reject the gate and record the failure.
+
+## 8B. Compaction: native Pi compact and auto phase compact
+
+Goal: prove there is no separate Orchlink manual compact command, normal Pi `/compact` preserves Orchlink state, and auto-compaction runs only after the lead reconciles a review/phase boundary.
+
+Manual native Pi compaction:
+
+1. In the visible lead Pi chat, run:
+
+   ```text
+   /compact manual smoke compact; preserve current project, task IDs, goal IDs, and next step
+   ```
+
+2. After compaction completes, ask lead a simple state question in the Pi chat:
+
+   ```text
+   What Orchlink project are we in, and what was the latest goal ID used in the smoke test? Answer from compacted context or durable .orch files.
+   ```
+
+Pass criteria:
+
+- Pi's native `/compact` runs without using any Orchlink-specific compact command.
+- The post-compact lead response can recover the project and goal context, either from the compaction summary or by reading `.orch/goals/`.
+- No docs or skills tell the user to run an Orchlink-specific compact command.
+
+Auto review-phase compaction:
+
+```bash
+orch ask work --wait -t TASK-AUTO-COMPACT-001 -m "Please review only orch_task.py and tests/test_orch_task.py for the smoke compaction drill. Do not edit. You may run python3 -m pytest tests/test_orch_task.py -v. Return verdict, risks, files inspected, and tests run."
+orch idle
+```
+
+After the review result appears in the visible lead Pi chat, prompt lead in that same chat:
+
+```text
+Reconcile the review in one short response. Start exactly with: Review reconciled:
+Include decision, tests, and next step. Do not run tools.
+```
+
+Pass criteria:
+
+- The lead response starts with `Review reconciled:`.
+- Orchlink starts auto phase compaction after that response.
+- The Pi UI shows an `Orchlink auto phase compaction started` or completed notification.
+- Auto-compaction does not trigger before the lead reconciliation response.
+- Auto-compaction does not trigger if `orch idle` reports active work.
+
+Disable-path check, extended unless compaction changed:
+
+```bash
+# Restart the lead Pi session with auto review compaction disabled.
+ORCHLINK_AUTO_COMPACT_PHASES=off orch lead --new
+```
+
+Repeat the review/reconcile drill. Pass criteria: no auto compaction starts while `ORCHLINK_AUTO_COMPACT_PHASES=off`; native `/compact` still works.
 
 ## 9. Talk Mode follow-up, disagreement, max-turn discipline, and close
 
@@ -400,7 +599,7 @@ orch idle
 Active-work drill:
 
 ```bash
-orch send work -t TASK-IDLE-ACTIVE-001 -m "MODE: DO. TASK_ID: TASK-IDLE-ACTIVE-001. Current context: idle drill. Exact scope: wait 15 seconds, then reply RESULT. Forbidden scope: do not edit. Permission: no edits. Tests/checks: none. Desired reply shape: RESULT."
+orch send work -t TASK-IDLE-ACTIVE-001 -m "Idle drill. Do not edit files. Wait about 15 seconds, then reply that TASK-IDLE-ACTIVE-001 completed."
 orch idle || true
 orch jobs --active
 orch wait TASK-IDLE-ACTIVE-001 --timeout 60
@@ -410,16 +609,16 @@ orch idle
 Extended worker-lane locking and hard-timeout drills:
 
 ```bash
-orch send work -t TASK-LANE-LOCK-001 -m "MODE: DO. TASK_ID: TASK-LANE-LOCK-001. Current context: worker lane locking drill. Exact scope: wait 20 seconds, then reply RESULT. Forbidden scope: do not edit. Permission: no edits. Tests/checks: none. Desired reply shape: RESULT."
-orch send work -t TASK-LANE-LOCK-002 -m "MODE: PLAN. TASK_ID: TASK-LANE-LOCK-002. This should be rejected while TASK-LANE-LOCK-001 owns the worker lane." || true
+orch send work -t TASK-LANE-LOCK-001 -m "Worker lane locking drill. Do not edit files. Wait about 20 seconds, then reply that TASK-LANE-LOCK-001 completed."
+orch send work -t TASK-LANE-LOCK-002 -m "This should be rejected while TASK-LANE-LOCK-001 owns the worker lane." || true
 orch wait TASK-LANE-LOCK-001 --timeout 60
 
 orch talk work -m "Keep this talk open until I close it; I will verify open Talk blocks new worker tasks." -r 3
 # Replace C004 with the printed conversation ID.
-orch send work -t TASK-TALK-BLOCKED-001 -m "MODE: PLAN. TASK_ID: TASK-TALK-BLOCKED-001. This should be rejected while Talk is open." || true
+orch send work -t TASK-TALK-BLOCKED-001 -m "This should be rejected while Talk is open." || true
 orch close C004 -m "Decision: open Talk blocks worker tasks. Rationale: single-flight lane. Dissent/risk accepted: none. Next step: continue smoke. Owner: lead. Human approval needed: no"
 
-orch send work --timeout 2 -t TASK-HARD-TIMEOUT-001 -m "MODE: DO. TASK_ID: TASK-HARD-TIMEOUT-001. Current context: hard timeout drill. Exact scope: wait 30 seconds, then reply RESULT. Forbidden scope: do not edit. Permission: no edits. Tests/checks: none. Desired reply shape: RESULT."
+orch send work --timeout 2 -t TASK-HARD-TIMEOUT-001 -m "Hard timeout drill. Do not edit files. Wait about 30 seconds, then reply that TASK-HARD-TIMEOUT-001 completed."
 sleep 5
 orch jobs --id TASK-HARD-TIMEOUT-001
 orch idle
@@ -444,7 +643,7 @@ Goal: document the real cancellation boundary without claiming stronger interrup
 Task cancellation:
 
 ```bash
-orch send work -t TASK-CANCEL-001 -m "MODE: DO. TASK_ID: TASK-CANCEL-001. Current context: cancellation drill. Exact scope: wait 30 seconds, then reply RESULT. Forbidden scope: do not edit. Permission: no edits. Tests/checks: none. Desired reply shape: RESULT."
+orch send work -t TASK-CANCEL-001 -m "Cancellation drill. Do not edit files. Wait about 30 seconds, then reply that TASK-CANCEL-001 completed."
 orch jobs --active
 orch cancel TASK-CANCEL-001 -m "manual cancellation drill"
 orch jobs --id TASK-CANCEL-001
@@ -454,7 +653,7 @@ orch idle
 Shell-command cancellation, if you want to measure tool-abort behavior:
 
 ```bash
-orch send work -t TASK-CANCEL-SHELL-001 -m "MODE: DO. TASK_ID: TASK-CANCEL-SHELL-001. Current context: shell cancellation drill. Exact scope: run python3 -c 'import time; time.sleep(30)' and then reply RESULT. Forbidden scope: do not edit. Permission: command only. Tests/checks: none. Desired reply shape: RESULT."
+orch send work -t TASK-CANCEL-SHELL-001 -m "Shell cancellation drill. Do not edit files. Run python3 -c 'import time; time.sleep(30)' and then reply that TASK-CANCEL-SHELL-001 completed."
 orch peek TASK-CANCEL-SHELL-001
 orch cancel TASK-CANCEL-SHELL-001 -m "manual shell cancellation drill"
 orch jobs --id TASK-CANCEL-SHELL-001
@@ -556,7 +755,7 @@ In another terminal, with lead/work sessions attached to this broker:
 
 ```bash
 cd "$ORCH_SMOKE_ROOT"
-orch ask work --wait -t TASK-JSONL-001 -m "MODE: PLAN. TASK_ID: TASK-JSONL-001. Current context: jsonl smoke. Exact scope: inspect no files. Forbidden scope: do not edit. Permission: inspect only. Tests/checks: none. Desired reply shape: RESULT. I will restart the broker after this."
+orch ask work --wait -t TASK-JSONL-001 -m "JSONL smoke. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-JSONL-001. I will restart the broker after this."
 orch get TASK-JSONL-001
 ```
 
@@ -623,10 +822,10 @@ In another terminal, before starting `orch work`:
 
 ```bash
 cd "$ORCH_SMOKE_ROOT"
-orch ask work --wait -t TASK-PEER-OFFLINE-001 -m "MODE: PLAN. TASK_ID: TASK-PEER-OFFLINE-001. This should be rejected because the worker session is offline." || true
+orch ask work --wait -t TASK-PEER-OFFLINE-001 -m "This should be rejected because the worker session is offline." || true
 orch work --new
 # In a third terminal after the worker registers:
-orch ask work --wait -t TASK-PEER-ONLINE-001 -m "MODE: PLAN. TASK_ID: TASK-PEER-ONLINE-001. Current context: peer-online smoke. Exact scope: inspect no files. Forbidden scope: do not edit. Permission: inspect only. Tests/checks: none. Desired reply shape: RESULT. I will wait."
+orch ask work --wait -t TASK-PEER-ONLINE-001 -m "Peer-online smoke. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-PEER-ONLINE-001."
 ```
 
 Pass criteria:
@@ -668,7 +867,7 @@ Pass criteria:
 | Package import/compile | Section 0 | Required |
 | Unit-level protocol/storage/broker/CLI edge cases | Section 0 | Required |
 | Command registration/help | Section 1 | Required |
-| `init`, `doctor`, skill refresh | Section 2 | Required |
+| `init`, `doctor`, skill/reference refresh | Section 2 | Required |
 | `update`, installer | Section 3 | Extended unless update/install changed |
 | `broker run`, health, auth, `stop` | Sections 4, 15 | Required; foreground flag drill extended |
 | `lead`, `work`, sessions, reopen without `--new` | Sections 5, 15 | Required |
@@ -676,6 +875,8 @@ Pass criteria:
 | Missing/failed result display | Section 6 | Required for CLI display changes |
 | REVIEW gate safety | Section 7 | Required |
 | Worker edits and tests | Section 8 | Required |
+| Goal Mode source, gate, work loop, evidence, audit, trial, signoff | Section 8A | Required for Goal Mode releases |
+| Native Pi compaction and auto review-phase compaction | Section 8B | Required for compaction/extension changes |
 | `talk`, `say`, `close`, closed/missing/max-turn errors | Section 9 | Required |
 | `jobs`, `idle`, worker-lane locks, hard timeout | Section 10 | Core required; lock/timeout drills extended |
 | `cancel` | Section 11 | Required; shell abort timing extended |
