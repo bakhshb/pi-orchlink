@@ -1,8 +1,10 @@
 # Pi Orchlink
 
-Pi Orchlink helps local coding agents turn specs, plans, and big ideas into verified work.
+Loop engineering for local Pi coding agents.
 
-You run a visible **lead** agent and a visible **work** agent. Lead breaks down the task, asks work to implement or review scoped slices, tracks acceptance criteria, records evidence, and avoids the classic agent failure mode: saying “done” while requirements are still missing.
+Set a goal. Orchlink keeps a **lead Pi** and **work Pi** moving through scoped tasks until the acceptance criteria prove the work is done.
+
+Pi Orchlink turns two visible Pi sessions into a local goal loop. You give lead a PRD, implementation plan, or plain-English goal. Lead derives acceptance criteria, prompts work for the next slice, checks the evidence, and continues until the goal is done, blocked, or needs your signoff.
 
 No tmux. No Redis. No dashboard. No hosted workflow engine. Just two Pi sessions, a small local broker, and durable project files.
 
@@ -18,21 +20,21 @@ This GIF shows the full demo at 1.5x speed.
 
 ![Pi Orchlink demo](media-demo.gif)
 
-## Stop accepting “done” without proof
+## A Pi-to-Pi goal loop
 
-Coding agents can make fast progress. Larger tasks fail when the agent loses the original spec, skips an acceptance criterion, or summarizes one completed slice as if the whole job finished.
+Most agent workflows stop at one prompt. Larger work needs a loop: remember the goal, choose the next slice, verify it, then continue.
 
-Pi Orchlink gives the lead agent a durable completion loop:
+Pi Orchlink gives two local Pi agents that loop:
 
 1. Capture the source: a PRD, implementation plan, or short goal.
-2. Derive concrete acceptance criteria.
+2. Turn it into concrete acceptance criteria.
 3. Review the plan before work starts.
-4. Dispatch bounded implementation slices to the worker.
+4. Send the next bounded slice to the worker.
 5. Run checks and record evidence.
-6. Stop for human signoff when judgment is required.
-7. Mark the work done only when the criteria are verified.
+6. Repeat until the criteria pass.
+7. Stop for human signoff when judgment is required.
 
-That makes Orchlink useful for real multi-step development work, not just one-off agent chat.
+The result is not “the agent said it finished.” The result is a goal with criteria, checks, evidence, blockers, and history.
 
 ## What you need to know
 
