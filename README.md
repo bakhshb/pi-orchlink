@@ -1,15 +1,10 @@
 # Pi Orchlink
 
-Pi Orchlink lets two local coding agents talk, debate, and review each other inside your terminal — no tmux, Redis, database, or dashboard required.
+Pi Orchlink helps local coding agents turn specs, plans, and big ideas into verified work.
 
-You run two visible Pi sessions:
+You run a visible **lead** agent and a visible **work** agent. Lead breaks down the task, asks work to implement or review scoped slices, tracks acceptance criteria, records evidence, and avoids the classic agent failure mode: saying “done” while requirements are still missing.
 
-```text
-Terminal 1: lead
-Terminal 2: work
-```
-
-You talk to **lead**. Lead can ask **work** for help. Work replies back into the lead chat.
+No tmux. No Redis. No dashboard. No hosted workflow engine. Just two Pi sessions, a small local broker, and durable project files.
 
 Think of it like this:
 
@@ -23,11 +18,27 @@ This GIF shows the full demo at 1.5x speed.
 
 ![Pi Orchlink demo](media-demo.gif)
 
+## Stop accepting “done” without proof
+
+Coding agents can make fast progress. Larger tasks fail when the agent loses the original spec, skips an acceptance criterion, or summarizes one completed slice as if the whole job finished.
+
+Pi Orchlink gives the lead agent a durable completion loop:
+
+1. Capture the source: a PRD, implementation plan, or short goal.
+2. Derive concrete acceptance criteria.
+3. Review the plan before work starts.
+4. Dispatch bounded implementation slices to the worker.
+5. Run checks and record evidence.
+6. Stop for human signoff when judgment is required.
+7. Mark the work done only when the criteria are verified.
+
+That makes Orchlink useful for real multi-step development work, not just one-off agent chat.
+
 ## What you need to know
 
 Most of the time, you only type in the lead Pi chat.
 
-The lead agent knows how to use Orchlink commands. It can ask work to inspect code, review changes, discuss a decision, or do a small scoped task.
+The lead agent knows how to use Orchlink commands. It can turn a spec into tracked work, ask the worker to inspect code, review changes, discuss a decision, or handle a scoped implementation slice.
 
 You only need a few human-facing shell commands:
 
@@ -35,6 +46,7 @@ You only need a few human-facing shell commands:
 orch init      # set up this project
 orch lead      # open the lead Pi session
 orch work      # open the worker Pi session
+orch goal      # run spec/plan work until criteria are verified
 orch doctor    # check setup
 orch sessions  # see active lead/work Pi sessions
 orch jobs      # see recent/current work
