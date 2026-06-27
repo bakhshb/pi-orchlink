@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orchlink"
-version = "0.4.4"
+version = "0.5.0"
 description = "Local broker and launcher for independent coding agent sessions."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,7 +32,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-"orchlink.project" = ["templates/*.md"]
+"orchlink.project" = ["templates/*.md", "templates/references/*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

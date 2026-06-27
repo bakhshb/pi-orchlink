@@ -12,7 +12,7 @@ from orchlink.broker.settings import Settings, get_settings
 from orchlink.broker.storage import JsonlMessageStore, MemoryMessageStore, MessageStore, MessageStoreBusy
 
 
-VERSION = "0.4.4"
+VERSION = "0.5.0"
 BROKER_CAPABILITIES = [
     "project_header_scope",
     "task_activity_endpoint",

@@ -208,6 +208,52 @@ function summarizeToolInput(toolName: string, input: any): string {
   return truncate(JSON.stringify(input), 220);
 }
 
+function phaseCompactionInstructions(note: string): string {
+  const phaseNote = note.trim() || "Phase reviewed and closed.";
+  return `This is an Orchlink phase boundary. Compact old context while preserving the state needed for the next phase.
+
+Preserve:
+- completed phase summary
+- review verdict
+- files changed
+- tests run
+- current task ID
+- current goal ID, if any
+- scope guardrails and forbidden paths
+- unresolved blockers
+- next exact step
+- pointers to durable .orch/ state files
+- cumulative readFiles and modifiedFiles
+
+Phase note:
+${phaseNote}`;
+}
+
+function orchlinkCompactionSummary(instructions: string, role: string, projectId: string, currentTask: OrchMessage | undefined): string {
+  const taskId = currentTask?.task_id || "none";
+  const conversationId = currentTask?.conversation_id || "none";
+  return `## Orchlink state
+
+## Goal
+Continue the current Orchlink project with compact context and reload details from durable state instead of old chat.
+
+## Critical Context
+- Project ID: ${projectId}
+- Role: ${role || "unknown"}
+- Current task ID: ${taskId}
+- Current conversation ID: ${conversationId}
+- Durable state roots: .orch/goals/, .orch/run/, .orch/project.yaml
+- Preserve task/goal scope guardrails and forbidden paths from the latest Orchlink task prompt.
+
+## Phase compaction instructions
+${instructions}
+
+## Next Steps
+1. Reload relevant .orch goal artifacts before making claims about goal status.
+2. Continue only from verified task results, checks, and goal state files.
+3. If scope or blocker details are unclear, ask one specific unblock question.`;
+}
+
 export default function (pi: ExtensionAPI) {
   const role = env("ORCHLINK_PI_ROLE");
   const agentId = env("ORCHLINK_AGENT_ID");
@@ -223,8 +269,64 @@ export default function (pi: ExtensionAPI) {
   let abortCurrentTurn: (() => void) | undefined;
   let cancelNoticeSent = false;
   let activityUnsupported = false;
+  let phaseCompactionRequested = false;
+  let phaseCompactionCustomInstructions = "";
   const recoveryGraceMs = Math.max(1000, Number(env("ORCHLINK_RECOVERABLE_ERROR_GRACE_MS", "180000")) || 180000);
   const activityHeartbeatMs = Math.max(5000, Number(env("ORCHLINK_ACTIVITY_HEARTBEAT_MS", "15000")) || 15000);
+
+  pi.registerCommand("orch", {
+    description: "Orchlink helpers. Use: /orch compact-phase <phase summary>",
+    handler: async (args, ctx) => {
+      const text = String(args || "").trim();
+      const match = text.match(/^compact-phase\b\s*(.*)$/s);
+      if (!match) {
+        ctx.ui.notify("Usage: /orch compact-phase <reviewed phase summary>", "info");
+        return;
+      }
+      const note = match[1] || "";
+      phaseCompactionRequested = true;
+      phaseCompactionCustomInstructions = phaseCompactionInstructions(note);
+      ctx.compact({
+        customInstructions: phaseCompactionCustomInstructions,
+        onComplete: () => {
+          phaseCompactionRequested = false;
+          phaseCompactionCustomInstructions = "";
+          ctx.ui.notify("Orchlink phase compaction completed.", "info");
+        },
+        onError: (error: any) => {
+          phaseCompactionRequested = false;
+          phaseCompactionCustomInstructions = "";
+          ctx.ui.notify(`Orchlink phase compaction failed: ${error?.message || error}`, "error");
+        },
+      });
+      ctx.ui.notify("Orchlink phase compaction started.", "info");
+    },
+  });
+
+  pi.on("session_before_compact", async (event: any) => {
+    const instructions = String(event?.customInstructions || phaseCompactionCustomInstructions || "");
+    if (!phaseCompactionRequested) return;
+    phaseCompactionRequested = false;
+    phaseCompactionCustomInstructions = "";
+    const preparation = event?.preparation || {};
+    if (!preparation.firstKeptEntryId) return;
+    return {
+      compaction: {
+        summary: orchlinkCompactionSummary(instructions, role, projectId, currentTask),
+        firstKeptEntryId: preparation.firstKeptEntryId,
+        tokensBefore: preparation.tokensBefore || 0,
+        details: {
+          orchlink: true,
+          projectId,
+          role,
+          taskId: currentTask?.task_id || null,
+          conversationId: currentTask?.conversation_id || null,
+          readFiles: preparation.fileOps?.readFiles || [],
+          modifiedFiles: preparation.fileOps?.modifiedFiles || [],
+        },
+      },
+    };
+  });
 
   async function register() {
     if (!agentId || !role) return;

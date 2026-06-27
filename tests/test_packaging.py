@@ -14,15 +14,16 @@ def test_pyproject_declares_src_layout_and_console_script():
     assert data["project"]["scripts"] == {"orch": "orchlink.cli.main:app"}
     assert data["tool"]["setuptools"]["package-dir"] == {"": "src"}
     assert data["tool"]["setuptools"]["packages"]["find"]["where"] == ["src"]
-    assert data["tool"]["setuptools"]["package-data"] == {"orchlink.project": ["templates/*.md"]}
+    assert data["tool"]["setuptools"]["package-data"] == {"orchlink.project": ["templates/*.md", "templates/references/*.md"]}
     assert (ROOT / "src" / "orchlink").is_dir()
 
 
 def test_project_skill_templates_are_packaged_markdown_files():
-    from orchlink.project.init import load_skill_template
+    from orchlink.project.init import load_skill_reference_template, load_skill_template
 
     assert "# Lead Role" in load_skill_template("lead")
     assert "# Worker Role" in load_skill_template("work")
+    assert "# Orchlink Goal Mode reference" in load_skill_reference_template("goal-mode.md")
     assert "LEAD_SKILL" not in (ROOT / "src" / "orchlink" / "project" / "init.py").read_text(encoding="utf-8")
 
 
@@ -30,10 +31,13 @@ def test_adapter_skills_share_prompt_policy_text():
     from orchlink.core.prompt_policy import TaskPromptPolicy
 
     policy = TaskPromptPolicy()
-    for relative_path in ["skills/openclaw/orchlink/SKILL.md", "skills/hermes/orchlink/SKILL.md"]:
-        text = (ROOT / relative_path).read_text(encoding="utf-8")
+    for relative_path in ["skills/openclaw/orchlink", "skills/hermes/orchlink"]:
+        skill_dir = ROOT / relative_path
+        text = "\n".join(path.read_text(encoding="utf-8") for path in sorted(skill_dir.rglob("*.md")))
         assert policy.lead_task_prompt_guidance_markdown() in text
         assert policy.lead_reply_guidance_markdown() in text
+        assert "references/review-gates.md" in text
+        assert "/orch compact-phase" in text
 
 
 def test_cli_imports_from_installable_package_and_exposes_required_commands():
@@ -93,6 +97,12 @@ def test_pi_extension_uses_valid_record_type():
     assert "waiting for Pi recovery" in ORCHLINK_PI_EXTENSION
     assert "ORCHLINK_ACTIVITY_HEARTBEAT_MS" in ORCHLINK_PI_EXTENSION
     assert "postCurrentActivity" in ORCHLINK_PI_EXTENSION
+    assert "pi.registerCommand(\"orch\"" in ORCHLINK_PI_EXTENSION
+    assert "compact-phase" in ORCHLINK_PI_EXTENSION
+    assert "phaseCompactionInstructions" in ORCHLINK_PI_EXTENSION
+    assert "ctx.compact" in ORCHLINK_PI_EXTENSION
+    assert "current goal ID" in ORCHLINK_PI_EXTENSION
+    assert "pointers to durable .orch/ state files" in ORCHLINK_PI_EXTENSION
     assert "pi.on(\"tool_call\"" in ORCHLINK_PI_EXTENSION
     assert "pi.on(\"tool_result\"" in ORCHLINK_PI_EXTENSION
     assert "[Orchlink] ${message.from_agent" in ORCHLINK_PI_EXTENSION
@@ -114,6 +124,21 @@ def test_pi_extension_uses_valid_record_type():
     assert "const firstLine = output.split" in ORCHLINK_PI_EXTENSION
     assert "if (!firstLine.startsWith(\"TYPE:\")) return \"RESULT\";" in ORCHLINK_PI_EXTENSION
     assert "for (const line of output.split" not in ORCHLINK_PI_EXTENSION
+
+
+def test_pi_extension_has_session_before_compact_hook_with_state_pointer_summary():
+    from orchlink.connector.pi_extension import ORCHLINK_PI_EXTENSION
+
+    # The hook is registered and produces a custom Orchlink state-pointer summary
+    # only when a phase compaction has been requested by /orch compact-phase.
+    assert 'pi.on("session_before_compact"' in ORCHLINK_PI_EXTENSION
+    assert "orchlinkCompactionSummary" in ORCHLINK_PI_EXTENSION
+    assert "phaseCompactionRequested" in ORCHLINK_PI_EXTENSION
+    # When the flag is set, the hook returns a custom compaction object carrying
+    # the state-pointer summary instead of falling back to default compaction.
+    assert "compaction: {" in ORCHLINK_PI_EXTENSION
+    assert "firstKeptEntryId" in ORCHLINK_PI_EXTENSION
+    assert "## Orchlink state" in ORCHLINK_PI_EXTENSION
 
 
 def test_pi_extension_keeps_current_task_during_recoverable_transport_error():

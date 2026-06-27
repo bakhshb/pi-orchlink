@@ -9,6 +9,7 @@ from orchlink.project.config import ORCH_DIR_NAME
 
 
 SKILL_ROLES = ("lead", "work")
+SKILL_REFERENCE_FILES = ("goal-mode.md", "lead-commands.md", "recovery.md", "review-gates.md")
 
 
 def load_skill_template(role: str) -> str:
@@ -20,6 +21,16 @@ def load_skill_template(role: str) -> str:
         return TaskPromptPolicy().render_markdown_template(template)
     except FileNotFoundError as exc:
         raise RuntimeError(f"Missing Orchlink skill template for {role}. Reinstall or update Orchlink.") from exc
+
+
+def load_skill_reference_template(name: str) -> str:
+    """Return a packaged Markdown reference file for generated project skills."""
+    if name not in SKILL_REFERENCE_FILES:
+        raise ValueError(f"Unsupported skill reference: {name}")
+    try:
+        return files("orchlink.project").joinpath("templates", "references", name).read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Missing Orchlink skill reference {name}. Reinstall or update Orchlink.") from exc
 
 
 def default_project_config(project_dir: Path, project_id: str | None = None) -> dict[str, Any]:
@@ -73,6 +84,16 @@ def project_skill_statuses(project_dir: Path | None = None) -> dict[str, str]:
             statuses[role] = "stale"
         else:
             statuses[role] = "current"
+    references_dir = skills_dir / "references"
+    for name in SKILL_REFERENCE_FILES:
+        key = f"references/{name}"
+        path = references_dir / name
+        if not path.is_file():
+            statuses[key] = "missing"
+        elif path.read_text(encoding="utf-8") != load_skill_reference_template(name):
+            statuses[key] = "stale"
+        else:
+            statuses[key] = "current"
     return statuses
 
 
@@ -82,7 +103,7 @@ def refresh_project_skills_if_needed(project_dir: Path | None = None) -> list[st
     changed_roles = [role for role, status in statuses.items() if status != "current"]
     if changed_roles:
         init_project(root, refresh_skills=True)
-    return [f"{role}.md" for role in changed_roles]
+    return [f"{name}.md" if name in SKILL_ROLES else name for name in changed_roles]
 
 
 def init_project(
@@ -94,12 +115,14 @@ def init_project(
     root = (project_dir or Path.cwd()).resolve()
     orch_dir = root / ORCH_DIR_NAME
     skills_dir = orch_dir / "skills"
+    references_dir = skills_dir / "references"
     run_dir = orch_dir / "run"
     config_path = orch_dir / "project.yaml"
     lead_skill_path = skills_dir / "lead.md"
     work_skill_path = skills_dir / "work.md"
 
     skills_dir.mkdir(parents=True, exist_ok=True)
+    references_dir.mkdir(parents=True, exist_ok=True)
     run_dir.mkdir(parents=True, exist_ok=True)
 
     if force or not config_path.exists():
@@ -112,10 +135,16 @@ def init_project(
     if force or refresh_skills or not work_skill_path.exists():
         work_skill_path.write_text(load_skill_template("work"), encoding="utf-8")
 
+    for name in SKILL_REFERENCE_FILES:
+        reference_path = references_dir / name
+        if force or refresh_skills or not reference_path.exists():
+            reference_path.write_text(load_skill_reference_template(name), encoding="utf-8")
+
     return {
         "orch_dir": orch_dir,
         "config": config_path,
         "lead_skill": lead_skill_path,
         "work_skill": work_skill_path,
+        "skill_references": references_dir,
         "run_dir": run_dir,
     }

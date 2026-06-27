@@ -8,7 +8,7 @@ from orchlink.cli.main import app
 from orchlink.core.prompt_policy import TaskPromptPolicy
 from orchlink.connector.pi_connector import PiConnector
 from orchlink.project.config import load_project_config
-from orchlink.project.init import init_project
+from orchlink.project.init import init_project, load_skill_reference_template
 
 
 runner = CliRunner()
@@ -20,6 +20,8 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert paths["config"].is_file()
     assert paths["lead_skill"].is_file()
     assert paths["work_skill"].is_file()
+    assert paths["skill_references"].is_dir()
+    assert (paths["skill_references"] / "goal-mode.md").is_file()
     assert paths["run_dir"].is_dir()
 
     data = yaml.safe_load(paths["config"].read_text(encoding="utf-8"))
@@ -38,18 +40,16 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     lead_skill = paths["lead_skill"].read_text(encoding="utf-8")
     work_skill = paths["work_skill"].read_text(encoding="utf-8")
     assert "# Lead Role" in lead_skill
-    assert "## Command map" in lead_skill
+    assert "## Progressive reference files" in lead_skill
     assert "## Task prompt shape" in lead_skill
-    assert "## Talk Mode" in lead_skill
-    assert "## Safety rules" in lead_skill
+    assert "## Non-negotiable safety rules" in lead_skill
     assert "orch ask work --wait" in lead_skill
-    assert "orch send work" in lead_skill
-    assert "orch wait T002" in lead_skill
-    assert "orch get T002" in lead_skill
+    assert "orch send" in lead_skill
+    assert "orch wait" in lead_skill
+    assert "orch get" in lead_skill
     assert "orch idle" in lead_skill
-    assert "orch talk work" in lead_skill
-    assert "orch say C001" in lead_skill
-    assert "orch close C001" in lead_skill
+    assert "references/lead-commands.md" in lead_skill
+    assert "references/goal-mode.md" in lead_skill
     policy = TaskPromptPolicy()
     assert policy.lead_task_prompt_guidance_markdown() in lead_skill
     assert policy.lead_reply_guidance_markdown() in lead_skill
@@ -83,6 +83,7 @@ def test_refresh_skills_keeps_existing_project_config(tmp_path):
     assert "# Lead Role" in refreshed["lead_skill"].read_text(encoding="utf-8")
     assert "## Task prompt shape" in refreshed["lead_skill"].read_text(encoding="utf-8")
     assert "## Task behavior" in refreshed["work_skill"].read_text(encoding="utf-8")
+    assert refreshed["skill_references"].joinpath("goal-mode.md").read_text(encoding="utf-8") == load_skill_reference_template("goal-mode.md")
 
 
 def test_cli_init_uses_current_folder_name_by_default(monkeypatch, tmp_path):
@@ -97,6 +98,7 @@ def test_cli_init_uses_current_folder_name_by_default(monkeypatch, tmp_path):
     assert config["project_id"] == "sample-project"
     assert (project_dir / ".orch" / "skills" / "lead.md").is_file()
     assert (project_dir / ".orch" / "skills" / "work.md").is_file()
+    assert (project_dir / ".orch" / "skills" / "references" / "goal-mode.md").is_file()
 
 
 def test_pi_connector_defaults_to_project_local_session_dir(tmp_path):
