@@ -64,6 +64,26 @@ app.add_typer(broker_app, name="broker")
 console = Console()
 
 
+def load_goal_app() -> typer.Typer:
+    try:
+        from orchlink.goal.cli import goal_app
+
+        return goal_app
+    except Exception as exc:
+        error_message = str(exc)
+        fallback = typer.Typer(help="Goal Mode is unavailable because its module failed to load.")
+
+        @fallback.callback(invoke_without_command=True)
+        def goal_unavailable() -> None:
+            console.print(f"[Orch] Goal Mode failed to load: {error_message}")
+            raise typer.Exit(1)
+
+        return fallback
+
+
+app.add_typer(load_goal_app(), name="goal")
+
+
 def print_orch_exception(exc: Exception) -> None:
     if isinstance(exc, httpx.HTTPStatusError):
         try:
@@ -1185,6 +1205,12 @@ def doctor() -> None:
             stale = stale or status_text == "stale"
             missing = missing or status_text == "missing"
             console.print(f"{role}.md: {status_text}")
+        reference_statuses = [status for name, status in statuses.items() if name.startswith("references/")]
+        if reference_statuses:
+            references_current = all(status == "current" for status in reference_statuses)
+            stale = stale or any(status == "stale" for status in reference_statuses)
+            missing = missing or any(status == "missing" for status in reference_statuses)
+            console.print(f"references/: {'current' if references_current else 'stale'}")
         if stale or missing:
             console.print("Project .orch files: stale")
             console.print("Run: orch init --refresh-skills")

@@ -182,6 +182,63 @@ Ask work to review these changes before you run the full test suite.
 
 Lead should not run big tests, final summaries, release steps, or cleanup that depends on the review until work replies.
 
+## Goal Mode
+
+Goal Mode is for PRD/plan-driven work where lead should not claim "done" until acceptance criteria are verified.
+
+Typical flow:
+
+```bash
+orch goal start "Implement export feature" --prd docs/export-prd.md --derive
+orch goal review G001
+# inspect/edit .orch/goals/G001/acceptance.md, plan.md, and coverage.md if needed
+orch goal gate G001 approve
+orch goal work G001 --until done --max-steps 20
+orch goal show G001
+```
+
+You can also start from a plan or short inline goal:
+
+```bash
+orch goal start "Implement export feature" --plan docs/export-plan.md --derive
+orch goal start "Small cleanup" --text "Refactor export validation with tests" --derive
+```
+
+If the plan exists only in chat/context, the lead should first write it to a normal markdown file, then use `--plan`. There is no special chat-plan CLI:
+
+```bash
+mkdir -p .orch/goals/inbox
+# lead writes .orch/goals/inbox/export-plan.md from the conversation plan
+orch goal start "Implement export feature" --plan .orch/goals/inbox/export-plan.md --derive
+```
+
+Goal Mode writes durable state under `.orch/goals/Gxxx/`:
+
+```text
+source.md      captured PRD/plan/text source
+acceptance.md  editable ACs with status/checks/dependencies
+plan.md        editable execution plan
+coverage.md    optional source/AC/plan coverage report
+goal.yaml      goal status, evidence, blockers, deferrals
+history.jsonl  append-only goal events
+audit.md       optional audit result
+trials.jsonl   optional real-PRD trial records
+```
+
+Useful commands:
+
+| Command | What it does |
+| --- | --- |
+| `orch goal review G001` | Show source summary, ACs, plan, coverage, and warnings before approval. |
+| `orch goal derive G001` | Ask worker to derive acceptance, plan, and optional coverage artifacts. |
+| `orch goal gate G001 approve` | Approve the current AC/plan gate. |
+| `orch goal work G001 --until done` | Keep dispatching bounded worker slices until done, gated, blocked, cancelled, or capped. |
+| `orch goal audit G001` | Ask worker to audit artifacts/evidence without editing or closing the goal. |
+| `orch goal signoff G001 AC-4` | Human-approve a subjective core AC. |
+| `orch goal trial G001 ...` / `orch goal trials G001` | Record and list real PRD trial metrics. |
+
+Goal Mode still uses the existing lead/work lane. It does not add parallel workers, a scheduler, a dashboard, or a direct LLM client inside Orchlink core. Objective ACs need check commands for strongest unattended verification; subjective ACs stop at a signoff gate.
+
 ## Project files
 
 `orch init` creates this folder:
@@ -192,10 +249,15 @@ Lead should not run big tests, final summaries, release steps, or cleanup that d
   skills/
     lead.md
     work.md
+    references/
+      goal-mode.md
+      lead-commands.md
+      recovery.md
+      review-gates.md
   run/
 ```
 
-You do not run these files. Orchlink gives them to Pi so lead and work know their roles. `orch lead` and `orch work` refresh stale or missing generated skill files from the installed templates before starting Pi.
+You do not run these files. Orchlink gives the small lead/work skills to Pi, and the skills load reference files only when a task needs detailed command, Goal Mode, review, or recovery guidance. `orch lead` and `orch work` refresh stale or missing generated skill files and references from the installed templates before starting Pi.
 
 Do not commit `.orch/`.
 
@@ -250,23 +312,24 @@ This repo includes adapter skills for using OpenClaw or Hermes as the Orchlink l
 
 ```text
 skills/openclaw/orchlink/SKILL.md
+skills/openclaw/orchlink/references/*.md
 skills/hermes/orchlink/SKILL.md
+skills/hermes/orchlink/references/*.md
 ```
+
+The adapter `SKILL.md` files are intentionally small routers. Detailed command, Goal Mode, and recovery guidance lives in bundled `references/` files so external agents only load the extra context when needed.
 
 ### OpenClaw install
 
-OpenClaw does not install directly from a raw `SKILL.md` URL. Paste this prompt into OpenClaw instead:
+OpenClaw needs the whole skill directory so bundled `references/` are installed with `SKILL.md`. Paste this prompt into OpenClaw:
 
 ```text
 Install the Orchlink skill for this OpenClaw workspace.
 
-Skill URL:
-https://raw.githubusercontent.com/bakhshb/pi-orchlink/main/skills/openclaw/orchlink/SKILL.md
-
 Use shell commands to:
 1. Create a temporary directory.
-2. Download that URL into the temporary directory as SKILL.md.
-3. Run: openclaw skills install <temporary-directory> --as orchlink --force
+2. Run: git clone --depth 1 https://github.com/bakhshb/pi-orchlink.git <temporary-directory>/pi-orchlink
+3. Run: openclaw skills install <temporary-directory>/pi-orchlink/skills/openclaw/orchlink --as orchlink --force
 4. Remove the temporary directory.
 5. Tell me to start a new OpenClaw session after installation.
 
@@ -281,10 +344,13 @@ Install globally by adding --global to the openclaw skills install command.
 
 ### Hermes install
 
-Hermes supports direct `SKILL.md` URL installs:
+Hermes should also install the whole skill directory so bundled `references/` are available:
 
 ```bash
-hermes skills install https://raw.githubusercontent.com/bakhshb/pi-orchlink/main/skills/hermes/orchlink/SKILL.md --name orchlink --force --yes
+tmpdir=$(mktemp -d)
+git clone --depth 1 https://github.com/bakhshb/pi-orchlink.git "$tmpdir/pi-orchlink"
+hermes skills install "$tmpdir/pi-orchlink/skills/hermes/orchlink" --name orchlink --force --yes
+rm -rf "$tmpdir"
 ```
 
 ### Local checkout install
@@ -322,6 +388,7 @@ Orchlink has one `orch` command, but the commands are meant for different audien
 | `orch doctor` | Check local setup, broker compatibility, Pi command, and generated skills. |
 | `orch sessions` | Show active lead/work Pi sessions for this project. Use `--all` to include released session history. |
 | `orch jobs` | Main browser for recent work in the current project ID. Status is authoritative. |
+| `orch goal ...` | Run PRD/plan-driven Goal Mode from source → ACs/plan/coverage → verified work. |
 | `orch stop` | Stop the project broker. |
 | `orch update` | Update Orchlink and print restart/refresh guidance. |
 
