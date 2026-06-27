@@ -142,10 +142,10 @@ def test_task_lifecycle_is_backed_by_canonical_job_model():
     async def run():
         store = MemoryMessageStore()
         await store.enqueue_message(task_message(project_id="demo"))
-        queued_job = store._task_jobs["demo:TEST-001"]
+        queued_job = store._state.task_jobs["demo:TEST-001"]
 
         await store.get_next_message("demo.work", wait_seconds=1)
-        delivered_job = store._task_jobs["demo:TEST-001"]
+        delivered_job = store._state.task_jobs["demo:TEST-001"]
 
         await store.record_activity(
             {
@@ -157,10 +157,10 @@ def test_task_lifecycle_is_backed_by_canonical_job_model():
                 "tool_name": "read",
             }
         )
-        running_job = store._task_jobs["demo:TEST-001"]
+        running_job = store._state.task_jobs["demo:TEST-001"]
 
         await store.save_reply("msg-0001", {**reply_message(), "project_id": "demo"})
-        done_job = store._task_jobs["demo:TEST-001"]
+        done_job = store._state.task_jobs["demo:TEST-001"]
 
         assert isinstance(done_job, Job)
         assert [queued_job.status, delivered_job.status, running_job.status, done_job.status] == [
@@ -185,7 +185,7 @@ def test_orphan_reply_does_not_create_canonical_task_job():
         store = MemoryMessageStore()
         await store.save_reply("missing-message", reply_message())
 
-        assert "default:TEST-001" not in store._task_jobs
+        assert "default:TEST-001" not in store._state.task_jobs
 
     asyncio.run(run())
 

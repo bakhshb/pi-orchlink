@@ -64,40 +64,40 @@ class JsonlMessageStore(MemoryMessageStore):
 
     def _snapshot(self) -> dict[str, Any]:
         return {
-            "agents": self._agents,
-            "active_messages": self._active_messages,
-            "tasks": self._tasks,
-            "task_jobs": {key: _job_to_dict(job) for key, job in self._task_jobs.items()},
-            "results_by_task": self._results_by_task,
-            "conversations": self._conversations,
-            "talk_jobs": {key: _job_to_dict(job) for key, job in self._talk_jobs.items()},
-            "events": self._events,
-            "activity": self._activity,
-            "sessions": self._sessions,
-            "next_event_id": self._next_event_id,
-            "next_activity_id": self._next_activity_id,
+            "agents": self._state.agents,
+            "active_messages": self._state.active_messages,
+            "tasks": self._state.tasks,
+            "task_jobs": {key: _job_to_dict(job) for key, job in self._state.task_jobs.items()},
+            "results_by_task": self._state.results_by_task,
+            "conversations": self._state.conversations,
+            "talk_jobs": {key: _job_to_dict(job) for key, job in self._state.talk_jobs.items()},
+            "events": self._state.events,
+            "activity": self._state.activity,
+            "sessions": self._state.sessions,
+            "next_event_id": self._state.next_event_id,
+            "next_activity_id": self._state.next_activity_id,
         }
 
     def _restore_snapshot(self, snapshot: dict[str, Any]) -> None:
-        self._agents = {str(key): dict(value) for key, value in (snapshot.get("agents") or {}).items()}
-        self._active_messages = {str(key): dict(value) for key, value in (snapshot.get("active_messages") or {}).items()}
-        self._tasks = {str(key): dict(value) for key, value in (snapshot.get("tasks") or {}).items()}
-        self._task_jobs = {str(key): _job_from_dict(value) for key, value in (snapshot.get("task_jobs") or {}).items()}
-        self._results_by_task = {str(key): dict(value) for key, value in (snapshot.get("results_by_task") or {}).items()}
-        self._conversations = {str(key): dict(value) for key, value in (snapshot.get("conversations") or {}).items()}
-        self._talk_jobs = {str(key): _job_from_dict(value) for key, value in (snapshot.get("talk_jobs") or {}).items()}
-        self._events = [dict(value) for value in (snapshot.get("events") or [])]
-        self._activity = [dict(value) for value in (snapshot.get("activity") or [])]
-        self._sessions = {str(key): dict(value) for key, value in (snapshot.get("sessions") or {}).items()}
-        self._next_event_id = int(snapshot.get("next_event_id") or (self._events[-1]["id"] + 1 if self._events else 1))
-        self._next_activity_id = int(snapshot.get("next_activity_id") or (self._activity[-1]["id"] + 1 if self._activity else 1))
-        self._inboxes = {agent_id: asyncio.Queue() for agent_id in self._agents}
-        for message in self._active_messages.values():
+        self._state.agents = {str(key): dict(value) for key, value in (snapshot.get("agents") or {}).items()}
+        self._state.active_messages = {str(key): dict(value) for key, value in (snapshot.get("active_messages") or {}).items()}
+        self._state.tasks = {str(key): dict(value) for key, value in (snapshot.get("tasks") or {}).items()}
+        self._state.task_jobs = {str(key): _job_from_dict(value) for key, value in (snapshot.get("task_jobs") or {}).items()}
+        self._state.results_by_task = {str(key): dict(value) for key, value in (snapshot.get("results_by_task") or {}).items()}
+        self._state.conversations = {str(key): dict(value) for key, value in (snapshot.get("conversations") or {}).items()}
+        self._state.talk_jobs = {str(key): _job_from_dict(value) for key, value in (snapshot.get("talk_jobs") or {}).items()}
+        self._state.events = [dict(value) for value in (snapshot.get("events") or [])]
+        self._state.activity = [dict(value) for value in (snapshot.get("activity") or [])]
+        self._state.sessions = {str(key): dict(value) for key, value in (snapshot.get("sessions") or {}).items()}
+        self._state.next_event_id = int(snapshot.get("next_event_id") or (self._state.events[-1]["id"] + 1 if self._state.events else 1))
+        self._state.next_activity_id = int(snapshot.get("next_activity_id") or (self._state.activity[-1]["id"] + 1 if self._state.activity else 1))
+        self._state.inboxes = {agent_id: asyncio.Queue() for agent_id in self._state.agents}
+        for message in self._state.active_messages.values():
             if is_terminal_status(message.get("status")):
                 continue
             to_agent = str(message.get("to_agent") or "")
             if to_agent:
-                self._inboxes.setdefault(to_agent, asyncio.Queue()).put_nowait(dict(message))
+                self._state.inboxes.setdefault(to_agent, asyncio.Queue()).put_nowait(dict(message))
 
     def _load_latest_snapshot(self) -> None:
         if not self.path.is_file():
