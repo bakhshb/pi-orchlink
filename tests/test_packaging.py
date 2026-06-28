@@ -105,6 +105,8 @@ def test_pi_extension_uses_valid_record_type():
     assert "phaseCompactionInstructions" in ORCHLINK_PI_EXTENSION
     assert "ctx.compact" in ORCHLINK_PI_EXTENSION
     assert "setTimeout(() =>" in ORCHLINK_PI_EXTENSION
+    assert "Orchlink ${role} polling resumed after compaction." in ORCHLINK_PI_EXTENSION
+    assert "pi.on(\"session_compact\"" in ORCHLINK_PI_EXTENSION
     assert "ORCHLINK_AUTO_COMPACT_PHASES" in ORCHLINK_PI_EXTENSION
     assert "pendingReviewCompaction" in ORCHLINK_PI_EXTENSION
     assert "looksLikeReviewReconciliation" in ORCHLINK_PI_EXTENSION
@@ -146,6 +148,33 @@ def test_pi_extension_has_session_before_compact_hook_with_state_pointer_summary
     assert "compaction: {" in ORCHLINK_PI_EXTENSION
     assert "firstKeptEntryId" in ORCHLINK_PI_EXTENSION
     assert "## Orchlink state" in ORCHLINK_PI_EXTENSION
+    assert "pi.on(\"session_compact\"" in ORCHLINK_PI_EXTENSION
+    assert "schedule(0);" in ORCHLINK_PI_EXTENSION
+
+
+def test_pi_extension_rekicks_polling_after_compaction_callbacks():
+    from orchlink.connector.pi_extension import ORCHLINK_PI_EXTENSION
+
+    assert """onComplete: () => {
+            phaseCompactionRequested = false;
+            phaseCompactionCustomInstructions = "";
+            ctx.ui.notify("Orchlink auto phase compaction completed.", "info");
+            schedule(0);
+          }""" in ORCHLINK_PI_EXTENSION
+    assert """onError: (error: any) => {
+            phaseCompactionRequested = false;
+            phaseCompactionCustomInstructions = "";
+            ctx.ui.notify(`Orchlink phase compaction failed: ${error?.message || error}`, "error");
+            schedule(0);
+          }""" in ORCHLINK_PI_EXTENSION
+    assert """pi.on("session_compact", async (_event: any, ctx: any) => {
+    phaseCompactionRequested = false;
+    phaseCompactionCustomInstructions = "";
+    if (["lead", "work"].includes(role)) {
+      ctx.ui.notify(`Orchlink ${role} polling resumed after compaction.`, "info");
+      schedule(0);
+    }
+  });""" in ORCHLINK_PI_EXTENSION
 
 
 def test_pi_extension_keeps_current_task_during_recoverable_transport_error():
