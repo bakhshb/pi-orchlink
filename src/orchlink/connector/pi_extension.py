@@ -356,17 +356,20 @@ export default function (pi: ExtensionAPI) {
             phaseCompactionRequested = false;
             phaseCompactionCustomInstructions = "";
             ctx.ui.notify("Orchlink auto phase compaction completed.", "info");
+            schedule(0);
           },
           onError: (error: any) => {
             phaseCompactionRequested = false;
             phaseCompactionCustomInstructions = "";
             ctx.ui.notify(`Orchlink phase compaction failed: ${error?.message || error}`, "error");
+            schedule(0);
           },
         });
       } catch (error: any) {
         phaseCompactionRequested = false;
         phaseCompactionCustomInstructions = "";
         ctx.ui.notify(`Orchlink phase compaction failed: ${error?.message || error}`, "error");
+        schedule(0);
       }
     }, 0);
   }
@@ -395,6 +398,15 @@ export default function (pi: ExtensionAPI) {
         },
       },
     };
+  });
+
+  pi.on("session_compact", async (_event: any, ctx: any) => {
+    phaseCompactionRequested = false;
+    phaseCompactionCustomInstructions = "";
+    if (["lead", "work"].includes(role)) {
+      ctx.ui.notify(`Orchlink ${role} polling resumed after compaction.`, "info");
+      schedule(0);
+    }
   });
 
   async function register() {
