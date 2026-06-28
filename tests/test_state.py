@@ -22,6 +22,7 @@ def test_status_helpers_normalize_and_classify_broker_states():
     assert is_terminal_status("cancelled") is True
     assert is_terminal_status("running") is False
     assert is_active_job_status("open") is True
+    assert is_active_job_status("reclaimable") is True
     assert is_active_session_status("active") is True
     assert is_active_session_status("released") is False
 
@@ -32,6 +33,7 @@ def test_job_lifecycle_names_target_canonical_states():
         "QUEUED",
         "DELIVERED",
         "RUNNING",
+        "RECLAIMABLE",
         "DONE",
         "FAILED",
         "TIMEOUT",
@@ -87,3 +89,19 @@ def test_broker_canonical_job_event_mapper_skips_open_talk_jobs():
         {"project_id": "demo", "conversation_id": "C001", "status": "OPEN"},
     ) is None
     assert canonical_job_event_for_broker_event("conversation_closed", {"project_id": "demo", "conversation_id": "C001", "status": "CLOSED"}) is None
+
+
+def test_reclaimable_transitions_are_allowed():
+    from orchlink.core.states import can_transition
+
+    assert can_transition("RUNNING", "RECLAIMABLE") is True
+    assert can_transition("DELIVERED", "RECLAIMABLE") is True
+    assert can_transition("RECLAIMABLE", "RUNNING") is True
+    assert can_transition("RECLAIMABLE", "DONE") is True
+    assert can_transition("RECLAIMABLE", "CANCELLED") is True
+    assert can_transition("RECLAIMABLE", "TIMEOUT") is True
+    # RECLAIMABLE is terminal-ish only via an explicit target; it cannot go back to QUEUED.
+    assert can_transition("RECLAIMABLE", "QUEUED") is False
+    # Terminal states still cannot leave.
+    assert can_transition("DONE", "RECLAIMABLE") is False
+    assert can_transition("CANCELLED", "RECLAIMABLE") is False

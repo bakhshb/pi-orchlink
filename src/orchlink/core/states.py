@@ -13,6 +13,7 @@ class JobStatus(StrEnum):
     QUEUED = "QUEUED"
     DELIVERED = "DELIVERED"
     RUNNING = "RUNNING"
+    RECLAIMABLE = "RECLAIMABLE"
     DONE = "DONE"
     FAILED = "FAILED"
     TIMEOUT = "TIMEOUT"
@@ -27,7 +28,7 @@ JOB_STATUS_LIFECYCLE = tuple(status.value for status in JobStatus)
 # canonical lifecycle above.
 BUSY_MESSAGE_STATUSES = {"PENDING", "QUEUED", "DELIVERED", "RUNNING", "IN_PROGRESS"}
 ACTIVE_ACTIVITY_STATUSES = {"DELIVERED", "RUNNING", "IN_PROGRESS"}
-ACTIVE_JOB_STATUSES = BUSY_MESSAGE_STATUSES | {"OPEN"}
+ACTIVE_JOB_STATUSES = BUSY_MESSAGE_STATUSES | {JobStatus.RECLAIMABLE.value, "OPEN"}
 FAILED_STATUSES = {"FAILED", "TIMEOUT", "CANCELLED"}
 TERMINAL_MESSAGE_STATUSES = {"DONE", "COMPLETED", "FAILED", "TIMEOUT", "CANCELLED", "CLOSED"}
 CANONICAL_TERMINAL_STATUSES = {JobStatus.DONE.value, JobStatus.FAILED.value, JobStatus.TIMEOUT.value, JobStatus.CANCELLED.value, JobStatus.CLOSED.value}
@@ -35,8 +36,9 @@ CANONICAL_TERMINAL_STATUSES = {JobStatus.DONE.value, JobStatus.FAILED.value, Job
 ALLOWED_JOB_TRANSITIONS: dict[str, frozenset[str]] = {
     JobStatus.CREATED.value: frozenset({JobStatus.QUEUED.value, JobStatus.CANCELLED.value}),
     JobStatus.QUEUED.value: frozenset({JobStatus.DELIVERED.value, JobStatus.RUNNING.value, JobStatus.TIMEOUT.value, JobStatus.CANCELLED.value}),
-    JobStatus.DELIVERED.value: frozenset({JobStatus.RUNNING.value, JobStatus.DONE.value, JobStatus.FAILED.value, JobStatus.TIMEOUT.value, JobStatus.CANCELLED.value}),
-    JobStatus.RUNNING.value: frozenset({JobStatus.DONE.value, JobStatus.FAILED.value, JobStatus.TIMEOUT.value, JobStatus.CANCELLED.value, JobStatus.CLOSED.value}),
+    JobStatus.DELIVERED.value: frozenset({JobStatus.RUNNING.value, JobStatus.RECLAIMABLE.value, JobStatus.DONE.value, JobStatus.FAILED.value, JobStatus.TIMEOUT.value, JobStatus.CANCELLED.value}),
+    JobStatus.RUNNING.value: frozenset({JobStatus.RECLAIMABLE.value, JobStatus.DONE.value, JobStatus.FAILED.value, JobStatus.TIMEOUT.value, JobStatus.CANCELLED.value, JobStatus.CLOSED.value}),
+    JobStatus.RECLAIMABLE.value: frozenset({JobStatus.RUNNING.value, JobStatus.DONE.value, JobStatus.FAILED.value, JobStatus.TIMEOUT.value, JobStatus.CANCELLED.value, JobStatus.CLOSED.value}),
     JobStatus.DONE.value: frozenset(),
     JobStatus.FAILED.value: frozenset(),
     JobStatus.TIMEOUT.value: frozenset(),

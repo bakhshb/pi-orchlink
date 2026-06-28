@@ -1,7 +1,7 @@
 import asyncio
 import uuid
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 from orchlink.broker.state import (
@@ -20,9 +20,23 @@ from orchlink.broker.state import (
     reply_job_status,
 )
 from orchlink.broker.state_machine import BrokerStateMachine
-from orchlink.broker.storage.base import MessageStore, MessageStoreBusy
+from orchlink.broker.storage.base import LeaseConflictError, MessageStore, MessageStoreBusy
 from orchlink.core.models import Job, Session
-from orchlink.core.views import talk_job_to_wire, task_job_to_wire
+from orchlink.core.states import JobStatus, require_transition
+from orchlink.core.views import lease_to_wire, talk_job_to_wire, task_job_to_wire
+
+
+
+DEFAULT_JOB_HEARTBEAT_MS = 15000
+JOB_LEASE_GRACE_MULTIPLIER = 6
+
+
+def _new_lease(holder: str, heartbeat_ms: int | None, epoch: int) -> dict[str, Any]:
+    """Build a fresh lease dict with an expiry derived from the heartbeat interval."""
+    hb = max(int(heartbeat_ms or DEFAULT_JOB_HEARTBEAT_MS), 1000)
+    ttl_ms = hb * JOB_LEASE_GRACE_MULTIPLIER
+    expires_at = (datetime.now(timezone.utc) + timedelta(milliseconds=ttl_ms)).isoformat()
+    return {"holder": holder, "expires_at": expires_at, "epoch": epoch, "heartbeat_ms": hb}
 
 
 @dataclass
@@ -56,6 +70,9 @@ class MemoryEventLog:
         self._now = now
         self._job_mode = job_mode
         self._same_project = same_project
+        # Observability-only audit journal (M1). Late-bound via attach_journal
+        # so the journal can be wired after the store is constructed.
+        self._journal: Any = None
 
     def payload_preview(self, payload: dict[str, Any]) -> str:
         for key in ("message", "intent", "topic", "summary", "stdout"):
@@ -86,6 +103,12 @@ class MemoryEventLog:
         self._state.events.append(event)
         if len(self._state.events) > 1000:
             self._state.events = self._state.events[-1000:]
+        if self._journal is not None:
+            try:
+                self._journal.record_broker_event(event)
+            except Exception:
+                # Observability-only: never fail a transition for the journal.
+                pass
         return event
 
     def event_fields(self, message: dict[str, Any], status: str | None = None) -> dict[str, Any]:
@@ -397,6 +420,9 @@ class MemoryJobProjector:
         job = self.transition_task_job_locked(message, status)
         if job is None:
             return
+        # M3: acquire a job lease when the work is dispatched to a worker.
+        if job.status == JobStatus.DELIVERED.value and job.lease is None and message.get("to_agent"):
+            job = replace(job, lease=_new_lease(str(message.get("to_agent")), DEFAULT_JOB_HEARTBEAT_MS, 1))
         now = self._now()
         existing = self._state.tasks.get(task_key, {})
         existing_payload = dict(job.payload or {})
@@ -421,6 +447,9 @@ class MemoryJobProjector:
         job = self._state_machine.tasks.with_payload(job, payload)
         self._state.task_jobs[task_key] = job
         self._state.tasks[task_key] = task_job_to_wire(job)
+        # Mirror the canonical lease onto the wire message so /agents/{id}/next
+        # can hand the epoch to the worker for heartbeat renewal.
+        message["lease"] = lease_to_wire(job.lease)
 
     def touch_conversation_locked(self, message: dict[str, Any], status: str | None = None) -> None:
         conversation_id = message.get("conversation_id")
@@ -684,11 +713,23 @@ class MemoryWorkQueue:
         )
         return delivered
 
-    def save_reply_locked(self, message_id: str, reply: dict[str, Any]) -> tuple[dict[str, Any], asyncio.Queue[dict[str, Any]] | None, dict[str, Any] | None]:
+    def save_reply_locked(self, message_id: str, reply: dict[str, Any], lease_epoch: int | None = None, lease_holder: str | None = None) -> tuple[dict[str, Any], asyncio.Queue[dict[str, Any]] | None, dict[str, Any] | None]:
         correlation_id = reply["correlation_id"]
         stored_reply = dict(reply)
         job_status = reply_job_status(stored_reply.get("type"), stored_reply.get("status"))
         task_id = stored_reply.get("task_id")
+        # M3: reject stale-holder replies when the caller asserts a lease epoch.
+        # Backward compatible: if no epoch is provided, the reply is accepted
+        # (current Pi extension behavior before lease-aware replies).
+        if task_id and lease_epoch is not None:
+            task_key = self._task_key(self._project_id_for(stored_reply), str(task_id))
+            job = self._state.task_jobs.get(task_key)
+            lease = job.lease if job is not None else None
+            if lease is not None:
+                if int(lease.get("epoch") or 0) != int(lease_epoch) or str(lease.get("holder") or "") != str(lease_holder or ""):
+                    raise LeaseConflictError(
+                        f"Stale lease reply for {task_id}: holder/epoch mismatch (lease epoch={lease.get('epoch')}, reply epoch={lease_epoch})."
+                    )
         active = self._state.active_messages.get(message_id)
         if active and str(active.get("status") or "").upper() in {"TIMEOUT", "CANCELLED"}:
             self._append_event(
@@ -934,6 +975,8 @@ class MemoryMessageStore(MessageStore):
         self.require_peer_sessions = require_peer_sessions
         self.session_grace_seconds = session_grace_seconds
         self._state = InMemoryBrokerState()
+        # Observability-only audit journal (M1); attached via attach_journal.
+        self.journal: Any = None
         self._state_machine = BrokerStateMachine()
         self._event_log = MemoryEventLog(self._state, self._now, self._job_mode, self._same_project)
         self._job_projector = MemoryJobProjector(
@@ -1022,6 +1065,16 @@ class MemoryMessageStore(MessageStore):
 
     def _append_event_locked(self, event_type: str, **fields: Any) -> dict[str, Any]:
         return self._event_log.append_event_locked(event_type, **fields)
+
+    def attach_journal(self, journal: Any) -> None:
+        """Wire the observability audit journal (M1).
+
+        Once attached, every broker event recorded via ``append_event_locked``
+        is mirrored into the journal. The journal is observability-only and
+        never the source of truth.
+        """
+        self.journal = journal
+        self._event_log._journal = journal
 
     def _settle_work_for_offline_agent_locked(self, agent_id: str, project_id: str, reason: str) -> list[str]:
         settled: list[str] = []
@@ -1267,10 +1320,10 @@ class MemoryMessageStore(MessageStore):
                     continue
             return delivered
 
-    async def save_reply(self, message_id: str, reply: dict[str, Any]) -> dict[str, Any]:
+    async def save_reply(self, message_id: str, reply: dict[str, Any], lease_epoch: int | None = None, lease_holder: str | None = None) -> dict[str, Any]:
         async with self._lock:
             self._expire_timed_out_messages_locked()
-            result, reply_inbox, stored_reply = self._work_queue.save_reply_locked(message_id, reply)
+            result, reply_inbox, stored_reply = self._work_queue.save_reply_locked(message_id, reply, lease_epoch=lease_epoch, lease_holder=lease_holder)
 
         if reply_inbox is not None and stored_reply is not None:
             await reply_inbox.put(stored_reply)
@@ -1339,6 +1392,104 @@ class MemoryMessageStore(MessageStore):
         async with self._lock:
             self._expire_timed_out_messages_locked()
             return self._work_queue.cancel_work_locked(item_id, reason=reason, project_id=project_id)
+
+    def _find_task_job_locked(self, task_id: str, project_id: str | None = None) -> tuple[str, Job]:
+        if project_id is not None:
+            task_key = self._task_key(project_id, task_id)
+            job = self._state.task_jobs.get(task_key)
+            if job is not None:
+                return task_key, job
+        matches = [(key, job) for key, job in self._state.task_jobs.items() if key.endswith(f":{task_id}") or key == task_id]
+        if len(matches) == 1:
+            return matches[0]
+        raise ValueError(f"Job not found: {task_id}")
+
+    def heartbeat_job_locked(
+        self,
+        task_id: str,
+        holder: str,
+        epoch: int,
+        project_id: str | None = None,
+        heartbeat_ms: int | None = None,
+    ) -> dict[str, Any]:
+        task_key, job = self._find_task_job_locked(task_id, project_id=project_id)
+        lease = job.lease
+        if lease is None:
+            raise LeaseConflictError(f"Job {task_id} has no lease to renew.")
+        if str(lease.get("holder") or "") != str(holder) or int(lease.get("epoch") or 0) != int(epoch):
+            raise LeaseConflictError(f"Stale lease heartbeat for {task_id}: holder/epoch mismatch.")
+        hb = heartbeat_ms or lease.get("heartbeat_ms") or DEFAULT_JOB_HEARTBEAT_MS
+        new_lease = _new_lease(str(holder), hb, int(epoch))
+        job = replace(job, lease=new_lease)
+        self._state.task_jobs[task_key] = job
+        self._state.tasks[task_key] = task_job_to_wire(job)
+        self._append_event_locked(
+            "job_heartbeat",
+            project_id=job.project_id,
+            task_id=str(task_id),
+            from_agent=holder,
+            to_agent=holder,
+            message_type="LEASE",
+            mode=job.mode,
+            status=job.status,
+            payload={},
+            preview=f"lease renewed epoch={epoch}",
+        )
+        return {"status": "renewed", "task_id": task_id, "lease": lease_to_wire(new_lease)}
+
+    def reclaim_job_locked(self, task_id: str, holder: str, project_id: str | None = None) -> dict[str, Any]:
+        task_key, job = self._find_task_job_locked(task_id, project_id=project_id)
+        lease = job.lease
+        if lease is None:
+            raise LeaseConflictError(f"Job {task_id} is not reclaimable (no lease).")
+        now = datetime.now(timezone.utc)
+        expires_at = self._parse_time(lease.get("expires_at"))
+        not_expired = expires_at is not None and now < expires_at
+        if not_expired:
+            # Idempotent: the current holder reclaiming a still-valid lease is a no-op.
+            if str(lease.get("holder") or "") == str(holder):
+                return {"status": "active", "task_id": task_id, "lease": lease_to_wire(lease), "reclaimed": False}
+            raise LeaseConflictError(f"Job {task_id} lease has not expired.")
+        new_epoch = int(lease.get("epoch") or 0) + 1
+        new_lease = _new_lease(str(holder), lease.get("heartbeat_ms") or DEFAULT_JOB_HEARTBEAT_MS, new_epoch)
+        # Transition RUNNING/DELIVERED -> RECLAIMABLE -> RUNNING with the new lease.
+        # Uses require_transition directly because RECLAIMABLE is not a reply-driven
+        # status in the job event map; the state machine's transition_path cannot
+        # route through it, which is intentional.
+        job = replace(job, status=require_transition(job.status, JobStatus.RECLAIMABLE.value))
+        job = replace(job, status=require_transition(job.status, JobStatus.RUNNING.value), lease=new_lease)
+        self._state.task_jobs[task_key] = job
+        self._state.tasks[task_key] = task_job_to_wire(job)
+        self._append_event_locked(
+            "job_reclaimed",
+            project_id=job.project_id,
+            task_id=str(task_id),
+            from_agent=holder,
+            to_agent=holder,
+            message_type="LEASE",
+            mode=job.mode,
+            status=job.status,
+            payload={},
+            preview=f"lease reclaimed epoch={new_epoch}",
+        )
+        return {"status": "reclaimed", "task_id": task_id, "lease": lease_to_wire(new_lease), "reclaimed": True}
+
+    async def heartbeat_job(
+        self,
+        task_id: str,
+        holder: str,
+        epoch: int,
+        project_id: str | None = None,
+        heartbeat_ms: int | None = None,
+    ) -> dict[str, Any]:
+        async with self._lock:
+            self._expire_timed_out_messages_locked()
+            return self.heartbeat_job_locked(task_id, holder, epoch, project_id=project_id, heartbeat_ms=heartbeat_ms)
+
+    async def reclaim_job(self, task_id: str, holder: str, project_id: str | None = None) -> dict[str, Any]:
+        async with self._lock:
+            self._expire_timed_out_messages_locked()
+            return self.reclaim_job_locked(task_id, holder, project_id=project_id)
 
     async def close_conversation(self, conversation_id: str, message: dict[str, Any]) -> dict[str, Any]:
         async with self._lock:

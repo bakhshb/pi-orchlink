@@ -2,14 +2,18 @@ import asyncio
 import os
 import signal
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request, Security
 from fastapi.security import APIKeyHeader
 
+from orchlink.broker.journal import Journal
 from orchlink.broker.protocol import AgentRegistration, MessageEnvelope, envelope_to_dict
+from orchlink.core.envelope import ENVELOPE_VERSION, ENVELOPE_VERSION_HEADER
 from orchlink.broker.settings import Settings, get_settings
 from orchlink.broker.storage import JsonlMessageStore, MemoryMessageStore, MessageStore, MessageStoreBusy
+from orchlink.broker.storage.base import LeaseConflictError
 
 
 VERSION = "0.5.0"
@@ -58,6 +62,17 @@ def create_store(settings: Settings) -> MessageStore:
     raise ValueError(f"Unsupported broker store backend: {settings.store_backend}")
 
 
+def _audit_journal_path(settings: Settings) -> Path | None:
+    """Audit JSONL path: only the jsonl backend persists the audit journal.
+
+    The memory backend is ephemeral by design, so its audit journal is
+    in-memory only.
+    """
+    if str(settings.store_backend or "memory").lower() != "jsonl":
+        return None
+    return Path(settings.store_path).expanduser().with_name("audit.jsonl")
+
+
 def create_app(
     store: MessageStore | None = None,
     settings: Settings | None = None,
@@ -99,9 +114,23 @@ def create_app(
                 task.cancel()
 
     app = FastAPI(title="Orchlink Broker", version=VERSION, lifespan=lifespan)
+
+    @app.middleware("http")
+    async def add_envelope_version_header(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/v1"):
+            response.headers[ENVELOPE_VERSION_HEADER] = ENVELOPE_VERSION
+        return response
+
     app.state.settings = settings_obj
     app.state.store = store_obj
     app.state.shutdown_scheduled = False
+    # Observability-only audit journal (M1). Attached to the store so every
+    # broker event is mirrored. Never the source of truth.
+    journal = Journal(path=_audit_journal_path(settings_obj))
+    attach_journal = getattr(store_obj, "attach_journal", None)
+    if callable(attach_journal):
+        attach_journal(journal)
 
     secure_router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
 
@@ -204,10 +233,27 @@ def create_app(
     @secure_router.post("/messages/{message_id}/reply")
     async def reply_to_message(
         message_id: str,
+        request: Request,
         reply: MessageEnvelope,
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, str]:
-        return await message_store.save_reply(message_id, envelope_to_dict(reply))
+        # M3: enforce holder/epoch when the caller asserts a lease. Backward
+        # compatible -- current Pi replies omit these headers and are accepted.
+        lease_epoch_header = request.headers.get("x-orchlink-lease-epoch")
+        lease_holder = request.headers.get("x-orchlink-lease-holder")
+        try:
+            lease_epoch = int(lease_epoch_header) if lease_epoch_header is not None else None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="x-orchlink-lease-epoch must be an integer") from exc
+        try:
+            return await message_store.save_reply(
+                message_id,
+                envelope_to_dict(reply),
+                lease_epoch=lease_epoch,
+                lease_holder=lease_holder,
+            )
+        except LeaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @secure_router.post("/messages/{message_id}/status")
     async def update_message_status(
@@ -241,6 +287,44 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         await maybe_schedule_auto_stop()
         return result
+
+    @secure_router.post("/jobs/{item_id}/heartbeat")
+    async def heartbeat_job(
+        item_id: str,
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        project_id = request_project_id(request, str(body.get("project_id") or "") or None)
+        holder = str(body.get("holder") or "")
+        try:
+            epoch = int(body.get("epoch") or 0)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="epoch must be an integer") from exc
+        try:
+            return await message_store.heartbeat_job(
+                item_id, holder, epoch, project_id=project_id, heartbeat_ms=body.get("heartbeat_ms")
+            )
+        except LeaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @secure_router.post("/jobs/{item_id}/reclaim")
+    async def reclaim_job(
+        item_id: str,
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        project_id = request_project_id(request, str(body.get("project_id") or "") or None)
+        holder = str(body.get("holder") or "")
+        try:
+            return await message_store.reclaim_job(item_id, holder, project_id=project_id)
+        except LeaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @secure_router.post("/conversations/{conversation_id}/close")
     async def close_conversation(
@@ -379,6 +463,56 @@ def create_app(
             "pending_reply_count": pending_reply_count,
             "recent_events": events,
         }
+
+    @secure_router.get("/journal")
+    async def get_journal(
+        request: Request,
+        project_id: str | None = Query(default=None),
+        since: int = Query(default=0, ge=0),
+        limit: int = Query(default=100, ge=1, le=1000),
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        project_id = request_project_id(request, project_id)
+        journal = getattr(message_store, "journal", None)
+        if journal is None:
+            return {"project_id": project_id, "entries": [], "last_seq": since}
+        entries = journal.query(project_id=project_id, since=since, limit=limit)
+        return {
+            "project_id": project_id,
+            "entries": [entry.to_dict() for entry in entries],
+            "last_seq": entries[-1].seq if entries else since,
+        }
+
+    @secure_router.post("/journal")
+    async def post_journal(
+        request: Request,
+        body: dict[str, Any] = Body(default_factory=dict),
+        message_store: MessageStore = Depends(get_store),
+    ) -> dict[str, Any]:
+        """Append an external transition entry (e.g. a Goal Mode transition).
+
+        Observability-only. Used by the goal layer to record goal.* transitions
+        in the same audit journal from v1, without making the journal a source
+        of truth.
+        """
+        journal = getattr(message_store, "journal", None)
+        if journal is None:
+            return {"status": "ignored", "seq": None}
+        action = str(body.get("action") or "").strip()
+        if not action:
+            raise HTTPException(status_code=400, detail="Journal action is required.")
+        project_id = request_project_id(request, str(body.get("project_id") or "") or None)
+        entry = journal.append(
+            project_id=str(project_id or body.get("project_id") or "default"),
+            actor=body.get("actor"),
+            action=action,
+            target_type=body.get("target_type"),
+            target_id=body.get("target_id"),
+            before=body.get("before"),
+            after=body.get("after"),
+            meta=body.get("meta") or {},
+        )
+        return {"status": "recorded", "seq": entry.seq}
 
     app.include_router(secure_router)
     return app

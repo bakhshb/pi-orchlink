@@ -4,7 +4,7 @@ from typing import Any
 
 import httpx
 
-from orchlink.broker.protocol import PROTOCOL_VERSION
+from orchlink.core.envelope import PROTOCOL_VERSION
 from orchlink.core.prompt_policy import TaskPromptPolicy
 from orchlink.project.config import broker_api_key, broker_url, resolve_agent_id, role_agent_id
 

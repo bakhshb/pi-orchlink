@@ -97,10 +97,14 @@ def test_pi_extension_uses_valid_record_type():
     assert "waiting for Pi recovery" in ORCHLINK_PI_EXTENSION
     assert "ORCHLINK_ACTIVITY_HEARTBEAT_MS" in ORCHLINK_PI_EXTENSION
     assert "postCurrentActivity" in ORCHLINK_PI_EXTENSION
+    assert "x-orchlink-lease-epoch" in ORCHLINK_PI_EXTENSION
+    assert "x-orchlink-lease-holder" in ORCHLINK_PI_EXTENSION
+    assert "renewJobLease" in ORCHLINK_PI_EXTENSION
     assert "pi.registerCommand(\"orch\"" not in ORCHLINK_PI_EXTENSION
     assert "compact-phase" not in ORCHLINK_PI_EXTENSION
     assert "phaseCompactionInstructions" in ORCHLINK_PI_EXTENSION
     assert "ctx.compact" in ORCHLINK_PI_EXTENSION
+    assert "setTimeout(() =>" in ORCHLINK_PI_EXTENSION
     assert "ORCHLINK_AUTO_COMPACT_PHASES" in ORCHLINK_PI_EXTENSION
     assert "pendingReviewCompaction" in ORCHLINK_PI_EXTENSION
     assert "looksLikeReviewReconciliation" in ORCHLINK_PI_EXTENSION

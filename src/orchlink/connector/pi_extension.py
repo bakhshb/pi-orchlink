@@ -2,6 +2,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+from orchlink.connector.pi_extension_pure import (
+    RECONCILIATION_PATTERN,
+    RECONCILIATION_PLACEHOLDER,
+    RECOVERABLE_ERROR_PATTERN,
+    RECOVERABLE_ERROR_PLACEHOLDER,
+)
 from orchlink.core.prompt_policy import TaskPromptPolicy
 from orchlink.project.config import run_dir
 
@@ -15,6 +21,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 type OrchMessage = Record<string, any>;
 
 const ORCHLINK_WORKER_TASK_GUIDANCE = __ORCHLINK_WORKER_TASK_GUIDANCE__;
+
+// Pure detection rules (single source: orchlink.connector.pi_extension_pure).
+const RECONCILIATION_REGEX = new RegExp(__ORCH_RECONCILIATION_PATTERN__, "i");
+const RECOVERABLE_ERROR_REGEX = new RegExp(__ORCH_RECOVERABLE_ERROR_PATTERN__, "i");
 
 function env(name: string, fallback = ""): string {
   return process.env[name] || fallback;
@@ -161,7 +171,7 @@ function replyEnvelope(task: OrchMessage, assistantMessage: any): OrchMessage {
   };
 }
 
-async function postJson(path: string, body: any): Promise<any> {
+async function postJson(path: string, body: any, extraHeaders: Record<string, string> = {}): Promise<any> {
   const baseUrl = env("ORCHLINK_BROKER_URL", "http://127.0.0.1:8787").replace(/\/$/, "");
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
@@ -169,6 +179,7 @@ async function postJson(path: string, body: any): Promise<any> {
       "content-type": "application/json",
       "x-api-key": env("ORCHLINK_API_KEY", "change-me"),
       "x-orchlink-project-id": env("ORCHLINK_PROJECT_ID", "default"),
+      ...extraHeaders,
     },
     body: JSON.stringify(body),
   });
@@ -191,6 +202,26 @@ async function getJson(path: string): Promise<any> {
 async function markMessageStatus(messageId: string, status: string): Promise<void> {
   if (!messageId) return;
   await postJson(`/v1/messages/${encodeURIComponent(messageId)}/status`, { status });
+}
+
+async function renewJobLease(taskId: string, epoch: number): Promise<{ ok: boolean; status: number }> {
+  if (!taskId) return { ok: false, status: 0 };
+  const baseUrl = env("ORCHLINK_BROKER_URL", "http://127.0.0.1:8787").replace(/\/$/, "");
+  try {
+    const response = await fetch(`${baseUrl}/v1/jobs/${encodeURIComponent(taskId)}/heartbeat`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": env("ORCHLINK_API_KEY", "change-me"),
+        "x-orchlink-project-id": env("ORCHLINK_PROJECT_ID", "default"),
+      },
+      body: JSON.stringify({ holder: agentId, epoch, heartbeat_ms: activityHeartbeatMs }),
+    });
+    return { ok: response.ok, status: response.status };
+  } catch (error: any) {
+    // Transient broker error: do not treat as lease loss. Keep working.
+    return { ok: false, status: 0 };
+  }
 }
 
 function truncate(value: any, maxLength = 180): string {
@@ -273,7 +304,7 @@ function isReviewResult(message: OrchMessage): boolean {
 function looksLikeReviewReconciliation(output: string): boolean {
   const text = String(output || "").trim();
   if (!text) return false;
-  return /(^|\n)\s*(Review reconciled|Decision|Blocked)\s*:/i.test(text);
+  return RECONCILIATION_REGEX.test(text);
 }
 
 function autoCompactionNote(review: OrchMessage, output: string): string {
@@ -301,6 +332,11 @@ export default function (pi: ExtensionAPI) {
   let abortCurrentTurn: (() => void) | undefined;
   let cancelNoticeSent = false;
   let activityUnsupported = false;
+  // M3 job lease: the worker captures the lease epoch at pickup and renews it
+  // via /v1/jobs/{id}/heartbeat. On a 409 (stale/reclaimed) it stops and steers.
+  let currentLeaseEpoch: number = 0;
+  let leaseLost = false;
+  let workerCtx: any;
   let phaseCompactionRequested = false;
   let phaseCompactionCustomInstructions = "";
   let pendingReviewCompaction: OrchMessage | undefined;
@@ -311,20 +347,28 @@ export default function (pi: ExtensionAPI) {
     if (phaseCompactionRequested) return;
     phaseCompactionRequested = true;
     phaseCompactionCustomInstructions = phaseCompactionInstructions(note);
-    ctx.compact({
-      customInstructions: phaseCompactionCustomInstructions,
-      onComplete: () => {
-        phaseCompactionRequested = false;
-        phaseCompactionCustomInstructions = "";
-        ctx.ui.notify("Orchlink auto phase compaction completed.", "info");
-      },
-      onError: (error: any) => {
+    ctx.ui.notify("Orchlink auto phase compaction started.", "info");
+    setTimeout(() => {
+      try {
+        ctx.compact({
+          customInstructions: phaseCompactionCustomInstructions,
+          onComplete: () => {
+            phaseCompactionRequested = false;
+            phaseCompactionCustomInstructions = "";
+            ctx.ui.notify("Orchlink auto phase compaction completed.", "info");
+          },
+          onError: (error: any) => {
+            phaseCompactionRequested = false;
+            phaseCompactionCustomInstructions = "";
+            ctx.ui.notify(`Orchlink phase compaction failed: ${error?.message || error}`, "error");
+          },
+        });
+      } catch (error: any) {
         phaseCompactionRequested = false;
         phaseCompactionCustomInstructions = "";
         ctx.ui.notify(`Orchlink phase compaction failed: ${error?.message || error}`, "error");
-      },
-    });
-    ctx.ui.notify("Orchlink auto phase compaction started.", "info");
+      }
+    }, 0);
   }
 
   pi.on("session_before_compact", async (event: any) => {
@@ -432,8 +476,20 @@ export default function (pi: ExtensionAPI) {
     if (stopped || role !== "work" || !currentTask) return;
     activityTimer = setTimeout(() => {
       void postCurrentActivity("heartbeat", "Worker still active.", { phase: "working" })
-        .finally(() => {
-          if (currentTask) scheduleActivityHeartbeat(activityHeartbeatMs);
+        .then(() => renewJobLease(String(currentTask?.task_id || ""), currentLeaseEpoch))
+        .then((lease) => {
+          if (lease && lease.status === 409) {
+            leaseLost = true;
+            workerCtx?.ui?.notify?.("Orchlink lease lost; stopping work.", "error");
+            abortIfPossible(workerCtx);
+            pi.sendUserMessage("[Orchlink] Job lease lost (reclaimed or stale heartbeat). Stop working now. Do not make more edits, do not call more tools, and briefly acknowledge the cancellation.", { deliverAs: "steer" });
+            return;
+          }
+          if (currentTask && !leaseLost) scheduleActivityHeartbeat(activityHeartbeatMs);
+        })
+        .catch((error) => {
+          console.error(`[orchlink] lease heartbeat failed: ${error?.message || error}`);
+          if (currentTask && !leaseLost) scheduleActivityHeartbeat(activityHeartbeatMs);
         });
     }, delayMs);
   }
@@ -441,13 +497,17 @@ export default function (pi: ExtensionAPI) {
   function isRecoverableAssistantError(assistantMessage: any): boolean {
     if (assistantMessage?.stopReason !== "error") return false;
     const errorText = `${assistantMessage?.errorMessage || ""} ${JSON.stringify(assistantMessage?.diagnostics || [])}`;
-    return /WebSocket error|provider_transport_failure|transport|Request timed out|timed out|timeout/i.test(errorText);
+    return RECOVERABLE_ERROR_REGEX.test(errorText);
   }
 
   async function sendReply(task: OrchMessage, assistantMessage: any, ctx: any) {
     try {
       const reply = replyEnvelope(task, assistantMessage);
-      await postJson(`/v1/messages/${encodeURIComponent(task.message_id)}/reply`, reply);
+      const leaseHeaders: Record<string, string> = currentLeaseEpoch ? {
+        "x-orchlink-lease-epoch": String(currentLeaseEpoch),
+        "x-orchlink-lease-holder": String(agentId || ""),
+      } : {};
+      await postJson(`/v1/messages/${encodeURIComponent(task.message_id)}/reply`, reply, leaseHeaders);
       const label = task.task_id || task.conversation_id;
       ctx.ui.notify(`Orchlink reply sent for ${label}`, "info");
     } catch (error: any) {
@@ -565,7 +625,10 @@ export default function (pi: ExtensionAPI) {
     currentTask = pendingTask;
     pendingTask = undefined;
     rememberAbortContext(ctx);
+    workerCtx = ctx;
     cancelNoticeSent = false;
+    leaseLost = false;
+    currentLeaseEpoch = Number((currentTask as any)?.lease?.epoch) || 0;
     void markMessageStatus(String(currentTask.message_id || ""), "RUNNING").catch((error) => {
       console.error(`[orchlink] status update failed: ${error?.message || error}`);
     });
@@ -655,7 +718,7 @@ export default function (pi: ExtensionAPI) {
 '''.replace(
     "__ORCHLINK_WORKER_TASK_GUIDANCE__",
     json.dumps(_TASK_PROMPT_POLICY.worker_task_guidance()),
-)
+).replace(RECONCILIATION_PLACEHOLDER, json.dumps(RECONCILIATION_PATTERN)).replace(RECOVERABLE_ERROR_PLACEHOLDER, json.dumps(RECOVERABLE_ERROR_PATTERN))
 
 
 def ensure_pi_extension(config: dict[str, Any]) -> Path:

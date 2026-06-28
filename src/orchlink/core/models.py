@@ -6,7 +6,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any, Literal
 
-from orchlink.core.states import JOB_STATUS_LIFECYCLE, JobStatus, normalize_status, require_transition
+from orchlink.core.states import JOB_STATUS_LIFECYCLE, CANONICAL_TERMINAL_STATUSES, JobStatus, normalize_status, require_transition
 
 
 JobKind = Literal["task", "talk"]
@@ -63,6 +63,9 @@ class Job:
     turn: int = 1
     max_turns: int = 1
     payload: dict[str, Any] = field(default_factory=dict)
+    # M3 job lease: {holder, expires_at, epoch, heartbeat_ms}. None when the job
+    # has never been dispatched or has reached a terminal state.
+    lease: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         normalized_status = normalize_status(self.status)
@@ -144,4 +147,9 @@ def advance_job(job: Job, event: JobEvent) -> Job:
         raise ValueError(f"Job event project mismatch: {event.project_id} != {job.project_id}")
     if event.job_id != job.id:
         raise ValueError(f"Job event id mismatch: {event.job_id} != {job.id}")
-    return replace(job, status=require_transition(job.status, event.status))
+    target_status = require_transition(job.status, event.status)
+    # M3: reaching a terminal state clears the lease so a stale holder cannot
+    # renew or reply against completed/cancelled work.
+    if target_status in CANONICAL_TERMINAL_STATUSES:
+        return replace(job, status=target_status, lease=None)
+    return replace(job, status=target_status)

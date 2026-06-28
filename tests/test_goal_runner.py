@@ -149,6 +149,35 @@ def _derive_reply(task_id: str) -> dict:
     }
 
 
+def _nested_derivation_reply(task_id: str) -> dict:
+    summary = """```acceptance
+# Acceptance criteria for G001: Build
+
+```yaml
+acceptance:
+- id: AC-1
+  text: CSV export works
+  type: objective
+  priority: core
+  depends_on: []
+  check: python3 check_ok.py
+  status: pending
+```
+```
+
+```plan
+# Plan
+1. implement CSV export
+```
+
+```coverage
+# Coverage
+- AC-1 covers source requirement
+- Uncovered: none
+```"""
+    return {"status": "DONE", "task_id": task_id, "reply": {"type": "RESULT", "payload": {"summary": summary}}}
+
+
 def test_goal_work_pauses_at_unapproved_gate(tmp_path, monkeypatch):
     _init(tmp_path, monkeypatch)
     (tmp_path / "prd.md").write_text("Build thing", encoding="utf-8")
@@ -412,6 +441,25 @@ def test_goal_start_derive_flag_derives_after_create(tmp_path, monkeypatch):
     assert "implement CSV export" in (tmp_path / ".orch" / "goals" / "G001" / "plan.md").read_text(encoding="utf-8")
 
 
+def test_goal_derive_parses_nested_acceptance_yaml_from_summary(tmp_path, monkeypatch):
+    _init(tmp_path, monkeypatch)
+    (tmp_path / "prd.md").write_text("Build CSV export", encoding="utf-8")
+    assert runner.invoke(cli_main.app, ["goal", "start", "Build", "--prd", "prd.md"]).exit_code == 0
+    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", lambda **kwargs: _nested_derivation_reply(kwargs["task_id"]))
+
+    result = runner.invoke(cli_main.app, ["goal", "derive", "G001"])
+
+    assert result.exit_code == 0
+    goal_dir = tmp_path / ".orch" / "goals" / "G001"
+    acceptance = (goal_dir / "acceptance.md").read_text(encoding="utf-8")
+    assert "```yaml" in acceptance
+    assert "AC-1" in acceptance
+    assert "CSV export works" in acceptance
+    assert _ac_status(tmp_path, "AC-1") == "pending"
+    assert "implement CSV export" in (goal_dir / "plan.md").read_text(encoding="utf-8")
+    assert "Uncovered: none" in (goal_dir / "coverage.md").read_text(encoding="utf-8")
+
+
 def test_goal_work_until_done_flag_is_accepted_and_still_capped(tmp_path, monkeypatch):
     _init(tmp_path, monkeypatch)
     _create_ready_goal(tmp_path)
@@ -639,3 +687,27 @@ def test_goal_audit_dispatches_worker_records_audit_and_does_not_mark_done(tmp_p
     assert any(event.get("type") == "audit" for event in history), "expected an audit history event"
     # Audit must not advance the goal to done.
     assert _goal(tmp_path)["status"] == "ready"
+
+
+def test_goal_audit_preserves_done_status(tmp_path, monkeypatch):
+    _init(tmp_path, monkeypatch)
+    _create_ready_goal(tmp_path)
+    _write_check(tmp_path, "check_ok.py", 0)
+    _write_acceptance(tmp_path, [_ac("AC-1", "CSV export works", check="python3 check_ok.py")])
+    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", lambda **kwargs: _result_reply(kwargs["task_id"]))
+    assert runner.invoke(cli_main.app, ["goal", "work", "G001", "--max-steps", "1"]).exit_code == 0
+    assert _goal(tmp_path)["status"] == "done"
+
+    calls = []
+    monkeypatch.setattr(
+        "orchlink.goal.runner.ask_worker_sync",
+        lambda **kwargs: (calls.append(kwargs["task_id"]), _audit_reply(kwargs["task_id"]))[1],
+    )
+
+    result = runner.invoke(cli_main.app, ["goal", "audit", "G001"])
+
+    assert result.exit_code == 0
+    assert calls == ["G001-AUDIT-001"]
+    assert _goal(tmp_path)["status"] == "done"
+    assert _goal(tmp_path)["active_task_id"] is None
+    assert (tmp_path / ".orch" / "goals" / "G001" / "audit.md").is_file()

@@ -353,9 +353,13 @@ class GoalRunner:
         reply = result.get("reply") or {}
         payload = reply.get("payload") or {}
         output = str(payload.get("summary") or payload.get("stdout") or "")
-        acceptance = str(payload.get("acceptance") or "") or GoalRunner._fenced_block(output, "acceptance")
-        plan = str(payload.get("plan") or "") or GoalRunner._fenced_block(output, "plan")
-        coverage = str(payload.get("coverage") or "") or GoalRunner._fenced_block(output, "coverage")
+        acceptance = str(payload.get("acceptance") or "") or GoalRunner._labeled_fenced_block(output, "acceptance")
+        plan = str(payload.get("plan") or "") or GoalRunner._labeled_fenced_block(output, "plan")
+        coverage = str(payload.get("coverage") or "") or GoalRunner._labeled_fenced_block(output, "coverage")
+        if not acceptance:
+            yaml_block = GoalRunner._acceptance_yaml_block(output)
+            if yaml_block:
+                acceptance = f"# Acceptance criteria for {goal.id}: {goal.title}\n\n```yaml\n{yaml_block.rstrip()}\n```"
         if not acceptance:
             acceptance = output.strip() or f"# Acceptance criteria for {goal.id}: {goal.title}\n"
         if not plan:
@@ -363,11 +367,44 @@ class GoalRunner:
         return acceptance.rstrip() + "\n", plan.rstrip() + "\n", (coverage.rstrip() + "\n" if coverage else None)
 
     @staticmethod
-    def _fenced_block(text: str, label: str) -> str:
+    def _labeled_fenced_block(text: str, label: str) -> str:
         import re
 
-        match = re.search(rf"```{label}\s*\n(.*?)\n```", text, flags=re.IGNORECASE | re.DOTALL)
-        return match.group(1) if match else ""
+        lines = text.splitlines()
+        start: int | None = None
+        for index, line in enumerate(lines):
+            if re.match(rf"^\s*```{label}\s*$", line, flags=re.IGNORECASE):
+                start = index + 1
+                break
+        if start is None:
+            for match in re.finditer(rf"^\s*```{label}\s*$", text, flags=re.IGNORECASE | re.MULTILINE):
+                return GoalRunner._labeled_fenced_block(text[match.start() :], label)
+            return ""
+
+        end = len(lines)
+        next_label = re.compile(r"^\s*```(?:acceptance|plan|coverage)\s*$", flags=re.IGNORECASE)
+        for index in range(start, len(lines)):
+            if next_label.match(lines[index]):
+                end = index
+                break
+        section = lines[start:end]
+        while section and not section[-1].strip():
+            section.pop()
+        if section and section[-1].strip() == "```":
+            section.pop()
+        while section and not section[-1].strip():
+            section.pop()
+        return "\n".join(section).strip()
+
+    @staticmethod
+    def _acceptance_yaml_block(text: str) -> str:
+        import re
+
+        for match in re.finditer(r"```(?:yaml|yml)\s*\n(.*?)\n```", text, flags=re.IGNORECASE | re.DOTALL):
+            block = match.group(1)
+            if "acceptance:" in block or "acceptance_criteria:" in block or "criteria:" in block or "acs:" in block:
+                return block.strip()
+        return ""
 
     def _audit_prompt(self, goal_id: str) -> str:
         goal = self.store.load(goal_id)

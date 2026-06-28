@@ -16,6 +16,18 @@ def job_payload(job: Job) -> dict[str, Any]:
     return dict(job.payload or {})
 
 
+def lease_to_wire(lease: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Serialize a job lease for API/CLI visibility (observability only)."""
+    if not lease:
+        return None
+    return {
+        "holder": lease.get("holder"),
+        "expires_at": lease.get("expires_at"),
+        "epoch": lease.get("epoch"),
+        "heartbeat_ms": lease.get("heartbeat_ms"),
+    }
+
+
 def task_job_to_wire(job: Job) -> dict[str, Any]:
     """Serialize a canonical task Job into the existing public task/job row."""
     payload = job_payload(job)
@@ -39,6 +51,7 @@ def task_job_to_wire(job: Job) -> dict[str, Any]:
         "last_activity_type": payload.get("last_activity_type"),
         "last_activity_tool": payload.get("last_activity_tool"),
         "last_activity_preview": payload.get("last_activity_preview"),
+        "lease": lease_to_wire(job.lease),
     }
 
 

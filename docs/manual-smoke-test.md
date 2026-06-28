@@ -47,7 +47,7 @@ Pass criteria:
 - Help text distinguishes human commands from debug/agent coordination commands where relevant.
 - `orch wait --help` documents `--timeout`, `--progress/--no-progress`, and `--poll-seconds`.
 - `orch jobs --help` documents `--active`, `--status`, `--kind`, `--id`, and `--json`.
-- `orch goal --help` lists `start`, `derive`, `review`, `gate`, `work`, `show`, `audit`, `signoff`, `trial`, and `trials`.
+- `orch goal --help` lists `start`, `list`, `derive`, `review`, `approve`, `gate`, `work`, `resume`, `show`, `audit`, `signoff`, `trial`, `trials`, and `cancel`.
 
 ## 2. Create a throwaway project
 
@@ -398,11 +398,14 @@ cat > .orch/goals/G001/coverage.md <<'MD'
 MD
 ````
 
-Review, approve, and run the goal loop:
+Review, list, approve, and run the goal loop. This path intentionally uses the standalone `approve` command for both gates; the combined `gate approve` path is exercised by the subjective goal below.
 
 ```bash
+orch goal list
 orch goal review G001
-orch goal gate G001 approve
+orch goal approve G001 ac
+orch goal approve G001 plan
+orch goal show G001
 orch goal work G001 --until done --max-steps 3 --timeout 600
 orch goal show G001
 python3 check_goal.py
@@ -418,7 +421,7 @@ orch goal audit G001 --timeout 600
 orch goal show G001
 ```
 
-Subjective signoff path, using a separate goal:
+Subjective signoff path, using a separate goal. This path exercises the combined `gate approve` command:
 
 ````bash
 orch goal start "Subjective docs signoff" --text "Confirm the README wording is clear enough for a human."
@@ -449,23 +452,71 @@ orch goal signoff G002 AC-1 --note "manual smoke signoff"
 orch goal show G002
 ````
 
+Blocked work, `resume`, and cancellation paths, using separate goals:
+
+````bash
+orch goal start "Resume recovery smoke" --text "Verify a blocked goal can resume after a failed check is repaired."
+cat > check_resume.py <<'PY'
+raise SystemExit(1)
+PY
+cat > .orch/goals/G003/acceptance.md <<'MD'
+# Acceptance
+
+```yaml
+acceptance:
+  - id: AC-1
+    text: Resume verifies the repaired check and marks the goal done
+    type: objective
+    priority: core
+    depends_on: []
+    check: python3 check_resume.py
+    source: inline
+    confidence: high
+    status: pending
+```
+MD
+cat > .orch/goals/G003/plan.md <<'MD'
+# Plan
+
+1. Run the failing check once to force a blocked/capped goal state.
+2. Repair `check_resume.py` in the smoke harness.
+3. Run `orch goal resume G003 --until done` and verify evidence is recorded.
+MD
+orch goal gate G003 approve
+orch goal work G003 --until done --max-steps 1 --timeout 600
+cat > check_resume.py <<'PY'
+raise SystemExit(0)
+PY
+orch goal resume G003 --until done --max-steps 2 --timeout 600
+orch goal show G003
+
+orch goal start "Cancellation smoke" --text "Exercise goal cancellation."
+orch goal list
+orch goal cancel G004 --reason "manual smoke cancellation drill"
+orch goal show G004
+orch goal list
+````
+
 Pass criteria:
 
 - `orch goal start` creates `.orch/goals/G001/{source.md,acceptance.md,plan.md,goal.yaml,history.jsonl}`.
+- `orch goal list` shows G001 with current status and gates.
 - `orch goal review` shows source, AC, plan, coverage, and no uncovered warning.
-- `orch goal gate G001 approve` moves the goal to ready.
+- `orch goal approve G001 ac` and `orch goal approve G001 plan` move the goal to ready.
 - `orch goal work G001 --until done` dispatches a worker task, verifies `python3 check_goal.py`, records evidence, and marks the goal `done`.
 - Worker edits only `orch_task.py` and/or `tests/test_orch_task.py` for the goal task.
 - `orch goal show G001` shows evidence for AC-1.
 - `trial`/`trials` records and lists the real smoke trial.
 - `audit` writes `.orch/goals/G001/audit.md` and does not change a done goal into a false state.
 - Subjective goal pauses for signoff, then `signoff` marks it done.
+- Resume recovery goal first stops in a blocked/capped state, then `orch goal resume G003 --until done` reruns the goal loop, records passing evidence, and marks G003 done after the check is repaired.
+- `orch goal cancel G004 --reason ...` marks G004 cancelled, clears any active task, records cancellation history, and `goal list` shows the terminal cancelled status.
 
 Extended derivation path, required when derivation prompts/parsing changed:
 
 ```bash
 orch goal start "Derived smoke goal" --prd goal-prd.md --derive --timeout 600
-orch goal review G003
+orch goal review G005
 ```
 
 Pass criteria for derivation:
@@ -520,7 +571,7 @@ Pass criteria:
 - Auto-compaction does not trigger before the lead reconciliation response.
 - Auto-compaction does not trigger if `orch idle` reports active work.
 
-Disable-path check, extended unless compaction changed:
+Disable-path check, required for any compaction/extension release and extended otherwise:
 
 ```bash
 # Restart the lead Pi session with auto review compaction disabled.
@@ -624,6 +675,27 @@ orch jobs --id TASK-HARD-TIMEOUT-001
 orch idle
 ```
 
+Extended lease-expiry and reclaim drill (M3):
+
+```bash
+# Dispatch a long task and capture the lease epoch from the delivered job.
+orch send work -t TASK-LEASE-001 -m "Lease drill. Do not edit files. Wait about 120 seconds, then reply that TASK-LEASE-001 completed."
+orch jobs --id TASK-LEASE-001   # note lease.epoch and lease.holder
+
+# Stop the worker so heartbeats stop and the lease expires.
+orch stop || true
+# Wait past the lease TTL (default ~90s), then reclaim as a recovered holder.
+curl -s -H 'X-API-Key: change-me' 'http://127.0.0.1:8787/v1/jobs/TASK-LEASE-001/reclaim' \
+  -H 'X-Orchlink-Project-ID: smoke-full' -H 'content-type: application/json' \
+  -d '{"holder":"smoke.recovered","project_id":"smoke-full"}' | python3 -m json.tool
+# Expect reclaimed=true and a new epoch (incremented).
+
+# Restart the worker and confirm the OLD holder cannot renew or reply (409).
+orch work
+```
+
+```
+
 Pass criteria:
 
 - Default `jobs` shows recent terminal and active rows for the current project.
@@ -632,6 +704,7 @@ Pass criteria:
 - Unknown `--kind` exits non-zero with a useful message.
 - `idle` exits non-zero while active work exists and exits zero afterward.
 - Terminal jobs do not display stale heartbeat activity as proof of active work.
+- Extended lease drill: after the lease TTL expires with no heartbeat, `POST /v1/jobs/{id}/reclaim` reassigns the holder and increments `epoch`; a stale-holder `POST /v1/jobs/{id}/heartbeat` or a reply with `X-Orchlink-Lease-Epoch`/`X-Orchlink-Lease-Holder` from the old holder returns 409 with no state change. Reclaim by the current holder while still valid is idempotent (`reclaimed=false`).
 - Extended: second worker task is rejected while one task is active.
 - Extended: open Talk blocks new worker tasks until closed.
 - Extended: hard timeout frees the worker lane and reports terminal state.
@@ -697,6 +770,9 @@ orch task TASK-EDIT-001
 orch task DOES-NOT-EXIST || true
 orch peek TASK-EDIT-001 || true
 orch watch --iterations 1 --limit 5
+# Audit journal (M1): append-only transition log, observability-only.
+curl -s -H 'X-API-Key: change-me' 'http://127.0.0.1:8787/v1/journal?project_id=smoke-full&limit=20'
+curl -s -H 'X-API-Key: change-me' 'http://127.0.0.1:8787/v1/journal?project_id=smoke-full&since=0&limit=5' | python3 -m json.tool
 ```
 
 Pass criteria:
@@ -705,6 +781,7 @@ Pass criteria:
 - `task` reports known task status and handles missing IDs cleanly.
 - `peek` is useful for long-running work and harmless for short completed work.
 - `watch --iterations 1` exits after one poll.
+- `GET /v1/journal?project_id=&since=&limit=` returns ordered transition entries scoped to the project; goal transitions (`goal.started`, `goal.gated`, `goal.worked`, `goal.done`, `goal.cancelled`, `goal.signedoff`) and broker transitions (`job.created`, `job.dispatched`, `job.replied`, `session.registered`, etc.) both appear.
 
 ## 13. Project scoping and same-ID safety
 
@@ -771,6 +848,59 @@ Pass criteria:
 
 - Completed task result is still readable after broker restart.
 - JSONL store path is created under `.orch/run/`.
+
+## 14A. Ungraceful broker crash and stale-session recovery
+
+Extended for normal feature work; required for broker/session/persistence changes and before broad production-readiness claims.
+
+Goal: prove a result survives an ungraceful broker death, normal commands restart the broker, and stale session/activity state does not masquerade as active work.
+
+Use a throwaway foreground broker so you can kill only the smoke broker process:
+
+```bash
+cd "$ORCH_SMOKE_ROOT"
+orch idle
+orch stop || true
+orch broker run --store-backend jsonl --store-path .orch/run/crash-journal.jsonl
+```
+
+In another terminal, with lead/work sessions attached to this foreground broker:
+
+```bash
+cd "$ORCH_SMOKE_ROOT"
+orch ask work --wait -t TASK-CRASH-PERSIST-001 -m "Crash recovery smoke. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-CRASH-PERSIST-001."
+orch get TASK-CRASH-PERSIST-001
+```
+
+Kill the foreground broker terminal ungracefully, for example by sending `SIGKILL` to that broker process. Do not use a broad `pkill` on a machine running other Orchlink projects. Then run:
+
+```bash
+cd "$ORCH_SMOKE_ROOT"
+orch jobs
+orch get TASK-CRASH-PERSIST-001
+orch sessions
+orch jobs --active
+orch idle
+```
+
+Optional stale-worker drill:
+
+```bash
+orch send work -t TASK-STALE-WORKER-001 -m "Stale worker drill. Do not edit files. Wait about 30 seconds, then reply."
+# Hard-close the visible worker Pi terminal before it replies.
+# Wait longer than the session lease/heartbeat timeout configured for this broker, then:
+orch sessions --all
+orch jobs --id TASK-STALE-WORKER-001
+orch idle || true
+```
+
+Pass criteria:
+
+- A normal command restarts the broker after the ungraceful death.
+- `orch get TASK-CRASH-PERSIST-001` still returns the completed result from JSONL storage.
+- `sessions`/`jobs` make stale or released sessions explicit instead of silently showing healthy active work.
+- `jobs --active` and `idle` reflect the real terminal state; stale heartbeats are not treated as proof of active work.
+- Optional stale-worker drill either cancels/times out the orphaned task or leaves an explicit terminal/recoverable state; it must not block the worker lane forever.
 
 ## 15. Stop/restart and session release
 
@@ -876,13 +1006,14 @@ Pass criteria:
 | REVIEW gate safety | Section 7 | Required |
 | Worker edits and tests | Section 8 | Required |
 | Goal Mode source, gate, work loop, evidence, audit, trial, signoff | Section 8A | Required for Goal Mode releases |
-| Native Pi compaction and auto review-phase compaction | Section 8B | Required for compaction/extension changes |
+| Native Pi compaction, auto review-phase compaction, and auto-compaction disable path | Section 8B | Required for compaction/extension changes |
 | `talk`, `say`, `close`, closed/missing/max-turn errors | Section 9 | Required |
 | `jobs`, `idle`, worker-lane locks, hard timeout | Section 10 | Core required; lock/timeout drills extended |
 | `cancel` | Section 11 | Required; shell abort timing extended |
 | `task`, `peek`, `watch`, `status` | Section 12 | Required for CLI/debug changes |
 | Project scoping and same-ID safety | Section 13 | Required for scoping changes |
 | JSONL persistence | Section 14 | Extended unless storage changed |
+| Ungraceful broker crash and stale-session recovery | Section 14A | Extended unless broker/session/persistence changed; required before production-readiness claims |
 | Peer-offline session guard | Section 16 | Extended unless session leases changed |
 | Final no-active-work gate | Section 17 | Required |
 

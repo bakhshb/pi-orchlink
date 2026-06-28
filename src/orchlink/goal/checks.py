@@ -15,6 +15,18 @@ from orchlink.goal.models import AcceptanceCriterion
 CHECK_LINE_RE = re.compile(r"^\s*check\s*:\s*(.+?)\s*$", re.IGNORECASE)
 UNSAFE_SHELL_CHARS = set("|&;<>()`$\\\n")
 
+# Trusted interpreters that may be invoked inline (e.g. ``python3 -c "..."``).
+# ``run_check`` executes with ``shell=False`` via ``shlex.split`` +
+# ``subprocess.run``, so for these interpreters shell metacharacters are
+# interpreter syntax inside the quoted argument, never shell separators. The
+# goal author is already trusted to write check scripts, so allowing inline
+# ``python3 -c`` does not widen the trust boundary. We test the actual
+# executable (``args[0]`` after ``shlex.split``) rather than a string prefix so
+# leading quotes/whitespace from YAML folding cannot defeat the safe-runner
+# path.
+SAFE_RUNNER_INTERPRETERS = {"python3", "python"}
+CHAIN_TOKEN = "&&"
+
 
 @dataclass
 class CheckResult:
@@ -98,6 +110,21 @@ def _extract_yaml_list(text: str) -> str:
 
 
 def run_check(command: str, cwd: Path, timeout_seconds: int = 1800) -> CheckResult:
+    try:
+        args = shlex.split(command)
+    except ValueError as exc:
+        return CheckResult(command=command, exit_code=2, stdout="", stderr=str(exc))
+    if not args:
+        return CheckResult(command=command, exit_code=2, stdout="", stderr="Empty check command.")
+    if CHAIN_TOKEN in args:
+        return _run_chained_check(command, args, cwd=cwd, timeout_seconds=timeout_seconds)
+    # Safe runner: trusted interpreters execute via shell=False, so shell
+    # metacharacters inside their arguments are interpreter syntax, not shell
+    # separators. Check the actual executable so YAML quoting/whitespace cannot
+    # defeat this path.
+    if args[0] in SAFE_RUNNER_INTERPRETERS:
+        process = subprocess.run(args, cwd=cwd, text=True, capture_output=True, check=False, timeout=timeout_seconds)
+        return CheckResult(command=command, exit_code=process.returncode, stdout=process.stdout, stderr=process.stderr)
     if any(char in command for char in UNSAFE_SHELL_CHARS):
         return CheckResult(
             command=command,
@@ -105,11 +132,29 @@ def run_check(command: str, cwd: Path, timeout_seconds: int = 1800) -> CheckResu
             stdout="",
             stderr="Check command contains shell metacharacters; refusing to run without an explicit safe runner.",
         )
-    try:
-        args = shlex.split(command)
-    except ValueError as exc:
-        return CheckResult(command=command, exit_code=2, stdout="", stderr=str(exc))
-    if not args:
-        return CheckResult(command=command, exit_code=2, stdout="", stderr="Empty check command.")
     process = subprocess.run(args, cwd=cwd, text=True, capture_output=True, check=False, timeout=timeout_seconds)
     return CheckResult(command=command, exit_code=process.returncode, stdout=process.stdout, stderr=process.stderr)
+
+
+def _run_chained_check(command: str, args: list[str], cwd: Path, timeout_seconds: int) -> CheckResult:
+    segments: list[list[str]] = [[]]
+    for arg in args:
+        if arg == CHAIN_TOKEN:
+            if not segments[-1]:
+                return CheckResult(command=command, exit_code=2, stdout="", stderr="Empty command before &&.")
+            segments.append([])
+            continue
+        segments[-1].append(arg)
+    if not segments[-1]:
+        return CheckResult(command=command, exit_code=2, stdout="", stderr="Empty command after &&.")
+
+    stdout_parts: list[str] = []
+    stderr_parts: list[str] = []
+    for segment in segments:
+        segment_command = shlex.join(segment)
+        result = run_check(segment_command, cwd=cwd, timeout_seconds=timeout_seconds)
+        stdout_parts.append(result.stdout)
+        stderr_parts.append(result.stderr)
+        if not result.passed:
+            return CheckResult(command=command, exit_code=result.exit_code, stdout="".join(stdout_parts), stderr="".join(stderr_parts))
+    return CheckResult(command=command, exit_code=0, stdout="".join(stdout_parts), stderr="".join(stderr_parts))

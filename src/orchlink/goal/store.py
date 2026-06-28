@@ -8,10 +8,70 @@ from typing import Any
 import yaml
 
 from orchlink.goal.models import Goal, SourceType, utc_now_iso
-from orchlink.project.config import orch_dir
+from orchlink.project.config import broker_api_key, broker_url, orch_dir
 
 
 GOAL_ID_RE = re.compile(r"^G(\d{3,})$")
+
+
+# Goal history event type -> audit journal action (M1).
+# Only transition-relevant events are journaled; noisy events (evidence,
+# trial_recorded, artifacts_written, task_result, gap_detected, gate_required,
+# cancel_task_failed) are skipped to keep the audit log meaningful.
+_GOAL_EVENT_ACTION: dict[str, tuple[str, str | None]] = {
+    "created": ("goal.started", "draft"),
+    "gate_approved": ("goal.gated", "approved"),
+    "gate_rejected": ("goal.gated", "rejected"),
+    "task_dispatched": ("goal.worked", "running"),
+    "derivation_dispatched": ("goal.worked", "running"),
+    "audit_dispatched": ("goal.worked", "running"),
+    "verified_done": ("goal.done", "done"),
+    "worker_blocker": ("goal.blocked", "blocked"),
+    "broker_blocked": ("goal.blocked", "blocked"),
+    "derivation_blocked": ("goal.blocked", "blocked"),
+    "audit_blocked": ("goal.blocked", "blocked"),
+    "cap_reached": ("goal.blocked", "blocked"),
+    "manual_verification_required": ("goal.blocked", "blocked"),
+    "subjective_signoff_required": ("goal.blocked", "blocked"),
+    "cancelled": ("goal.cancelled", "cancelled"),
+    "subjective_approved": ("goal.signedoff", None),
+}
+
+
+def journal_goal_transition(
+    config: dict[str, Any],
+    goal_id: str,
+    action: str,
+    before: str | None,
+    after: str | None,
+    meta: dict[str, Any] | None = None,
+) -> None:
+    """Best-effort POST of a goal transition to the broker audit journal.
+
+    Observability-only: failures are swallowed so a journal/broker outage
+    never blocks a goal operation. The goal store remains the source of truth.
+    """
+    try:
+        import httpx
+
+        project_id = str(config.get("project_id") or "default")
+        body = {
+            "project_id": project_id,
+            "actor": "orchlink.goal",
+            "action": action,
+            "target_type": "goal",
+            "target_id": goal_id,
+            "before": before,
+            "after": after,
+            "meta": meta or {},
+        }
+        headers = {"X-API-Key": broker_api_key(config), "X-Orchlink-Project-ID": project_id}
+        with httpx.Client(base_url=broker_url(config), timeout=2.0) as client:
+            response = client.post("/v1/journal", headers=headers, json=body)
+            response.raise_for_status()
+    except Exception:
+        # Observability-only: never propagate a journal failure.
+        pass
 
 
 class GoalStoreError(RuntimeError):
@@ -81,6 +141,22 @@ class GoalStore:
         record = {"time": utc_now_iso(), **event}
         with (directory / "history.jsonl").open("a", encoding="utf-8") as file:
             file.write(json.dumps(record, sort_keys=True) + "\n")
+        mapping = _GOAL_EVENT_ACTION.get(str(record.get("type") or ""))
+        if mapping is not None:
+            action, default_after = mapping
+            after = record.get("status") or default_after
+            try:
+                journal_goal_transition(
+                    self.config,
+                    goal_id,
+                    action,
+                    before=None,
+                    after=after,
+                    meta={"event_type": str(record.get("type") or ""), "source": "goal"},
+                )
+            except Exception:
+                # Observability-only: never let a journal failure block a goal transition.
+                pass
 
     def history(self, goal_id: str) -> list[dict[str, Any]]:
         path = self.goal_dir(goal_id) / "history.jsonl"

@@ -33,6 +33,7 @@ def _job_to_dict(job: Job) -> dict[str, Any]:
         "turn": job.turn,
         "max_turns": job.max_turns,
         "payload": job.payload,
+        "lease": job.lease,
     }
 
 
@@ -50,6 +51,7 @@ def _job_from_dict(data: dict[str, Any]) -> Job:
         turn=int(data.get("turn") or 1),
         max_turns=int(data.get("max_turns") or 1),
         payload=dict(data.get("payload") or {}),
+        lease=data.get("lease"),
     )
 
 
@@ -141,8 +143,8 @@ class JsonlMessageStore(MemoryMessageStore):
             lambda: MemoryMessageStore.enqueue_message(self, message, create_waiter=create_waiter),
         )
 
-    async def save_reply(self, message_id: str, reply: dict[str, Any]) -> dict[str, Any]:
-        return await self._recorded("save_reply", {"message_id": message_id, "reply": reply}, lambda: MemoryMessageStore.save_reply(self, message_id, reply))
+    async def save_reply(self, message_id: str, reply: dict[str, Any], lease_epoch: int | None = None, lease_holder: str | None = None) -> dict[str, Any]:
+        return await self._recorded("save_reply", {"message_id": message_id, "reply": reply}, lambda: MemoryMessageStore.save_reply(self, message_id, reply, lease_epoch=lease_epoch, lease_holder=lease_holder))
 
     async def update_message_status(self, message_id: str, status: str) -> dict[str, Any]:
         return await self._recorded(
@@ -182,6 +184,20 @@ class JsonlMessageStore(MemoryMessageStore):
             "cancel_work",
             {"item_id": item_id, "reason": reason, "project_id": project_id},
             lambda: MemoryMessageStore.cancel_work(self, item_id, reason=reason, project_id=project_id),
+        )
+
+    async def heartbeat_job(self, task_id: str, holder: str, epoch: int, project_id: str | None = None, heartbeat_ms: int | None = None) -> dict[str, Any]:
+        return await self._recorded(
+            "heartbeat_job",
+            {"task_id": task_id, "holder": holder, "epoch": epoch, "project_id": project_id, "heartbeat_ms": heartbeat_ms},
+            lambda: MemoryMessageStore.heartbeat_job(self, task_id, holder, epoch, project_id=project_id, heartbeat_ms=heartbeat_ms),
+        )
+
+    async def reclaim_job(self, task_id: str, holder: str, project_id: str | None = None) -> dict[str, Any]:
+        return await self._recorded(
+            "reclaim_job",
+            {"task_id": task_id, "holder": holder, "project_id": project_id},
+            lambda: MemoryMessageStore.reclaim_job(self, task_id, holder, project_id=project_id),
         )
 
     async def close_conversation(self, conversation_id: str, message: dict[str, Any]) -> dict[str, Any]:

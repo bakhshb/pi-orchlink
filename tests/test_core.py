@@ -19,6 +19,7 @@ def test_core_lifecycle_is_canonical_and_reused_by_broker_state():
         "QUEUED",
         "DELIVERED",
         "RUNNING",
+        "RECLAIMABLE",
         "DONE",
         "FAILED",
         "TIMEOUT",

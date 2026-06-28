@@ -8,6 +8,11 @@ class MessageStoreBusy(RuntimeError):
         super().__init__(str(detail.get("message") or "Worker is busy."))
 
 
+class LeaseConflictError(RuntimeError):
+    """Raised when a lease operation conflicts (stale epoch/holder, or reclaim of a non-expired lease)."""
+
+
+
 class MessageStore(ABC):
     @abstractmethod
     async def register_agent(self, agent: dict[str, Any]) -> dict[str, Any]:
@@ -26,7 +31,13 @@ class MessageStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def save_reply(self, message_id: str, reply: dict[str, Any]) -> dict[str, Any]:
+    async def save_reply(
+        self,
+        message_id: str,
+        reply: dict[str, Any],
+        lease_epoch: int | None = None,
+        lease_holder: str | None = None,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
@@ -72,6 +83,21 @@ class MessageStore(ABC):
 
     @abstractmethod
     async def cancel_work(self, item_id: str, reason: str = "", project_id: str | None = None) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def heartbeat_job(
+        self,
+        task_id: str,
+        holder: str,
+        epoch: int,
+        project_id: str | None = None,
+        heartbeat_ms: int | None = None,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def reclaim_job(self, task_id: str, holder: str, project_id: str | None = None) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
