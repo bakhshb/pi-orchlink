@@ -127,7 +127,13 @@ function Clone-OrUpdateRepo {
         if ($LASTEXITCODE -ne 0) { Fail "git fetch failed" }
         git -C $InstallDir checkout $Ref
         if ($LASTEXITCODE -ne 0) { Fail "git checkout failed: $Ref" }
-        git -C $InstallDir pull --ff-only origin $Ref 2>$null
+        $currentBranch = git -C $InstallDir symbolic-ref -q --short HEAD
+        if ($LASTEXITCODE -eq 0 -and $currentBranch -eq $Ref) {
+            git -C $InstallDir pull --ff-only origin $Ref
+            if ($LASTEXITCODE -ne 0) { Fail "git pull failed: $Ref" }
+        } else {
+            Write-OrchWarn "Skipping git pull for detached ref: $Ref"
+        }
         New-Item -ItemType File -Force $MarkerFile | Out-Null
         return
     }
