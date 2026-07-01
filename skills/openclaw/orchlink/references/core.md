@@ -8,7 +8,7 @@ Human daily commands:
 
 - `orch init` creates `.orch/project.yaml` and generated lead/work skills for a project.
 - `orch lead` starts or reopens the visible Pi lead session. OpenClaw usually does not need this.
-- `orch work` starts or reopens the visible Pi worker session. OpenClaw usually needs this running.
+- `orch work` starts or reopens the visible Pi worker session. OpenClaw usually needs this running. If no worker is active, ask whether to use a visible worker terminal or a human-approved background worker.
 - `orch doctor` checks project config, broker compatibility, Pi command, and generated skills.
 - `orch sessions` shows registered lead/work Pi sessions. Use `orch sessions --all` for released history and `--json` only when machine-readable output helps.
 - `orch jobs` browses recent and active work in the current project.
@@ -26,6 +26,20 @@ Lead coordination commands:
 - `orch peek T002` shows recent activity for long-running work. It does not return the final result.
 - `orch cancel T002 -m "reason"` cancels stale or no-longer-needed work before assigning something else.
 - `orch talk`, `orch say`, and `orch close` manage Talk Mode only when a visible lead Pi chat is part of the workflow.
+
+## Starting worker sessions
+
+If `orch sessions` shows no active `work` session, offer two options and wait for the human's preference unless they already asked for one:
+
+1. Visible worker terminal, recommended: ask the human to run `orch work --new` in a separate terminal.
+2. Background worker, only with human approval and shell access:
+
+```bash
+mkdir -p .orch/run && nohup orch work --new > .orch/run/orch-work.log 2>&1 & echo $!
+orch sessions
+```
+
+If the background worker does not register, inspect `.orch/run/orch-work.log` and fall back to the visible-terminal option. Do not hide a failed background start.
 
 ## Choosing the right command
 

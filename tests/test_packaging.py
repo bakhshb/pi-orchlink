@@ -38,6 +38,9 @@ def test_adapter_skills_share_prompt_policy_text():
         assert policy.lead_reply_guidance_markdown() in text
         assert "references/review-gates.md" in text
         assert "Pi's native `/compact` command" in text
+        assert "visible worker terminal" in text
+        assert "nohup orch work --new" in text
+        assert ".orch/run/orch-work.log" in text
 
 
 def test_cli_imports_from_installable_package_and_exposes_required_commands():

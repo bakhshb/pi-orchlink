@@ -1,7 +1,7 @@
 ---
 name: orchlink
 description: Use this skill whenever OpenClaw should act as the lead agent for a local Pi worker through Orchlink. It covers safe setup checks, choosing ask/send/talk/goal mode, review gates, exact wait/get results, cancellation, stale-broker recovery, and when to load the bundled references.
-version: 1.1.0
+version: 1.1.1
 platforms: [linux, macos]
 metadata:
   openclaw:
@@ -43,7 +43,10 @@ cd /home/debian/projects/orchlink
 ./install.sh
 ```
 
-If the project is not initialized, ask the human to run `orch init`. If no worker session is active, ask the human to start one in a visible terminal with `orch work --new`.
+If the project is not initialized, ask the human to run `orch init`. If no worker session is active, offer exactly two choices instead of assuming:
+
+1. Start a visible worker terminal, recommended for reliability: ask the human to run `orch work --new` in a separate terminal.
+2. Run the worker in the background, only with human approval and shell access: `mkdir -p .orch/run && nohup orch work --new > .orch/run/orch-work.log 2>&1 & echo $!`, then run `orch sessions` to confirm it registered. If it fails, read `.orch/run/orch-work.log` and fall back to the visible-terminal option.
 
 ## Quick command chooser
 
