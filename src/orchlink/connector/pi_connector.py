@@ -2,6 +2,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -74,9 +75,19 @@ class PiConnector:
     def pi_command(self) -> str:
         return str((self.config.get("pi") or {}).get("command") or "pi")
 
+    def _is_path_command(self, command: str) -> bool:
+        separators = {os.path.sep, os.path.altsep, "/", "\\"}
+        return any(separator and separator in command for separator in separators)
+
+    def resolved_pi_command(self) -> str:
+        command = self.pi_command()
+        if self._is_path_command(command):
+            return command
+        return shutil.which(command) or command
+
     def check_available(self) -> bool:
         command = self.pi_command()
-        if os.path.sep in command:
+        if self._is_path_command(command):
             return Path(command).exists()
         return shutil.which(command) is not None
 
@@ -113,6 +124,10 @@ class PiConnector:
         env = os.environ.copy()
         role_key = "work" if role == "work" else "lead"
         role_config = self.config.get(role_key) or {}
+        command_dir = str(Path(sys.executable).parent)
+        path_value = env.get("PATH") or env.get("Path") or ""
+        env["PATH"] = command_dir if not path_value else f"{command_dir}{os.pathsep}{path_value}"
+        env["Path"] = env["PATH"]
         env.update(
             {
                 "ORCHLINK_PI_ROLE": role,
@@ -199,13 +214,13 @@ class PiConnector:
         configured_args = pi_config.get("lead_args")
         if configured_args:
             return [
-                self.pi_command(),
+                self.resolved_pi_command(),
                 *[str(arg) for arg in configured_args],
                 *self._system_prompt_args("lead"),
                 *self._extension_args(),
             ]
         return [
-            self.pi_command(),
+            self.resolved_pi_command(),
             *self._session_args("lead"),
             "--name",
             "Orchlink Lead",
@@ -218,13 +233,13 @@ class PiConnector:
         configured_args = pi_config.get("work_args")
         if configured_args:
             return [
-                self.pi_command(),
+                self.resolved_pi_command(),
                 *[str(arg) for arg in configured_args],
                 *self._system_prompt_args("work"),
                 *self._extension_args(),
             ]
         return [
-            self.pi_command(),
+            self.resolved_pi_command(),
             *self._session_args("work"),
             "--name",
             "Orchlink Worker",

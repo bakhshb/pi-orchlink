@@ -75,7 +75,7 @@ function Test-PythonVersion {
 }
 
 function Remove-CommandShims {
-    foreach ($name in @("orch.cmd", "orchlink.cmd")) {
+    foreach ($name in @("orch", "orch.cmd", "orchlink.cmd")) {
         Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $CommandDir $name)
     }
 }
@@ -172,9 +172,13 @@ function Install-Package {
 function Write-CommandShim {
     New-Item -ItemType Directory -Force $CommandDir | Out-Null
     $OrchExe = Join-Path $VenvDir "Scripts\orch.exe"
-    $ShimPath = Join-Path $CommandDir "orch.cmd"
-    $Shim = "@echo off`r`n`"$OrchExe`" %*`r`n"
-    [System.IO.File]::WriteAllText($ShimPath, $Shim, [System.Text.Encoding]::ASCII)
+    $CmdShimPath = Join-Path $CommandDir "orch.cmd"
+    $CmdShim = "@echo off`r`n`"$OrchExe`" %*`r`n"
+    [System.IO.File]::WriteAllText($CmdShimPath, $CmdShim, [System.Text.Encoding]::ASCII)
+    $ShellShimPath = Join-Path $CommandDir "orch"
+    $ShellOrchExe = $OrchExe -replace "\\", "/"
+    $ShellShim = "#!/usr/bin/env sh`nexec `"$ShellOrchExe`" `"`$@`"`n"
+    [System.IO.File]::WriteAllText($ShellShimPath, $ShellShim, [System.Text.Encoding]::ASCII)
     Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $CommandDir "orchlink.cmd")
 }
 
@@ -204,6 +208,7 @@ function Print-Success {
     Write-Host ""
     Write-Host "Commands:"
     Write-Host "  $CommandDir\orch.cmd"
+    Write-Host "  $CommandDir\orch"
     Write-Host ""
     if (Get-Command orch -ErrorAction SilentlyContinue) {
         Write-OrchLog "orch is available on PATH: $((Get-Command orch).Source)"

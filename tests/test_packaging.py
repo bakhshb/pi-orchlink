@@ -27,6 +27,8 @@ def test_windows_installer_exists_and_sets_up_command_shim():
     assert "LOCALAPPDATA is not set" in text
     assert "Scripts\\orch.exe" in text
     assert '"$OrchExe`" %*`r`n' in text
+    assert 'exec `"$ShellOrchExe`" `"`$@`"' in text
+    assert '@("orch", "orch.cmd", "orchlink.cmd")' in text
     assert "symbolic-ref -q --short HEAD" in text
     assert "git pull failed: $Ref" in text
     assert "git pull --ff-only origin $Ref 2>$null" not in text

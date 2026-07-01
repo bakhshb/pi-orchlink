@@ -114,6 +114,36 @@ def test_pi_connector_defaults_to_project_local_session_dir(tmp_path):
     assert session_dir.is_dir()
 
 
+def test_pi_connector_launches_resolved_path_from_path_lookup(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    config = load_project_config(tmp_path)
+    resolved = r"C:\Users\demo\AppData\Roaming\npm\pi.cmd"
+
+    monkeypatch.setattr("orchlink.connector.pi_connector.shutil.which", lambda command: resolved if command == "pi" else None)
+
+    connector = PiConnector(config)
+
+    assert connector.pi_command() == "pi"
+    assert connector.check_available()
+    assert connector.lead_argv()[0] == resolved
+    assert connector.work_interactive_argv()[0] == resolved
+
+
+def test_pi_connector_adds_current_scripts_dir_to_pi_environment(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    config = load_project_config(tmp_path)
+    scripts_dir = tmp_path / ".venv" / "Scripts"
+    python_exe = scripts_dir / "python.exe"
+
+    monkeypatch.setenv("PATH", "existing-path")
+    monkeypatch.setattr("orchlink.connector.pi_connector.sys.executable", str(python_exe))
+
+    env = PiConnector(config)._env("lead")
+
+    assert env["PATH"].split(";" if ";" in env["PATH"] else ":")[0] == str(scripts_dir)
+    assert env["Path"] == env["PATH"]
+
+
 def test_chat_envelope_summarizes_topic_without_duplicating_full_message(tmp_path):
     init_project(tmp_path, project_id="demo")
     config = load_project_config(tmp_path)
