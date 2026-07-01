@@ -16,7 +16,7 @@ from orchlink.broker.storage import JsonlMessageStore, MemoryMessageStore, Messa
 from orchlink.broker.storage.base import LeaseConflictError
 
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 BROKER_CAPABILITIES = [
     "project_header_scope",
     "task_activity_endpoint",
