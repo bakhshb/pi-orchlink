@@ -59,6 +59,62 @@ def test_readme_documents_windows_install_and_worker_background_option():
     assert ".orch\\run\\orch-work.log" in text
 
 
+def test_readme_documents_windows_beta_status_for_g006_ac1():
+    """AC-1 for goal G006: README states Windows is currently beta, enumerates
+    install/update/uninstall/shim capabilities, calls out shell/PATH variability
+    across PowerShell, CMD, Git Bash, and Pi's tool shell, and identifies
+    Linux/macOS as the primary tested platforms. Substring assertions only,
+    no shell metacharacters, safe for any harness.
+    """
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    assert "Windows support is currently beta" in text
+    assert "basic install, update, uninstall, and command shims" in text
+    assert "PowerShell, CMD, Git Bash, and Pi's tool shell" in text
+    assert "Linux/macOS remain the primary tested paths" in text
+
+    # Positional guard: the Windows-beta blockquote must live inside the
+    # Windows install section, not stranded in an unrelated section. AC-1
+    # calls for the language to be "near the Windows install instructions."
+    section_start = next(
+        (i for i, line in enumerate(lines) if "Install Pi Orchlink on Windows" in line),
+        None,
+    )
+    section_end = next(
+        (i for i, line in enumerate(lines, start=section_start + 1)
+         if line.startswith("## ") and "Start a project" in line),
+        None,
+    ) if section_start is not None else None
+
+    beta_line = next(
+        (i for i, line in enumerate(lines) if "Windows support is currently beta" in line),
+        None,
+    )
+
+    assert section_start is not None, "Windows install section header not found"
+    assert section_end is not None, "'## Start a project' header not found after Windows install section"
+    assert beta_line is not None, "Windows-beta blockquote not found"
+    assert section_start < beta_line < section_end, (
+        "Windows-beta blockquote must be inside the Windows install section"
+    )
+
+
+def test_readme_documents_resume_as_first_recovery_command_for_g006_ac7():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "Use `orch resume` first" in text
+    assert "active task or goal" in text
+    assert "lead/work sessions" in text
+    assert "last broker checkpoint" in text
+    assert "drifted leases" in text
+    assert "one recommended next command" in text
+    assert "`orch idle`" in text
+    assert "`orch jobs`" in text
+    assert "`orch sessions`" in text
+    assert "`orch goal show Gxxx`" in text
+
+
 def test_project_skill_templates_are_packaged_markdown_files():
     from orchlink.project.init import load_skill_reference_template, load_skill_template
 
@@ -192,6 +248,8 @@ def test_pi_extension_has_session_before_compact_hook_with_state_pointer_summary
     assert "compaction: {" in ORCHLINK_PI_EXTENSION
     assert "firstKeptEntryId" in ORCHLINK_PI_EXTENSION
     assert "## Orchlink state" in ORCHLINK_PI_EXTENSION
+    assert "orchlinkPostCompactionResumeSteer" in ORCHLINK_PI_EXTENSION
+    assert "postCompactionResumeSteer" in ORCHLINK_PI_EXTENSION
     assert "pi.on(\"session_compact\"" in ORCHLINK_PI_EXTENSION
     assert "schedule(0);" in ORCHLINK_PI_EXTENSION
 
@@ -199,21 +257,27 @@ def test_pi_extension_has_session_before_compact_hook_with_state_pointer_summary
 def test_pi_extension_rekicks_polling_after_compaction_callbacks():
     from orchlink.connector.pi_extension import ORCHLINK_PI_EXTENSION
 
+    assert "const customInstructions = phaseCompactionInstructions(note);" in ORCHLINK_PI_EXTENSION
+    assert "customInstructions," in ORCHLINK_PI_EXTENSION
+    assert "ORCHLINK_COMPACTION_WATCHDOG_MS" in ORCHLINK_PI_EXTENSION
+    assert "Orchlink phase compaction did not report completion; polling resumed." in ORCHLINK_PI_EXTENSION
     assert """onComplete: () => {
-            phaseCompactionRequested = false;
-            phaseCompactionCustomInstructions = "";
             ctx.ui.notify("Orchlink auto phase compaction completed.", "info");
-            schedule(0);
+            finishCompaction();
           }""" in ORCHLINK_PI_EXTENSION
     assert """onError: (error: any) => {
-            phaseCompactionRequested = false;
-            phaseCompactionCustomInstructions = "";
             ctx.ui.notify(`Orchlink phase compaction failed: ${error?.message || error}`, "error");
-            schedule(0);
+            finishCompaction();
           }""" in ORCHLINK_PI_EXTENSION
     assert """pi.on("session_compact", async (_event: any, ctx: any) => {
     phaseCompactionRequested = false;
     phaseCompactionCustomInstructions = "";
+    clearRecoveryTimer();
+    const resumeSteer = postCompactionResumeSteer;
+    postCompactionResumeSteer = "";
+    if (role === "lead" && resumeSteer) {
+      pi.sendUserMessage(resumeSteer, { deliverAs: "steer" });
+    }
     if (["lead", "work"].includes(role)) {
       ctx.ui.notify(`Orchlink ${role} polling resumed after compaction.`, "info");
       schedule(0);

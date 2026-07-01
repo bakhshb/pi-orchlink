@@ -98,6 +98,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
 
 Close running `orch lead` / `orch work` / Pi terminals before uninstalling so Windows can remove files from the virtual environment. Advanced overrides are available through `-Repo`, `-Ref`, `-Dir`, `-BinDir`, `-Python` or the matching environment variables: `ORCHLINK_REPO_URL`, `ORCHLINK_REF`, `ORCHLINK_INSTALL_DIR`, `ORCHLINK_BIN_DIR`, `ORCHLINK_PYTHON`, and `ORCHLINK_SOURCE_DIR`. If your project path contains spaces, quote it when passing arguments through `orch.cmd`.
 
+> **Windows support is currently beta.** The installer supports basic install, update, uninstall, and command shims, but shell/PATH behavior can vary between PowerShell, CMD, Git Bash, and Pi's tool shell. Linux/macOS remain the primary tested paths; if a behavior differs on Windows, compare against the Linux/macOS flow before reporting it as a blocker.
+
 ## Start a project
 
 Run this inside the project where lead and work should help you:
@@ -153,6 +155,12 @@ The worker reply appears inside the lead chat.
 6. You read the final answer in the lead chat.
 
 You should not need to watch the broker or copy messages between terminals.
+
+### Checking whether it is safe to continue
+
+Use `orch resume` first when returning after an interruption, broker restart, cancelled task, or compacted conversation. It prints the active task or goal, lead/work sessions, the last broker checkpoint, drifted leases, and one recommended next command in a single plain-text report.
+
+Use the narrower commands when you already know what you need: `orch idle` for a quick safe/unsafe worker-lane check, `orch jobs` for recent task/talk rows, `orch sessions` for lead/work session leases, and `orch goal show Gxxx` for a specific goal's acceptance evidence.
 
 ## How lead should use work
 

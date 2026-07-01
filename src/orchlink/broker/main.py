@@ -2,12 +2,20 @@ import asyncio
 import os
 import signal
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request, Security
 from fastapi.security import APIKeyHeader
 
+from orchlink.broker.checkpoint import (
+    DriftedLease,
+    checkpoint_path,
+    load_checkpoint,
+    reconcile_checkpoint,
+    record_lease,
+)
 from orchlink.broker.journal import Journal
 from orchlink.broker.protocol import AgentRegistration, MessageEnvelope, envelope_to_dict
 from orchlink.core.envelope import ENVELOPE_VERSION, ENVELOPE_VERSION_HEADER
@@ -16,7 +24,7 @@ from orchlink.broker.storage import JsonlMessageStore, MemoryMessageStore, Messa
 from orchlink.broker.storage.base import LeaseConflictError
 
 
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 BROKER_CAPABILITIES = [
     "project_header_scope",
     "task_activity_endpoint",
@@ -71,6 +79,83 @@ def _audit_journal_path(settings: Settings) -> Path | None:
     if str(settings.store_backend or "memory").lower() != "jsonl":
         return None
     return Path(settings.store_path).expanduser().with_name("audit.jsonl")
+
+
+def _checkpoint_project_root(settings: Settings) -> Path:
+    """Infer the project root from the configured broker store path."""
+    store_path = Path(settings.store_path).expanduser()
+    if not store_path.is_absolute():
+        store_path = Path.cwd() / store_path
+    # Default shape is <project>/.orch/run/orchlink-journal.jsonl.
+    try:
+        return store_path.parent.parent.parent
+    except IndexError:
+        return Path.cwd()
+
+
+def _current_job_leases(store: MessageStore) -> dict[str, tuple[int, str]]:
+    """Snapshot current task leases without coupling checkpoint.py to storage."""
+    state = getattr(store, "_state", None)
+    task_jobs = getattr(state, "task_jobs", {}) if state is not None else {}
+    current: dict[str, tuple[int, str]] = {}
+    for job in task_jobs.values():
+        lease = getattr(job, "lease", None)
+        task_id = getattr(job, "id", None)
+        if lease and task_id:
+            current[str(task_id)] = (int(lease.get("epoch") or 0), str(lease.get("holder") or ""))
+    return current
+
+
+def _emit_checkpoint_drifts(store: MessageStore, drifts: list[DriftedLease]) -> None:
+    """Expose startup drift through /events without polluting the audit journal."""
+    state = getattr(store, "_state", None)
+    events = getattr(state, "events", None) if state is not None else None
+    if not isinstance(events, list):
+        return
+    next_event_id = int(getattr(state, "next_event_id", 1) or 1)
+    for drift in drifts:
+        events.append(
+            {
+                "id": next_event_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "type": "lease_expired_during_downtime",
+                "task_id": drift.task_id,
+                "message_type": "LEASE",
+                "status": "DRIFTED",
+                "payload": drift.to_dict(),
+                "preview": (
+                    f"lease drift {drift.task_id}: {drift.reason} "
+                    f"previous_epoch={drift.previous_epoch} current_epoch={drift.current_epoch}"
+                ),
+            }
+        )
+        next_event_id += 1
+    state.next_event_id = next_event_id
+
+
+def _record_checkpoint_from_wire(settings: Settings, item: dict[str, Any], status: str) -> None:
+    task_id = item.get("task_id")
+    lease = item.get("lease") or {}
+    if not task_id or not lease:
+        return
+    record_lease(
+        _checkpoint_project_root(settings),
+        str(task_id),
+        int(lease.get("epoch") or 0),
+        str(lease.get("holder") or ""),
+        status=status,  # type: ignore[arg-type]
+    )
+
+
+def _record_recently_settled(settings: Settings, task_id: str, epoch: int | None, holder: str | None) -> None:
+    if epoch is None or holder is None:
+        checkpoint = load_checkpoint(checkpoint_path(_checkpoint_project_root(settings)))
+        prior = next((lease for lease in checkpoint.in_flight if lease.task_id == task_id), None)
+        if prior is None:
+            return
+        epoch = prior.epoch
+        holder = prior.holder
+    record_lease(_checkpoint_project_root(settings), task_id, epoch, holder, "recently_settled")
 
 
 def create_app(
@@ -131,6 +216,10 @@ def create_app(
     attach_journal = getattr(store_obj, "attach_journal", None)
     if callable(attach_journal):
         attach_journal(journal)
+
+    checkpoint = load_checkpoint(checkpoint_path(_checkpoint_project_root(settings_obj)))
+    app.state.drifted_leases = reconcile_checkpoint(checkpoint, _current_job_leases(store_obj))
+    _emit_checkpoint_drifts(store_obj, app.state.drifted_leases)
 
     secure_router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
 
@@ -228,6 +317,7 @@ def create_app(
         message = await message_store.get_next_message(agent_id, wait_seconds)
         if message is None:
             return {"status": "empty"}
+        _record_checkpoint_from_wire(settings_obj, message, "in_flight")
         return {"status": "message", "message": message}
 
     @secure_router.post("/messages/{message_id}/reply")
@@ -245,15 +335,20 @@ def create_app(
             lease_epoch = int(lease_epoch_header) if lease_epoch_header is not None else None
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="x-orchlink-lease-epoch must be an integer") from exc
+        reply_dict = envelope_to_dict(reply)
         try:
-            return await message_store.save_reply(
+            result = await message_store.save_reply(
                 message_id,
-                envelope_to_dict(reply),
+                reply_dict,
                 lease_epoch=lease_epoch,
                 lease_holder=lease_holder,
             )
         except LeaseConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        task_id = reply_dict.get("task_id")
+        if task_id and str(result.get("status") or "") == "reply_received":
+            _record_recently_settled(settings_obj, str(task_id), lease_epoch, lease_holder)
+        return result
 
     @secure_router.post("/messages/{message_id}/status")
     async def update_message_status(
@@ -285,6 +380,8 @@ def create_app(
             )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        if str(result.get("status") or "") == "cancelled":
+            _record_recently_settled(settings_obj, item_id, None, None)
         await maybe_schedule_auto_stop()
         return result
 
@@ -302,13 +399,15 @@ def create_app(
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="epoch must be an integer") from exc
         try:
-            return await message_store.heartbeat_job(
+            result = await message_store.heartbeat_job(
                 item_id, holder, epoch, project_id=project_id, heartbeat_ms=body.get("heartbeat_ms")
             )
         except LeaseConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        _record_checkpoint_from_wire(settings_obj, {"task_id": item_id, "lease": result.get("lease")}, "in_flight")
+        return result
 
     @secure_router.post("/jobs/{item_id}/reclaim")
     async def reclaim_job(
@@ -320,11 +419,13 @@ def create_app(
         project_id = request_project_id(request, str(body.get("project_id") or "") or None)
         holder = str(body.get("holder") or "")
         try:
-            return await message_store.reclaim_job(item_id, holder, project_id=project_id)
+            result = await message_store.reclaim_job(item_id, holder, project_id=project_id)
         except LeaseConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        _record_checkpoint_from_wire(settings_obj, {"task_id": item_id, "lease": result.get("lease")}, "in_flight")
+        return result
 
     @secure_router.post("/conversations/{conversation_id}/close")
     async def close_conversation(

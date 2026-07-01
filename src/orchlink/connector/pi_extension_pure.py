@@ -151,6 +151,20 @@ Continue the current Orchlink project with compact context and reload details fr
 3. If scope or blocker details are unclear, ask one specific unblock question."""
 
 
+def build_post_compaction_resume_steer(summary: str) -> str:
+    """Build the visible steer sent to the lead after compaction completes.
+
+    Mirrors the generated ``orchlinkPostCompactionResumeSteer`` TS. The compacted
+    summary is preserved inside Pi's history; this visible steer nudges the lead
+    to resume from durable state instead of waiting silently after compaction.
+    """
+    return f"""[Orchlink] Compaction complete. Resume from this state:
+
+{summary}
+
+Action: reload durable state before continuing. Start with `orch resume`; use `orch goal show <id>` when a goal is active."""
+
+
 def lease_heartbeat_body(holder: str, epoch: int, heartbeat_ms: int) -> dict[str, Any]:
     """Build the body posted to ``/v1/jobs/{id}/heartbeat`` (M3 lease renewal).
 
