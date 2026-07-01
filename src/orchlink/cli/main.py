@@ -11,6 +11,7 @@ from urllib.parse import quote, urlencode
 from typing import Annotated, Any
 
 import httpx
+import yaml
 import typer
 import uvicorn
 from rich.console import Console
@@ -48,6 +49,18 @@ from orchlink.project.config import (
     run_dir,
 )
 from orchlink.project.init import init_project, project_skill_statuses, refresh_project_skills_if_needed
+from orchlink.cli.resume import (
+    ActiveTaskSummary,
+    ResumeState,
+    SessionSummary,
+    render_resume_report,
+    resume_state_from_checkpoint,
+)
+from orchlink.broker.checkpoint import (
+    checkpoint_path,
+    load_checkpoint,
+    reconcile_checkpoint,
+)
 
 
 def discover_project_root() -> Path:
@@ -344,6 +357,62 @@ def jobs_query(
     if item_id:
         params["id"] = item_id
     return f"/v1/jobs?{urlencode(params)}"
+
+
+def _resume_active_from_status(config: dict[str, Any], body: dict[str, Any]) -> list[ActiveTaskSummary]:
+    active: list[ActiveTaskSummary] = []
+    for job in filter_jobs(body.get("jobs", []), active=True):
+        item_id = job_id(job)
+        if item_id == "-":
+            continue
+        active.append(
+            ActiveTaskSummary(
+                task_id=item_id,
+                kind=job_kind(job),
+                state=str(job.get("status") or "UNKNOWN"),
+                title=str(job.get("preview") or job.get("last_message_preview") or ""),
+            )
+        )
+    goals_dir = project_root(config) / ".orch" / "goals"
+    if goals_dir.is_dir():
+        for goal_file in sorted(goals_dir.glob("G*/goal.yaml")):
+            try:
+                data = yaml.safe_load(goal_file.read_text(encoding="utf-8")) or {}
+            except (OSError, yaml.YAMLError):
+                continue
+            status = str(data.get("status") or "")
+            if status not in {"running", "blocked", "gated"}:
+                continue
+            goal_id = str(data.get("id") or goal_file.parent.name)
+            active.append(
+                ActiveTaskSummary(
+                    task_id=goal_id,
+                    kind="goal",
+                    state=status,
+                    title=str(data.get("title") or ""),
+                )
+            )
+    return active
+
+
+def _resume_sessions_from_status(body: dict[str, Any]) -> list[SessionSummary]:
+    sessions: list[SessionSummary] = []
+    for session in body.get("sessions", []):
+        role = str(session.get("role") or session.get("agent_id") or "unknown")
+        state = str(session.get("status") or "unknown").lower()
+        detail = str(session.get("agent_id") or "")
+        sessions.append(SessionSummary(role=role, state=state, detail=detail))
+    return sessions
+
+
+def _resume_current_leases_from_status(body: dict[str, Any]) -> dict[str, tuple[int, str]]:
+    leases: dict[str, tuple[int, str]] = {}
+    for job in body.get("jobs", []):
+        lease = job.get("lease") or {}
+        task_id = job.get("task_id") or job.get("id")
+        if task_id and lease:
+            leases[str(task_id)] = (int(lease.get("epoch") or 0), str(lease.get("holder") or ""))
+    return leases
 
 
 def run_update(ref: str, reinstall_only: bool = False) -> None:
@@ -909,6 +978,37 @@ def jobs(
         activity = job_activity_line(job)
         if activity:
             console.print(f"  last activity: {activity}")
+
+
+@app.command(help="Show a single recovery report: active work, sessions, checkpoint drift, and next action.")
+def resume() -> None:
+    config = load_project_or_exit()
+    try:
+        ensure_broker_running(config)
+        body = broker_get_sync(config, f"/v1/status{project_query(config)}")
+    except (RuntimeError, httpx.HTTPError) as exc:
+        console.print(f"[Orch] {exc}")
+        raise typer.Exit(1) from exc
+
+    checkpoint_file = checkpoint_path(project_root(config))
+    checkpoint = load_checkpoint(checkpoint_file) if checkpoint_file.is_file() else None
+    active = _resume_active_from_status(config, body)
+    sessions_state = _resume_sessions_from_status(body)
+    if checkpoint is None:
+        state = ResumeState(
+            mode="normal" if active else "idle",
+            active=active,
+            sessions=sessions_state,
+            checkpoint=None,
+        )
+    else:
+        state = resume_state_from_checkpoint(
+            checkpoint,
+            reconcile_checkpoint(checkpoint, _resume_current_leases_from_status(body)),
+            active=active,
+            sessions=sessions_state,
+        )
+    console.print(render_resume_report(state), end="", markup=False)
 
 
 @app.command(help="Show registered lead/work Pi sessions for the current project.")

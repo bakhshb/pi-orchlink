@@ -22,6 +22,7 @@ from orchlink.connector.pi_extension_pure import (
     RECONCILIATION_PATTERN,
     RECOVERABLE_ERROR_PATTERN,
     build_compaction_summary,
+    build_post_compaction_resume_steer,
     compaction_instructions,
     detect_reply_type,
     is_reconciliation,
@@ -163,6 +164,15 @@ def test_build_compaction_summary_defaults_unknown_role_and_missing_task():
     assert "Current conversation ID: none" in summary
 
 
+def test_build_post_compaction_resume_steer_makes_summary_visible():
+    summary = build_compaction_summary("Phase done.", role="lead", project_id="demo", task_id="T123")
+    steer = build_post_compaction_resume_steer(summary)
+    assert steer.startswith("[Orchlink] Compaction complete.")
+    assert "Current task ID: T123" in steer
+    assert "Start with `orch resume`" in steer
+    assert "orch goal show <id>" in steer
+
+
 # --- Lease heartbeat body -----------------------------------------------------
 
 
@@ -212,3 +222,10 @@ def test_generated_ts_summary_contains_state_pointer_lines():
         "Reload relevant .orch goal artifacts",
     ):
         assert needle in ORCHLINK_PI_EXTENSION
+
+
+def test_generated_ts_posts_visible_resume_steer_after_compaction():
+    assert "function orchlinkPostCompactionResumeSteer" in ORCHLINK_PI_EXTENSION
+    assert "postCompactionResumeSteer = orchlinkPostCompactionResumeSteer(summary);" in ORCHLINK_PI_EXTENSION
+    assert "pi.sendUserMessage(resumeSteer, { deliverAs: \"steer\" });" in ORCHLINK_PI_EXTENSION
+    assert "Start with \\`orch resume\\`" in ORCHLINK_PI_EXTENSION

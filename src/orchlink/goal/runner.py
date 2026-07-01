@@ -255,10 +255,12 @@ class GoalRunner:
         return parse_acceptance_criteria(acceptance_path.read_text(encoding="utf-8"))
 
     def _selected_criterion(self, goal_id: str):
+        statuses = self.store.load(goal_id).ac_status
         for criterion in self._criteria(goal_id):
             if criterion.priority != "core":
                 continue
-            if criterion.status in {"verified", "deferred"}:
+            status = statuses.get(criterion.id, criterion.status)
+            if status in {"verified", "human-approved", "deferred"}:
                 continue
             if criterion.type == "subjective" or not criterion.check:
                 continue
@@ -267,11 +269,12 @@ class GoalRunner:
         return None
 
     def _pending_core_subjective(self, goal_id: str):
+        statuses = self.store.load(goal_id).ac_status
         return [
             criterion
             for criterion in self._criteria(goal_id)
             if criterion.priority == "core"
-            and criterion.status not in {"verified", "human-approved"}
+            and statuses.get(criterion.id, criterion.status) not in {"verified", "human-approved"}
             and (criterion.type == "subjective" or not criterion.check)
             and self._dependencies_satisfied(goal_id, criterion)
         ]
@@ -285,8 +288,10 @@ class GoalRunner:
         criteria = self._criteria(goal_id)
         if not criteria:
             return False
+        statuses = self.store.load(goal_id).ac_status
         for criterion in criteria:
-            if criterion.priority == "core" and criterion.status not in {"verified", "human-approved"}:
+            status = statuses.get(criterion.id, criterion.status)
+            if criterion.priority == "core" and status not in {"verified", "human-approved"}:
                 return False
         return True
 

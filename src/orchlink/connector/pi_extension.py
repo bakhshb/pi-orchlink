@@ -291,6 +291,10 @@ ${instructions}
 3. If scope or blocker details are unclear, ask one specific unblock question.`;
 }
 
+function orchlinkPostCompactionResumeSteer(summary: string): string {
+  return `[Orchlink] Compaction complete. Resume from this state:\n\n${summary}\n\nAction: reload durable state before continuing. Start with \`orch resume\`; use \`orch goal show <id>\` when a goal is active.`;
+}
+
 function autoReviewCompactionEnabled(): boolean {
   const value = env("ORCHLINK_AUTO_COMPACT_PHASES", "review").toLowerCase().trim();
   return ["1", "true", "yes", "review", "reviews", "phase", "phases"].includes(value);
@@ -339,37 +343,47 @@ export default function (pi: ExtensionAPI) {
   let workerCtx: any;
   let phaseCompactionRequested = false;
   let phaseCompactionCustomInstructions = "";
+  let postCompactionResumeSteer = "";
   let pendingReviewCompaction: OrchMessage | undefined;
   const recoveryGraceMs = Math.max(1000, Number(env("ORCHLINK_RECOVERABLE_ERROR_GRACE_MS", "180000")) || 180000);
   const activityHeartbeatMs = Math.max(5000, Number(env("ORCHLINK_ACTIVITY_HEARTBEAT_MS", "15000")) || 15000);
 
   function requestAutoPhaseCompaction(note: string, ctx: any) {
     if (phaseCompactionRequested) return;
+    const customInstructions = phaseCompactionInstructions(note);
     phaseCompactionRequested = true;
-    phaseCompactionCustomInstructions = phaseCompactionInstructions(note);
+    phaseCompactionCustomInstructions = customInstructions;
     ctx.ui.notify("Orchlink auto phase compaction started.", "info");
     setTimeout(() => {
+      let finished = false;
+      let watchdog: ReturnType<typeof setTimeout> | undefined;
+      const finishCompaction = () => {
+        if (finished) return;
+        finished = true;
+        if (watchdog) clearTimeout(watchdog);
+        phaseCompactionRequested = false;
+        phaseCompactionCustomInstructions = "";
+        schedule(0);
+      };
+      watchdog = setTimeout(() => {
+        ctx.ui.notify("Orchlink phase compaction did not report completion; polling resumed.", "warning");
+        finishCompaction();
+      }, Math.max(1000, Number(env("ORCHLINK_COMPACTION_WATCHDOG_MS", "30000")) || 30000));
       try {
         ctx.compact({
-          customInstructions: phaseCompactionCustomInstructions,
+          customInstructions,
           onComplete: () => {
-            phaseCompactionRequested = false;
-            phaseCompactionCustomInstructions = "";
             ctx.ui.notify("Orchlink auto phase compaction completed.", "info");
-            schedule(0);
+            finishCompaction();
           },
           onError: (error: any) => {
-            phaseCompactionRequested = false;
-            phaseCompactionCustomInstructions = "";
             ctx.ui.notify(`Orchlink phase compaction failed: ${error?.message || error}`, "error");
-            schedule(0);
+            finishCompaction();
           },
         });
       } catch (error: any) {
-        phaseCompactionRequested = false;
-        phaseCompactionCustomInstructions = "";
         ctx.ui.notify(`Orchlink phase compaction failed: ${error?.message || error}`, "error");
-        schedule(0);
+        finishCompaction();
       }
     }, 0);
   }
@@ -381,9 +395,11 @@ export default function (pi: ExtensionAPI) {
     phaseCompactionCustomInstructions = "";
     const preparation = event?.preparation || {};
     if (!preparation.firstKeptEntryId) return;
+    const summary = orchlinkCompactionSummary(instructions, role, projectId, currentTask);
+    postCompactionResumeSteer = orchlinkPostCompactionResumeSteer(summary);
     return {
       compaction: {
-        summary: orchlinkCompactionSummary(instructions, role, projectId, currentTask),
+        summary,
         firstKeptEntryId: preparation.firstKeptEntryId,
         tokensBefore: preparation.tokensBefore || 0,
         details: {
@@ -403,6 +419,12 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_compact", async (_event: any, ctx: any) => {
     phaseCompactionRequested = false;
     phaseCompactionCustomInstructions = "";
+    clearRecoveryTimer();
+    const resumeSteer = postCompactionResumeSteer;
+    postCompactionResumeSteer = "";
+    if (role === "lead" && resumeSteer) {
+      pi.sendUserMessage(resumeSteer, { deliverAs: "steer" });
+    }
     if (["lead", "work"].includes(role)) {
       ctx.ui.notify(`Orchlink ${role} polling resumed after compaction.`, "info");
       schedule(0);
