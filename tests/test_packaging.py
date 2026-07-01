@@ -18,6 +18,42 @@ def test_pyproject_declares_src_layout_and_console_script():
     assert (ROOT / "src" / "orchlink").is_dir()
 
 
+def test_windows_installer_exists_and_sets_up_command_shim():
+    text = (ROOT / "install.ps1").read_text(encoding="utf-8")
+
+    assert "https://github.com/bakhshb/pi-orchlink.git" in text
+    assert "Set-StrictMode -Version Latest" in text
+    assert "$env:LOCALAPPDATA" in text
+    assert "LOCALAPPDATA is not set" in text
+    assert "Scripts\\orch.exe" in text
+    assert '"$OrchExe`" %*`r`n' in text
+    assert "orch.cmd" in text
+    assert "SetEnvironmentVariable(\"Path\"" in text
+    assert "Uninstall-Orchlink" in text
+    assert "Close any running Orchlink/Pi terminals" in text
+    assert "if ($Uninstall) {\n    Uninstall-Orchlink\n    exit 0\n}" in text
+    assert "ORCHLINK_REPO_URL" in text
+    assert "ORCHLINK_REF" in text
+    assert "ORCHLINK_INSTALL_DIR" in text
+    assert "ORCHLINK_BIN_DIR" in text
+    assert "ORCHLINK_PYTHON" in text
+    assert "ORCHLINK_SOURCE_DIR" in text
+
+
+def test_readme_documents_windows_install_and_worker_background_option():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "install.ps1" in text
+    assert "powershell -ExecutionPolicy Bypass -File .\\install.ps1" in text
+    assert "-Uninstall" in text
+    assert "ORCHLINK_INSTALL_DIR" in text
+    assert "Close running `orch lead` / `orch work` / Pi terminals" in text
+    assert "%LOCALAPPDATA%\\orchlink" in text
+    assert "open a fresh terminal where `orch` is on PATH" in text
+    assert "Start-Process orch" in text
+    assert ".orch\\run\\orch-work.log" in text
+
+
 def test_project_skill_templates_are_packaged_markdown_files():
     from orchlink.project.init import load_skill_reference_template, load_skill_template
 

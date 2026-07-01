@@ -66,19 +66,37 @@ You need:
 - `git`
 - Pi installed as `pi`
 
-Install Pi Orchlink:
+Install Pi Orchlink on Linux or macOS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/bakhshb/pi-orchlink/main/install.sh | bash
 ```
 
-The installer puts Orchlink in `~/.local/share/orchlink` and links the `orch` command into `~/.local/bin`.
+The Linux/macOS installer puts Orchlink in `~/.local/share/orchlink` and links the `orch` command into `~/.local/bin`.
 
 If your shell cannot find `orch`, run:
 
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
+
+Install Pi Orchlink on Windows PowerShell:
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/bakhshb/pi-orchlink/main/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+The Windows installer puts Orchlink in `%LOCALAPPDATA%\orchlink`, creates `%LOCALAPPDATA%\orchlink\bin\orch.cmd`, and adds that `bin` directory to your user PATH. Open a new terminal if `orch` is not found immediately.
+
+Useful Windows installer options:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Ref main -Force
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
+```
+
+Close running `orch lead` / `orch work` / Pi terminals before uninstalling so Windows can remove files from the virtual environment. Advanced overrides are available through `-Repo`, `-Ref`, `-Dir`, `-BinDir`, `-Python` or the matching environment variables: `ORCHLINK_REPO_URL`, `ORCHLINK_REF`, `ORCHLINK_INSTALL_DIR`, `ORCHLINK_BIN_DIR`, `ORCHLINK_PYTHON`, and `ORCHLINK_SOURCE_DIR`. If your project path contains spaces, quote it when passing arguments through `orch.cmd`.
 
 ## Start a project
 
@@ -100,6 +118,16 @@ Open terminal 2:
 ```bash
 orch work
 ```
+
+On Windows, if you want the worker in the background instead of a visible terminal, open a fresh terminal where `orch` is on PATH and run:
+
+```powershell
+New-Item -ItemType Directory -Force .orch\run | Out-Null
+Start-Process orch -ArgumentList "work --new" -RedirectStandardOutput ".orch\run\orch-work.log" -RedirectStandardError ".orch\run\orch-work.err.log" -WindowStyle Hidden
+orch sessions
+```
+
+Use a visible worker terminal if the background worker does not register.
 
 Now talk to the lead Pi session. For example:
 
