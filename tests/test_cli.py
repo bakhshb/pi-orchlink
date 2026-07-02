@@ -218,12 +218,41 @@ def test_get_conversation_id_prints_conversation_guidance(monkeypatch, tmp_path)
         raise AssertionError(path)
 
     monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(
+        cli_main,
+        "fetch_events_sync",
+        lambda *args, **kwargs: {
+            "events": [
+                {
+                    "type": "message_queued",
+                    "conversation_id": "C001",
+                    "message_type": "CHAT_START",
+                    "from_agent": "demo.lead",
+                    "turn": 1,
+                    "max_turns": 6,
+                    "payload": {"message": "Should we pick memory or SQLite?"},
+                },
+                {
+                    "type": "reply_received",
+                    "conversation_id": "C001",
+                    "message_type": "CHAT_REPLY",
+                    "from_agent": "demo.work",
+                    "turn": 2,
+                    "max_turns": 6,
+                    "payload": {"summary": "SQLite is safer if restart recovery matters."},
+                },
+            ]
+        },
+    )
 
     result = runner.invoke(cli_main.app, ["get", "C001"])
 
     assert result.exit_code == 0
     assert "Conversation C001: OPEN" in result.output
     assert "Continue: orch say C001" in result.output
+    assert "Conversation turns" in result.output
+    assert "Should we pick memory or SQLite?" in result.output
+    assert "SQLite is safer" in result.output
 
 
 def test_cancel_command_posts_cancel(monkeypatch, tmp_path):
@@ -868,6 +897,34 @@ def test_update_runs_git_and_reinstalls_package(monkeypatch, tmp_path):
     assert "orch init --refresh-skills" in result.output
     assert "orch lead --new" in result.output
     assert "orch work --new" in result.output
+
+
+def test_update_defers_windows_reinstall_to_avoid_locked_launcher(monkeypatch, tmp_path):
+    (tmp_path / ".git").mkdir()
+    calls = []
+    popen_calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0)
+
+    def fake_popen(command, **kwargs):
+        popen_calls.append((command, kwargs))
+        return SimpleNamespace(pid=1234)
+
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(cli_main.subprocess, "run", fake_run)
+    monkeypatch.setattr(cli_main.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(cli_main.sys, "executable", r"C:\\orch\\.venv\\Scripts\\python.exe")
+    monkeypatch.setattr(cli_main.sys, "platform", "win32")
+
+    result = runner.invoke(cli_main.app, ["update", "--reinstall-only"])
+
+    assert result.exit_code == 0
+    assert not any(command[:4] == [r"C:\\orch\\.venv\\Scripts\\python.exe", "-m", "pip", "install"] for command in calls)
+    assert popen_calls
+    assert "Reinstall scheduled" in result.output
+    assert "locked" in result.output
 
 
 def test_doctor_reports_stale_project_skills(monkeypatch, tmp_path):
