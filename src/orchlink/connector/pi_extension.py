@@ -348,6 +348,14 @@ export default function (pi: ExtensionAPI) {
   const recoveryGraceMs = Math.max(1000, Number(env("ORCHLINK_RECOVERABLE_ERROR_GRACE_MS", "180000")) || 180000);
   const activityHeartbeatMs = Math.max(5000, Number(env("ORCHLINK_ACTIVITY_HEARTBEAT_MS", "15000")) || 15000);
 
+  function sendLeadResumeSteer(resumeSteer: string, ctx: any) {
+    if (typeof ctx?.isIdle === "function" && ctx.isIdle()) {
+      pi.sendUserMessage(resumeSteer);
+      return;
+    }
+    pi.sendUserMessage(resumeSteer, { deliverAs: "steer" });
+  }
+
   function requestAutoPhaseCompaction(note: string, ctx: any) {
     if (phaseCompactionRequested) return;
     const customInstructions = phaseCompactionInstructions(note);
@@ -423,7 +431,7 @@ export default function (pi: ExtensionAPI) {
     const resumeSteer = postCompactionResumeSteer;
     postCompactionResumeSteer = "";
     if (role === "lead" && resumeSteer) {
-      pi.sendUserMessage(resumeSteer, { deliverAs: "steer" });
+      sendLeadResumeSteer(resumeSteer, ctx);
     }
     if (["lead", "work"].includes(role)) {
       ctx.ui.notify(`Orchlink ${role} polling resumed after compaction.`, "info");

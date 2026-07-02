@@ -237,6 +237,7 @@ def test_pi_extension_uses_valid_record_type():
     assert "-m \"<your answer>\"" not in ORCHLINK_PI_EXTENSION
     assert "Talk Mode should stop only when" not in ORCHLINK_PI_EXTENSION
     assert "renderLeadPrompt(message), { deliverAs: \"steer\" }" in ORCHLINK_PI_EXTENSION
+    assert "sendLeadResumeSteer" in ORCHLINK_PI_EXTENSION
     assert "customType: \"orchlink\"" not in ORCHLINK_PI_EXTENSION
     assert "deliverAs: \"nextTurn\"" not in ORCHLINK_PI_EXTENSION
     assert "Recommended next step:" not in ORCHLINK_PI_EXTENSION
@@ -265,6 +266,9 @@ def test_pi_extension_has_session_before_compact_hook_with_state_pointer_summary
     assert "## Orchlink state" in ORCHLINK_PI_EXTENSION
     assert "orchlinkPostCompactionResumeSteer" in ORCHLINK_PI_EXTENSION
     assert "postCompactionResumeSteer" in ORCHLINK_PI_EXTENSION
+    assert "sendLeadResumeSteer" in ORCHLINK_PI_EXTENSION
+    assert "ctx.isIdle()" in ORCHLINK_PI_EXTENSION
+    assert "pi.sendUserMessage(resumeSteer);" in ORCHLINK_PI_EXTENSION
     assert "pi.on(\"session_compact\"" in ORCHLINK_PI_EXTENSION
     assert "schedule(0);" in ORCHLINK_PI_EXTENSION
 
@@ -291,7 +295,7 @@ def test_pi_extension_rekicks_polling_after_compaction_callbacks():
     const resumeSteer = postCompactionResumeSteer;
     postCompactionResumeSteer = "";
     if (role === "lead" && resumeSteer) {
-      pi.sendUserMessage(resumeSteer, { deliverAs: "steer" });
+      sendLeadResumeSteer(resumeSteer, ctx);
     }
     if (["lead", "work"].includes(role)) {
       ctx.ui.notify(`Orchlink ${role} polling resumed after compaction.`, "info");

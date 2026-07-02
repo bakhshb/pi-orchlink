@@ -227,5 +227,7 @@ def test_generated_ts_summary_contains_state_pointer_lines():
 def test_generated_ts_posts_visible_resume_steer_after_compaction():
     assert "function orchlinkPostCompactionResumeSteer" in ORCHLINK_PI_EXTENSION
     assert "postCompactionResumeSteer = orchlinkPostCompactionResumeSteer(summary);" in ORCHLINK_PI_EXTENSION
+    assert "function sendLeadResumeSteer" in ORCHLINK_PI_EXTENSION
+    assert "pi.sendUserMessage(resumeSteer);" in ORCHLINK_PI_EXTENSION
     assert "pi.sendUserMessage(resumeSteer, { deliverAs: \"steer\" });" in ORCHLINK_PI_EXTENSION
     assert "Start with \\`orch resume\\`" in ORCHLINK_PI_EXTENSION
