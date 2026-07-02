@@ -1,3 +1,9 @@
+"""Lead→worker task and talk envelope helpers.
+
+Builds Orchlink envelopes, posts them to the broker, and exposes synchronous
+wrappers used by CLI and Goal Mode orchestration.
+"""
+
 import asyncio
 import uuid
 from typing import Any
@@ -327,3 +333,23 @@ def close_talk_sync(
     timeout_seconds: int = 1800,
 ) -> dict[str, Any]:
     return asyncio.run(close_talk(config, worker, conversation_id, message, turn, max_turns, timeout_seconds))
+
+
+__all__ = [
+    "WorkerBridge",
+    "ask_worker",
+    "ask_worker_sync",
+    "build_chat_envelope",
+    "build_task_envelope",
+    "close_talk",
+    "close_talk_sync",
+    "infer_task_mode",
+    "post_envelope",
+    "say_talk",
+    "say_talk_sync",
+    "send_worker",
+    "send_worker_sync",
+    "start_talk",
+    "start_talk_sync",
+    "summarize_chat_topic",
+]

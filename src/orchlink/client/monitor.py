@@ -1,3 +1,5 @@
+"""Async broker HTTP clients for status and events."""
+
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -100,3 +102,6 @@ def format_event(event: dict[str, Any]) -> str:
 
     first_line = " ".join(part for part in parts if part)
     return f"{first_line}\n{preview}" if preview else first_line
+
+
+__all__ = ["fetch_status", "fetch_events", "format_event"]

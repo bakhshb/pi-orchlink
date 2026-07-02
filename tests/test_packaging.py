@@ -18,6 +18,21 @@ def test_pyproject_declares_src_layout_and_console_script():
     assert (ROOT / "src" / "orchlink").is_dir()
 
 
+def test_runtime_versions_come_from_pyproject_metadata():
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    expected = data["project"]["version"]
+
+    import orchlink
+    from orchlink.broker.main import VERSION as broker_version
+    from orchlink.version import get_version
+
+    assert orchlink.__version__ == expected
+    assert get_version() == expected
+    assert broker_version == expected
+    assert "__version__ = \"" not in (ROOT / "src" / "orchlink" / "__init__.py").read_text(encoding="utf-8")
+    assert "VERSION = \"" not in (ROOT / "src" / "orchlink" / "broker" / "main.py").read_text(encoding="utf-8")
+
+
 def test_windows_installer_exists_and_sets_up_command_shim():
     text = (ROOT / "install.ps1").read_text(encoding="utf-8")
 

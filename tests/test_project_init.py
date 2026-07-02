@@ -1,9 +1,7 @@
-from pathlib import Path
-
 import yaml
 from typer.testing import CliRunner
 
-from orchlink.bridge.ask import build_chat_envelope, build_task_envelope
+from orchlink.client import build_chat_envelope, build_task_envelope
 from orchlink.cli.main import app
 from orchlink.core.prompt_policy import TaskPromptPolicy
 from orchlink.connector.pi_connector import PiConnector

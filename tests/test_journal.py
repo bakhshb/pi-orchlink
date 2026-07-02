@@ -13,7 +13,6 @@ import json
 from pathlib import Path
 
 import httpx
-import pytest
 
 from orchlink.broker.journal import Journal
 from orchlink.broker.main import create_app

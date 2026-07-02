@@ -5,8 +5,8 @@ from typing import Any
 
 import httpx
 
-from orchlink.bridge.ask import ask_worker_sync
-from orchlink.cli.client import BrokerClient
+from orchlink import client
+from orchlink.client import ask_worker_sync
 from orchlink.goal.checks import CheckResult, extract_check_commands, parse_acceptance_criteria, run_check
 from orchlink.goal.prompts import derivation_prompt
 from orchlink.goal.store import GoalStore, GoalStoreError
@@ -226,7 +226,7 @@ class GoalRunner:
         active_task_id = goal.active_task_id
         if active_task_id:
             try:
-                BrokerClient(self.config).cancel(active_task_id, reason)
+                client.BrokerClient(self.config).cancel(active_task_id, reason)
             except httpx.HTTPError as exc:
                 self.store.append_history(goal.id, {"type": "cancel_task_failed", "task_id": active_task_id, "message": str(exc)})
         self.store.cancel(goal_id, reason=reason)

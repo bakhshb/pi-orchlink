@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from pathlib import Path
 
 import httpx
@@ -126,14 +125,14 @@ def test_checkpoint_status_transition_in_flight_to_recently_settled(tmp_path: Pa
     record_lease(project_root, "T020", epoch=5, holder="work-1", status="in_flight")
 
     cp1 = load_checkpoint(project_root / ".orch" / "run" / "broker-checkpoint.json")
-    assert [l.task_id for l in cp1.in_flight] == ["T020"]
+    assert [lease.task_id for lease in cp1.in_flight] == ["T020"]
     assert cp1.recently_settled == []
 
     record_lease(project_root, "T020", epoch=5, holder="work-1", status="recently_settled")
 
     cp2 = load_checkpoint(project_root / ".orch" / "run" / "broker-checkpoint.json")
     assert cp2.in_flight == []
-    assert [l.task_id for l in cp2.recently_settled] == ["T020"]
+    assert [lease.task_id for lease in cp2.recently_settled] == ["T020"]
 
 
 def test_checkpoint_atomic_write_does_not_leave_partial_files(tmp_path: Path):

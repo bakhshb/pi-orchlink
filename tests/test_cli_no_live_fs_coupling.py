@@ -39,7 +39,6 @@ ROOT = Path(__file__).resolve().parents[1]
 # Task/talk/session CLI modules that must stay broker/API-driven.
 TASK_TALK_CLI_MODULES = [
     ROOT / "src" / "orchlink" / "cli" / "main.py",
-    ROOT / "src" / "orchlink" / "cli" / "client.py",
 ]
 
 # Goal live-state layer imports forbidden in the task/talk CLI. Importing the
@@ -124,13 +123,18 @@ def test_task_talk_cli_does_not_import_goal_live_state_layer(module_path: Path) 
 def test_task_talk_cli_uses_broker_client_for_state() -> None:
     """Rule 4 (positive): task/talk state flows through ``BrokerClient``."""
     main = (ROOT / "src" / "orchlink" / "cli" / "main.py").read_text(encoding="utf-8")
-    assert "BrokerClient" in main, (
+    sync_module = (ROOT / "src" / "orchlink" / "client" / "sync.py").read_text(encoding="utf-8")
+    combined = main + "\n" + sync_module
+    assert "BrokerClient" in combined, (
         "task/talk CLI must obtain live state via BrokerClient (broker HTTP API), "
         "not direct filesystem reads."
     )
-    # The symbol is imported and actually constructed, not just mentioned.
-    assert "from orchlink.cli.client import BrokerClient" in main or "import BrokerClient" in main
-    assert "BrokerClient(" in main
+    # The symbol is imported and actually constructed in the CLI or its client
+    # helpers, not just mentioned. Import shape may be multi-line; only the
+    # module path matters for this check.
+    assert "from orchlink.client import" in combined
+    assert "BrokerClient" in combined
+    assert "BrokerClient(" in combined
 
 
 def test_goal_module_keeps_file_based_storage_in_v1() -> None:

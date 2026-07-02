@@ -1,4 +1,4 @@
-"""Small object-oriented client for the Orchlink broker CLI."""
+"""Synchronous broker API client."""
 
 from __future__ import annotations
 

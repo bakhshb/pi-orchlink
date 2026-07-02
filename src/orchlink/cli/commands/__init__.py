@@ -1,0 +1,39 @@
+"""Per-group Typer command modules for the ``orch`` CLI.
+
+``cli.main`` owns app wiring; modules in this package register command groups on
+that shared Typer app.
+"""
+
+from __future__ import annotations
+
+import typer
+
+from orchlink.cli.commands import ask, broker, diagnose, init, jobs, lead, talk, update
+
+ALL_MODULES = (init, lead, talk, ask, jobs, diagnose, update, broker)
+
+
+def register_all(app: typer.Typer) -> None:
+    """Register every command group's commands on ``app`` in their original order."""
+    init.register_init(app)
+    lead.register_lead(app)
+    ask.register_ask(app)
+    jobs.register_jobs(app)
+    talk.register_talk(app)
+    diagnose.register_diagnose(app)
+    update.register_update(app)
+    broker.register_broker(app)
+
+
+__all__ = [
+    "ALL_MODULES",
+    "ask",
+    "broker",
+    "diagnose",
+    "init",
+    "jobs",
+    "lead",
+    "register_all",
+    "talk",
+    "update",
+]
