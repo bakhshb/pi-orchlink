@@ -60,6 +60,23 @@ def test_windows_installer_exists_and_sets_up_command_shim():
     assert "ORCHLINK_SOURCE_DIR" in text
 
 
+def test_installers_offer_interactive_dependency_install():
+    shell_text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    powershell_text = (ROOT / "install.ps1").read_text(encoding="utf-8")
+
+    assert "Would you like Orchlink to install missing requirements now? [y/N]" in shell_text
+    assert "python3-venv" in shell_text
+    assert "sudo apt-get update && sudo apt-get install -y python3 python3-venv git" in shell_text
+    assert "brew install python git" in shell_text
+    assert "ensure_requirements 1" in shell_text
+
+    assert "Would you like Orchlink to install them with winget now? [y/N]" in powershell_text
+    assert "winget install --id Python.Python.3.12" in powershell_text
+    assert "winget install --id Git.Git" in powershell_text
+    assert "Ensure-Requirements -NeedsGit $true" in powershell_text
+    assert "Manual downloads:" in powershell_text
+
+
 def test_readme_documents_windows_install_and_worker_background_option():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
 

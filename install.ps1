@@ -42,6 +42,132 @@ function Require-Command([string]$Name) {
     }
 }
 
+function Test-Interactive {
+    return [Environment]::UserInteractive
+}
+
+function Confirm-OrchAction([string]$Prompt) {
+    if (-not (Test-Interactive)) {
+        return $false
+    }
+    $reply = Read-Host $Prompt
+    return ($reply -match '(?i)^(y|yes)$')
+}
+
+function Update-CurrentProcessPath {
+    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+    $parts = @($machinePath, $userPath) | Where-Object { $_ }
+    if ($parts.Count -gt 0) {
+        $env:Path = ($parts -join ";")
+    }
+}
+
+function Write-DependencyHelp {
+    Write-Host ""
+    Write-Host "Install the missing requirements, then rerun this installer."
+    Write-Host ""
+    Write-Host "Automatic install command examples:"
+    Write-Host "  winget install --id Python.Python.3.12 -e --source winget"
+    Write-Host "  winget install --id Git.Git -e --source winget"
+    Write-Host ""
+    Write-Host "Manual downloads:"
+    Write-Host "  Python: https://www.python.org/downloads/windows/"
+    Write-Host "  Git:    https://git-scm.com/download/win"
+}
+
+function Test-PythonReady {
+    $script:UsePyLauncher = $false
+    $code = "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)"
+    if (Get-Command $Python -ErrorAction SilentlyContinue) {
+        & $Python -c $code *> $null
+        if ($LASTEXITCODE -eq 0) {
+            return $true
+        }
+        if ($env:ORCHLINK_PYTHON -or $Python -ne "python") {
+            return $false
+        }
+    }
+    if (-not $env:ORCHLINK_PYTHON -and $Python -eq "python" -and (Get-Command py -ErrorAction SilentlyContinue)) {
+        & py -3 -c $code *> $null
+        if ($LASTEXITCODE -eq 0) {
+            $script:UsePyLauncher = $true
+            return $true
+        }
+    }
+    return $false
+}
+
+function Get-MissingRequirements {
+    param([bool]$NeedsGit)
+    $script:CustomPythonProblem = ""
+    $missing = @()
+    if ($NeedsGit -and -not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $missing += "Git"
+    }
+    if (-not (Test-PythonReady)) {
+        if (-not $env:ORCHLINK_PYTHON -and $Python -eq "python") {
+            $missing += "Python 3.11+"
+        } else {
+            $script:CustomPythonProblem = "Python command is missing or too old: $Python. Install Python 3.11+ or pass -Python with a compatible interpreter."
+        }
+    }
+    return $missing
+}
+
+function Install-MissingRequirements {
+    param([string[]]$Missing)
+    Write-OrchWarn "Orchlink requires Python 3.11+ and Git."
+    Write-OrchWarn "Missing requirements:"
+    foreach ($item in $Missing) {
+        Write-Host "  - $item"
+    }
+    if (-not (Test-Interactive)) {
+        Write-DependencyHelp
+        Fail "Missing requirements. Install them and rerun this installer."
+    }
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Write-DependencyHelp
+        Fail "winget was not found, so Orchlink cannot install requirements automatically."
+    }
+    if (-not (Confirm-OrchAction "Would you like Orchlink to install them with winget now? [y/N]")) {
+        Write-DependencyHelp
+        Fail "Missing requirements. Install them and rerun this installer."
+    }
+    if ($Missing -contains "Python 3.11+") {
+        Write-OrchLog "Installing Python with winget"
+        winget install --id Python.Python.3.12 -e --source winget --accept-package-agreements --accept-source-agreements
+        if ($LASTEXITCODE -ne 0) { Fail "winget failed to install Python." }
+    }
+    if ($Missing -contains "Git") {
+        Write-OrchLog "Installing Git with winget"
+        winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+        if ($LASTEXITCODE -ne 0) { Fail "winget failed to install Git." }
+    }
+    Update-CurrentProcessPath
+}
+
+function Ensure-Requirements {
+    param([bool]$NeedsGit)
+    $missing = @(Get-MissingRequirements -NeedsGit $NeedsGit)
+    if ($script:CustomPythonProblem) {
+        Fail $script:CustomPythonProblem
+    }
+    if ($missing.Count -eq 0) {
+        return
+    }
+    Install-MissingRequirements -Missing $missing
+    $missing = @(Get-MissingRequirements -NeedsGit $NeedsGit)
+    if ($script:CustomPythonProblem) {
+        Fail $script:CustomPythonProblem
+    }
+    if ($missing.Count -gt 0) {
+        Write-DependencyHelp
+        Fail "Requirements are still missing after installation: $($missing -join ', ')"
+    }
+    Write-OrchLog "Requirements installed. Continuing."
+}
+
 function Invoke-Python([string[]]$Arguments) {
     if ($script:UsePyLauncher) {
         & py -3 @Arguments
@@ -54,15 +180,13 @@ function Invoke-Python([string[]]$Arguments) {
 }
 
 function Resolve-Python {
-    $script:UsePyLauncher = $false
-    if (Get-Command $Python -ErrorAction SilentlyContinue) {
+    if (Test-PythonReady) {
         return
     }
-    if (-not $env:ORCHLINK_PYTHON -and $Python -eq "python" -and (Get-Command py -ErrorAction SilentlyContinue)) {
-        $script:UsePyLauncher = $true
-        return
+    if (-not $env:ORCHLINK_PYTHON -and $Python -eq "python") {
+        Fail "Python 3.11+ is required. Install Python or rerun this installer and accept the winget prompt."
     }
-    Fail "Required command not found: $Python"
+    Fail "Python command is missing or too old: $Python. Install Python 3.11+ or pass -Python with a compatible interpreter."
 }
 
 function Test-PythonVersion {
@@ -237,8 +361,10 @@ if (-not $LocalSourceDir -and $ScriptDir -and (Test-Path (Join-Path $ScriptDir "
 }
 
 if ($LocalSourceDir -and (Test-Path (Join-Path $LocalSourceDir "pyproject.toml")) -and (Test-Path (Join-Path $LocalSourceDir "src\orchlink")) -and -not $env:ORCHLINK_REPO_URL) {
+    Ensure-Requirements -NeedsGit $false
     Copy-LocalSource $LocalSourceDir
 } else {
+    Ensure-Requirements -NeedsGit $true
     Clone-OrUpdateRepo
 }
 

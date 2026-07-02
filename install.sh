@@ -103,6 +103,165 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "Required command not found: $1"
 }
 
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+is_interactive() {
+  [[ -t 1 && -r /dev/tty ]]
+}
+
+prompt_yes_no() {
+  local prompt="$1"
+  local reply=""
+  is_interactive || return 1
+  printf "%s" "$prompt" > /dev/tty
+  IFS= read -r reply < /dev/tty || return 1
+  case "${reply,,}" in
+    y|yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+python_version_ok() {
+  "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
+PY
+}
+
+python_venv_ok() {
+  local temp_dir=""
+  temp_dir="$(mktemp -d 2>/dev/null || mktemp -d -t orchlink-venv)"
+  if "$PYTHON_BIN" -m venv "$temp_dir/venv" >/dev/null 2>&1; then
+    rm -rf "$temp_dir"
+    return 0
+  fi
+  rm -rf "$temp_dir"
+  return 1
+}
+
+sudo_prefix() {
+  if [[ "${EUID:-$(id -u)}" -eq 0 ]]; then
+    printf ""
+  elif command_exists sudo; then
+    printf "sudo "
+  else
+    printf ""
+  fi
+}
+
+dependency_install_command() {
+  local sudo=""
+  sudo="$(sudo_prefix)"
+  if command_exists apt-get; then
+    printf "%sapt-get update && %sapt-get install -y python3 python3-venv git\n" "$sudo" "$sudo"
+  elif command_exists dnf; then
+    printf "%sdnf install -y python3 git\n" "$sudo"
+  elif command_exists pacman; then
+    printf "%spacman -Sy --needed python git\n" "$sudo"
+  elif command_exists zypper; then
+    printf "%szypper install -y python3 git\n" "$sudo"
+  elif command_exists brew; then
+    printf "brew install python git\n"
+  else
+    return 1
+  fi
+}
+
+print_dependency_help() {
+  cat <<EOF
+
+Install the missing requirements, then rerun this installer.
+
+Examples:
+  Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y python3 python3-venv git
+  Fedora:        sudo dnf install -y python3 git
+  Arch:          sudo pacman -Sy --needed python git
+  openSUSE:      sudo zypper install -y python3 git
+  macOS:         brew install python git
+EOF
+}
+
+collect_missing_requirements() {
+  local needs_git="$1"
+  MISSING_REQUIREMENTS=()
+  CUSTOM_PYTHON_PROBLEM=""
+
+  if [[ "$needs_git" -eq 1 ]] && ! command_exists git; then
+    MISSING_REQUIREMENTS+=("git")
+  fi
+
+  if ! command_exists "$PYTHON_BIN"; then
+    if [[ "$PYTHON_BIN" == "python3" ]]; then
+      MISSING_REQUIREMENTS+=("python3")
+    else
+      CUSTOM_PYTHON_PROBLEM="Python command not found: $PYTHON_BIN. Install Python 3.11+ or pass --python with a valid interpreter."
+    fi
+    return
+  fi
+
+  if ! python_version_ok; then
+    if [[ "$PYTHON_BIN" == "python3" ]]; then
+      MISSING_REQUIREMENTS+=("Python 3.11+")
+    else
+      CUSTOM_PYTHON_PROBLEM="$PYTHON_BIN is not Python 3.11+. Install Python 3.11+ or pass --python with a compatible interpreter."
+    fi
+  elif ! python_venv_ok; then
+    MISSING_REQUIREMENTS+=("python3-venv")
+  fi
+}
+
+using_local_source() {
+  [[ -n "$LOCAL_SOURCE_DIR" && -f "$LOCAL_SOURCE_DIR/pyproject.toml" && -d "$LOCAL_SOURCE_DIR/src/orchlink" && -z "${ORCHLINK_REPO_URL:-}" ]]
+}
+
+ensure_requirements() {
+  local needs_git="$1"
+  local install_cmd=""
+  collect_missing_requirements "$needs_git"
+
+  if [[ -n "$CUSTOM_PYTHON_PROBLEM" ]]; then
+    die "$CUSTOM_PYTHON_PROBLEM"
+  fi
+  if [[ "${#MISSING_REQUIREMENTS[@]}" -eq 0 ]]; then
+    return
+  fi
+
+  warn "Orchlink requires Python 3.11+ with venv support and Git."
+  warn "Missing requirements:"
+  for item in "${MISSING_REQUIREMENTS[@]}"; do
+    printf "  - %s\n" "$item" >&2
+  done
+
+  if ! install_cmd="$(dependency_install_command)"; then
+    print_dependency_help >&2
+    die "Could not detect a supported package manager to install requirements automatically."
+  fi
+
+  printf "\nDetected install command:\n  %s\n" "$install_cmd" >&2
+  if prompt_yes_no "Would you like Orchlink to install missing requirements now? [y/N] "; then
+    log "Installing missing requirements"
+    if ! bash -c "$install_cmd"; then
+      print_dependency_help >&2
+      die "Requirement installation failed."
+    fi
+    collect_missing_requirements "$needs_git"
+    if [[ -n "$CUSTOM_PYTHON_PROBLEM" ]]; then
+      die "$CUSTOM_PYTHON_PROBLEM"
+    fi
+    if [[ "${#MISSING_REQUIREMENTS[@]}" -eq 0 ]]; then
+      log "Requirements installed. Continuing."
+      return
+    fi
+    print_dependency_help >&2
+    die "Requirements are still missing after installation: ${MISSING_REQUIREMENTS[*]}"
+  fi
+
+  print_dependency_help >&2
+  die "Missing requirements. Install them and rerun this installer."
+}
+
 expand_path() {
   local value="$1"
   case "$value" in
@@ -232,9 +391,11 @@ main() {
   fi
 
   log "Installing Orchlink to $INSTALL_DIR"
-  if [[ -n "$LOCAL_SOURCE_DIR" && -f "$LOCAL_SOURCE_DIR/pyproject.toml" && -d "$LOCAL_SOURCE_DIR/src/orchlink" && -z "${ORCHLINK_REPO_URL:-}" ]]; then
+  if using_local_source; then
+    ensure_requirements 0
     copy_local_source "$LOCAL_SOURCE_DIR"
   else
+    ensure_requirements 1
     clone_or_update_repo
   fi
   install_package
