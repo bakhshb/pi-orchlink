@@ -42,6 +42,58 @@ def _print_conversation_body(conversation: dict[str, Any]) -> None:
     _talk_version(conversation)
 
 
+def _chat_text_from_event(event: dict[str, Any]) -> str:
+    message_payload = event.get("payload") or {}
+    text = message_payload.get("summary") or message_payload.get("stdout") or message_payload.get("message") or ""
+    return str(text).strip()
+
+
+def _conversation_turns_from_events(config: dict[str, Any], conversation_id: str) -> list[dict[str, str]]:
+    body = _cli_main.fetch_events_sync(
+        broker_url(config),
+        broker_api_key(config),
+        since=0,
+        limit=200,
+        project_id=current_project_id(config),
+    )
+    turns: list[dict[str, str]] = []
+    for event in body.get("events", []):
+        if event.get("type") not in {"message_queued", "reply_received"}:
+            continue
+        if event.get("conversation_id") != conversation_id:
+            continue
+        message_type = str(event.get("message_type") or "")
+        if message_type not in {"CHAT_START", "CHAT_TURN", "CHAT_REPLY", "CHAT_CLOSE"}:
+            continue
+        text = _chat_text_from_event(event)
+        if not text:
+            continue
+        turns.append(
+            {
+                "speaker": str(event.get("from_agent") or "?"),
+                "turn": str(event.get("turn") or "?"),
+                "max_turns": str(event.get("max_turns") or "?"),
+                "text": text,
+            }
+        )
+    return turns
+
+
+def _print_conversation_turns(config: dict[str, Any], conversation_id: str) -> None:
+    try:
+        turns = _conversation_turns_from_events(config, conversation_id)
+    except (RuntimeError, httpx.HTTPError):
+        return
+    if not turns:
+        return
+    console.print("[Orch] Conversation turns:")
+    for turn in turns:
+        text = turn["text"]
+        if len(text) > 1200:
+            text = f"{text[:1199]}…"
+        console.print(f"- {turn['speaker']} · {turn['turn']}/{turn['max_turns']}: {text}")
+
+
 def _print_task_body(body: dict[str, Any]) -> None:
     from orchlink.cli.commands.ask import _print_task_body as _ask_version
 
@@ -284,6 +336,7 @@ def register_jobs(app: typer.Typer) -> None:
                 conversation = conversation_state_shim(config, item_id)
                 if conversation is not None:
                     _print_conversation_body(conversation)
+                    _print_conversation_turns(config, item_id)
                     return
         except (RuntimeError, httpx.HTTPError) as exc:
             console.print(f"[Orch] {exc}")

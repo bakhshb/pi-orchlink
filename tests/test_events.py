@@ -132,6 +132,8 @@ def test_events_endpoint_shows_request_reply_flow():
         delivered = next(event for event in events if event["type"] == "message_delivered")
         replied = next(event for event in events if event["type"] == "reply_received")
         assert queued["job_event"]["type"] == "QUEUED"
+        assert queued["turn"] == 1
+        assert queued["max_turns"] == 6
         assert delivered["job_event"]["type"] == "DELIVERED"
         assert replied["job_event"] == {
             "type": "REPLIED",

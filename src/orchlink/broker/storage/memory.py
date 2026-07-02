@@ -125,6 +125,8 @@ class MemoryEventLog:
             "mode": self._job_mode(message),
             "delivery": message.get("delivery"),
             "status": status or message.get("status"),
+            "turn": message.get("turn"),
+            "max_turns": message.get("max_turns"),
             "payload": payload,
         }
 

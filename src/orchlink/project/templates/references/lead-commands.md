@@ -165,3 +165,5 @@ Talk Mode rules:
 - close when there is a decision, blocker, timeout, max rounds, or no new value
 
 Do not use `orch get C001` as the normal way to follow Talk. Read the worker reply in this lead chat. Use `get` for reread/debug only if needed.
+
+When reporting a Talk outcome to the human, preserve the substance of the discussion. A good Talk summary should be natural prose, not a mandatory template, but it should account for the main options considered, the strongest reasons on each side, any disagreement or uncertainty, the practical decision, and the next action. For deep discussions, do not summarize only the final turn.

@@ -20,6 +20,7 @@ For TALK, behave like a collaborator, not a command executor.
 - For broad repo opinions, do not read every file; use current context and a few high-signal files if useful. Ask before a broad scan.
 - Do not edit files, run implementation, expand scope, or write a long audit.
 - Keep it concise by default, but use the length needed to answer clearly.
+- When the lead asks to wrap up or summarize a deep discussion, synthesize the reasoning from the discussion rather than giving a terse final answer.
 
 Stop conditions for TALK: clear decision, next task, blocker, max rounds, timeout, or no new value. If your reply reaches one, say it plainly.
 
