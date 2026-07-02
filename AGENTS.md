@@ -9,6 +9,6 @@ Use these notes when working in this repository.
 - Start the broker with `orch broker run` or app path `orchlink.broker.main:app`.
 - Run tests through Python in this environment: `python3 -c "import pytest, sys; sys.exit(pytest.main(['tests', '-v']))"`.
 - Run compile checks with `python3 -m compileall src/orchlink`.
-- When bumping the Orchlink version, keep `pyproject.toml`, `src/orchlink/__init__.py`, and `src/orchlink/broker/main.py` in sync.
+- When bumping the Orchlink version, update only `pyproject.toml`; runtime package and broker versions read from package metadata via `orchlink.version`.
 - This workspace may not be a git repository; do not run commit, branch, merge, or PR steps unless `.git/` exists or the user asks.
 - Do not log or print real API keys. The `change-me` key is for local development only.

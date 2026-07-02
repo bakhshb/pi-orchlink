@@ -251,9 +251,13 @@ def test_cancel_command_posts_cancel(monkeypatch, tmp_path):
 def test_jobs_rejects_stale_broker(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
+    # Patch the imported binding in client.sync because that module imports
+    # the helper via ``from orchlink.client.process import broker_info``; rebinding
+    # the source module's attribute would only take effect on a fresh import,
+    # not for callers already holding a reference. The cli_main module's own
+    # binding is a separate reference that ``jobs`` does not consult.
     monkeypatch.setattr(
-        cli_main,
-        "broker_info",
+        "orchlink.client.sync.broker_info",
         lambda url: {"status": "ok", "service": "orchlink", "version": "0.1.0", "capabilities": []},
     )
 
@@ -869,7 +873,7 @@ def test_update_runs_git_and_reinstalls_package(monkeypatch, tmp_path):
 def test_doctor_reports_stale_project_skills(monkeypatch, tmp_path):
     paths = init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli_main, "broker_health", lambda url: False)
+    monkeypatch.setattr("orchlink.client.process.broker_health", lambda url: False)
 
     current = runner.invoke(cli_main.app, ["doctor"])
 

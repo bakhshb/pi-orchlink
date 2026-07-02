@@ -5,7 +5,7 @@ import httpx
 from orchlink.broker.main import create_app
 from orchlink.broker.settings import Settings
 from orchlink.broker.storage.memory import MemoryMessageStore
-from orchlink.bridge.monitor import format_event
+from orchlink.client import format_event
 
 
 HEADERS = {"X-API-Key": "test-key"}

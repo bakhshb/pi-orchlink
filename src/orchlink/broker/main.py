@@ -20,11 +20,12 @@ from orchlink.broker.journal import Journal
 from orchlink.broker.protocol import AgentRegistration, MessageEnvelope, envelope_to_dict
 from orchlink.core.envelope import ENVELOPE_VERSION, ENVELOPE_VERSION_HEADER
 from orchlink.broker.settings import Settings, get_settings
+from orchlink.version import get_version
 from orchlink.broker.storage import JsonlMessageStore, MemoryMessageStore, MessageStore, MessageStoreBusy
 from orchlink.broker.storage.base import LeaseConflictError
 
 
-VERSION = "0.5.2"
+VERSION = get_version()
 BROKER_CAPABILITIES = [
     "project_header_scope",
     "task_activity_endpoint",

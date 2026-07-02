@@ -1,3 +1,5 @@
 """Orchlink package."""
 
-__version__ = "0.5.2"
+from orchlink.version import __version__, get_version
+
+__all__ = ["__version__", "get_version"]
