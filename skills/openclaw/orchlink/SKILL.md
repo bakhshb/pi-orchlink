@@ -1,8 +1,8 @@
 ---
 name: orchlink
-description: Use this skill whenever OpenClaw should act as the lead agent for a local Pi worker through Orchlink. It covers safe setup checks, choosing ask/send/talk/goal mode, review gates, exact wait/get results, cancellation, stale-broker recovery, and when to load the bundled references.
+description: Use when OpenClaw is the Orchlink lead for a local Pi worker: coordinate ask/send/talk/goal tasks, review gates, wait/get results, cancellation, and stale-state recovery.
 version: 1.1.1
-platforms: [linux, macos]
+platforms: [linux, macos, windows]
 metadata:
   openclaw:
     tags: [coding, local-coordination, cli]

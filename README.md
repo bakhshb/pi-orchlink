@@ -72,7 +72,7 @@ Install Pi Orchlink on Linux or macOS:
 curl -fsSL https://raw.githubusercontent.com/bakhshb/pi-orchlink/main/install.sh | bash
 ```
 
-The Linux/macOS installer puts Orchlink in `~/.local/share/orchlink` and links the `orch` command into `~/.local/bin`.
+The Linux/macOS installer puts Orchlink in `~/.local/share/orchlink` and links the `orch` command into `~/.local/bin`. In an interactive terminal, it can also offer to install optional Orchlink skills: the general skill to `~/.agents/skills/orchlink`, plus OpenClaw/Hermes skills only when those commands are detected.
 
 If your shell cannot find `orch`, run:
 
@@ -93,10 +93,12 @@ Useful Windows installer options:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Ref main -Force
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -SkillsOnly
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -NoSkills
 powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
 ```
 
-Close running `orch lead` / `orch work` / Pi terminals before uninstalling so Windows can remove files from the virtual environment. Advanced overrides are available through `-Repo`, `-Ref`, `-Dir`, `-BinDir`, `-Python` or the matching environment variables: `ORCHLINK_REPO_URL`, `ORCHLINK_REF`, `ORCHLINK_INSTALL_DIR`, `ORCHLINK_BIN_DIR`, `ORCHLINK_PYTHON`, and `ORCHLINK_SOURCE_DIR`. If your project path contains spaces, quote it when passing arguments through `orch.cmd`.
+Close running `orch lead` / `orch work` / Pi terminals before uninstalling so Windows can remove files from the virtual environment. In an interactive terminal, the installer can also offer optional skill installs: the general skill to `%USERPROFILE%\.agents\skills\orchlink`, plus OpenClaw/Hermes skills only when those commands are detected. Advanced overrides are available through `-Repo`, `-Ref`, `-Dir`, `-BinDir`, `-Python` or the matching environment variables: `ORCHLINK_REPO_URL`, `ORCHLINK_REF`, `ORCHLINK_INSTALL_DIR`, `ORCHLINK_BIN_DIR`, `ORCHLINK_PYTHON`, and `ORCHLINK_SOURCE_DIR`. If your project path contains spaces, quote it when passing arguments through `orch.cmd`.
 
 > **Windows support is currently beta.** The installer supports basic install, update, uninstall, and command shims, but shell/PATH behavior can vary between PowerShell, CMD, Git Bash, and Pi's tool shell. Linux/macOS remain the primary tested paths; if a behavior differs on Windows, compare against the Linux/macOS flow before reporting it as a blocker.
 
@@ -356,18 +358,22 @@ orch work --new
 
 For real-session validation beyond unit tests, run the manual smoke plan in [`docs/manual-smoke-test.md`](docs/manual-smoke-test.md).
 
-## OpenClaw and Hermes adapter skills
+## Agent skills
 
-This repo includes adapter skills for using OpenClaw or Hermes as the Orchlink lead while Pi runs the visible `work` session. External leads should prefer `orch ask --wait` for synchronous decisions/reviews, use `orch wait` or `orch get` but not both unless rereading, and reserve Talk Mode for visible lead/work discussion.
+This repo includes a general Orchlink lead skill plus adapter skills for OpenClaw and Hermes while Pi runs the visible `work` session. External leads should prefer `orch ask --wait` for synchronous decisions/reviews, use `orch wait` or `orch get` but not both unless rereading, and reserve Talk Mode for visible lead/work discussion.
 
 ```text
+skills/general/orchlink/SKILL.md
+skills/general/orchlink/references/*.md
 skills/openclaw/orchlink/SKILL.md
 skills/openclaw/orchlink/references/*.md
 skills/hermes/orchlink/SKILL.md
 skills/hermes/orchlink/references/*.md
 ```
 
-The adapter `SKILL.md` files are intentionally small routers. Detailed command, Goal Mode, and recovery guidance lives in bundled `references/` files so external agents only load the extra context when needed.
+Run the installer with `--skills-only` / `-SkillsOnly` to install skills without reinstalling Orchlink. The installer always offers the general skill target `~/.agents/skills/orchlink`; OpenClaw and Hermes options appear only when their commands are detected.
+
+The skill `SKILL.md` files are intentionally small routers. Detailed command, Goal Mode, and recovery guidance lives in bundled `references/` files so external agents only load the extra context when needed. The general skill is the canonical source for shared reference content; keep adapter references synchronized with `python3 skills/sync_orchlink_skills.py` or check drift with `python3 skills/sync_orchlink_skills.py --check`.
 
 ### OpenClaw install
 
@@ -408,6 +414,8 @@ rm -rf "$tmpdir"
 If you already have a local Orchlink checkout, you can install from disk instead:
 
 ```bash
+mkdir -p ~/.agents/skills
+cp -R ./skills/general/orchlink ~/.agents/skills/orchlink
 openclaw skills install ./skills/openclaw/orchlink --as orchlink --force
 hermes skills install ./skills/hermes/orchlink --name orchlink --force --yes
 ```

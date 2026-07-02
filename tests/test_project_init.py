@@ -39,6 +39,8 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     work_skill = paths["work_skill"].read_text(encoding="utf-8")
     assert "# Lead Role" in lead_skill
     assert "## Progressive reference files" in lead_skill
+    assert "## Worker-use trigger" in lead_skill
+    assert "worker input would tighten the loop" in lead_skill
     assert "## Task prompt shape" in lead_skill
     assert "## Non-negotiable safety rules" in lead_skill
     assert "orch ask work --wait" in lead_skill
