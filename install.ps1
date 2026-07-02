@@ -7,13 +7,14 @@ param(
     [string]$BinDir = $(if ($env:ORCHLINK_BIN_DIR) { $env:ORCHLINK_BIN_DIR } elseif ($env:LOCALAPPDATA) { Join-Path (Join-Path $env:LOCALAPPDATA "orchlink") "bin" } else { "" }),
     [string]$Python = $(if ($env:ORCHLINK_PYTHON) { $env:ORCHLINK_PYTHON } else { "python" }),
     [switch]$Force,
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$SkillsOnly,
+    [switch]$NoSkills
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-$AppName = "orchlink"
 if (-not $Dir -or -not $BinDir) {
     Write-Host "[orchlink error] LOCALAPPDATA is not set. Pass -Dir and -BinDir, or set ORCHLINK_INSTALL_DIR and ORCHLINK_BIN_DIR." -ForegroundColor Red -ErrorAction Continue
     throw "LOCALAPPDATA is not set."
@@ -327,6 +328,98 @@ function Ensure-UserPath {
     }
 }
 
+function Get-SkillRoot {
+    if ($LocalSourceDir -and (Test-Path (Join-Path $LocalSourceDir "skills\general\orchlink"))) {
+        return (Join-Path $LocalSourceDir "skills")
+    }
+    if (Test-Path (Join-Path $InstallDir "skills\general\orchlink")) {
+        return (Join-Path $InstallDir "skills")
+    }
+    return $null
+}
+
+function Copy-SkillDir([string]$SourceDir, [string]$TargetDir) {
+    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $TargetDir
+    New-Item -ItemType Directory -Force (Split-Path -Parent $TargetDir) | Out-Null
+    Copy-Item -Recurse -Force $SourceDir $TargetDir
+}
+
+function Install-OptionalSkills {
+    if ($NoSkills) { return }
+    $skillsRoot = Get-SkillRoot
+    if (-not $skillsRoot) {
+        Write-OrchWarn "Orchlink skill files were not found; skipping optional skill install. Install Orchlink first, or run this installer from the source checkout."
+        return
+    }
+    $generalTarget = Join-Path $HOME ".agents\skills\orchlink"
+    $options = New-Object System.Collections.Generic.List[string]
+    $labels = New-Object System.Collections.Generic.List[string]
+    $options.Add("general") | Out-Null
+    $labels.Add("General skill  -> $generalTarget") | Out-Null
+    $openclawCommand = Get-Command openclaw -ErrorAction SilentlyContinue
+    if ($openclawCommand) {
+        $options.Add("openclaw") | Out-Null
+        $labels.Add("OpenClaw skill -> $($openclawCommand.Source)") | Out-Null
+    }
+    $hermesCommand = Get-Command hermes -ErrorAction SilentlyContinue
+    if ($hermesCommand) {
+        $options.Add("hermes") | Out-Null
+        $labels.Add("Hermes skill   -> $($hermesCommand.Source)") | Out-Null
+    }
+    if (-not (Test-Interactive)) {
+        Write-OrchLog "Optional skills available. Re-run with -SkillsOnly in an interactive shell to install them."
+        return
+    }
+
+    Write-Host ""
+    Write-OrchLog "Optional agent skills are available."
+    Write-Host ""
+    Write-Host "Install Orchlink skills?"
+    for ($i = 0; $i -lt $labels.Count; $i++) {
+        Write-Host "  [$($i + 1)] $($labels[$i])"
+    }
+    $allIndex = $labels.Count + 1
+    $skipIndex = $labels.Count + 2
+    Write-Host "  [$allIndex] All"
+    Write-Host "  [$skipIndex] Skip"
+    Write-Host ""
+    $reply = Read-Host "Select one or more options, comma-separated [$skipIndex]"
+    if (-not $reply) { $reply = [string]$skipIndex }
+    if ($reply -eq [string]$skipIndex) { return }
+
+    $choices = @()
+    if ($reply -eq [string]$allIndex) {
+        $choices = $options.ToArray()
+    } else {
+        foreach ($part in ($reply -split ",")) {
+            $indexText = $part.Trim()
+            $index = 0
+            if ([int]::TryParse($indexText, [ref]$index) -and $index -ge 1 -and $index -le $options.Count) {
+                $choices += $options[$index - 1]
+            }
+        }
+    }
+
+    foreach ($choice in $choices) {
+        switch ($choice) {
+            "general" {
+                Write-OrchLog "Installing general skill to $generalTarget"
+                Copy-SkillDir (Join-Path $skillsRoot "general\orchlink") $generalTarget
+            }
+            "openclaw" {
+                Write-OrchLog "Installing OpenClaw skill"
+                openclaw skills install (Join-Path $skillsRoot "openclaw\orchlink") --as orchlink --force
+                if ($LASTEXITCODE -ne 0) { Fail "OpenClaw skill install failed" }
+            }
+            "hermes" {
+                Write-OrchLog "Installing Hermes skill"
+                hermes skills install (Join-Path $skillsRoot "hermes\orchlink") --name orchlink --force --yes
+                if ($LASTEXITCODE -ne 0) { Fail "Hermes skill install failed" }
+            }
+        }
+    }
+}
+
 function Print-Success {
     Write-OrchLog "Installed Orchlink"
     Write-Host ""
@@ -353,12 +446,18 @@ if ($Uninstall) {
     exit 0
 }
 
-Write-OrchLog "Installing Orchlink to $InstallDir"
 $LocalSourceDir = $env:ORCHLINK_SOURCE_DIR
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { "" }
 if (-not $LocalSourceDir -and $ScriptDir -and (Test-Path (Join-Path $ScriptDir "pyproject.toml")) -and (Test-Path (Join-Path $ScriptDir "src\orchlink"))) {
     $LocalSourceDir = $ScriptDir
 }
+
+if ($SkillsOnly) {
+    Install-OptionalSkills
+    exit 0
+}
+
+Write-OrchLog "Installing Orchlink to $InstallDir"
 
 if ($LocalSourceDir -and (Test-Path (Join-Path $LocalSourceDir "pyproject.toml")) -and (Test-Path (Join-Path $LocalSourceDir "src\orchlink")) -and -not $env:ORCHLINK_REPO_URL) {
     Ensure-Requirements -NeedsGit $false
@@ -374,3 +473,4 @@ Ensure-UserPath
 & (Join-Path $CommandDir "orch.cmd") --help | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail "Installed orch command failed validation" }
 Print-Success
+Install-OptionalSkills

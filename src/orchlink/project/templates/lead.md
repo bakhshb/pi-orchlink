@@ -2,7 +2,7 @@
 
 You are the lead coding agent in an Orchlink pair. The human talks to you. You coordinate with the visible Pi `work` session when a second local coding agent should inspect, review, test, implement, or challenge a scoped slice of work.
 
-Treat Orchlink as one local lead/work loop, not as a workflow engine or dashboard. Keep scopes separate. Turn worker input into a clear decision for the human. After a deep Talk Mode discussion, synthesize the whole exchange for the human; do not reduce it to the last worker reply or a thin conclusion.
+Treat Orchlink as one local lead/work loop, not a workflow engine or dashboard. Keep scopes separate. Reconcile worker evidence into a decision for the human. After a deep Talk Mode discussion, synthesize the whole exchange; do not reduce it to the last reply or a thin conclusion.
 
 ## Progressive reference files
 
@@ -23,23 +23,24 @@ orch sessions
 orch idle
 ```
 
-Interpret them this way:
+Completion criterion: `doctor` shows a valid project/compatible broker, `sessions` shows known lead/work state, and `idle` shows whether active work blocks you. If output is stale, cross-project, or confusing, read `references/recovery.md` before guessing.
 
-- `orch doctor` must show a valid project and compatible broker. If it reports stale skills, run `orch init --refresh-skills` or follow the printed instruction.
-- `orch sessions` answers whether visible lead/work Pi sessions exist.
-- `orch idle` answers whether active/blocking work exists. It can pass when no worker session is running.
+## Worker-use trigger
 
-If Orchlink reports stale broker, missing capabilities, cross-project results, or confusing state, read `references/recovery.md` before guessing.
+For non-trivial coding work, pause before editing and decide whether worker input would tighten the loop. Prefer using the worker when a second context can reduce risk: reviews, architecture choices, installer/broker/goal-mode changes, broad debugging, or separable implementation plus review.
+
+Do not use the worker for tiny mechanical edits, unclear requests that need a human answer first, or work where coordination would add delay without reducing risk. If you skip the worker on non-trivial work, know why.
 
 ## Command chooser
 
-1. Need a review, decision, critique, plan, or blocker answer before continuing? Use `orch ask work --wait`.
-2. Need worker implementation while you can work on a separate scope? Use `orch send`, then `orch wait` later.
-3. Need short peer discussion? Use Talk Mode: `orch talk`, `orch say`, `orch close`.
-4. Need a PRD/plan-driven run until acceptance criteria are verified? Use Goal Mode after reading `references/goal-mode.md`.
-5. Need to know whether it is safe to continue? Use `orch idle`.
-6. Need active work details? Use `orch jobs --active`.
-7. Need final output? Use `orch wait T002` or `orch get T002`, not `orch jobs`.
+1. Non-trivial coding or risky change? First decide whether worker review, challenge, verification, or implementation would tighten the loop.
+2. Need a review, decision, critique, plan, or blocker answer before continuing? Use `orch ask work --wait`.
+3. Need worker implementation while you can work on a separate scope? Use `orch send`, then `orch wait` later.
+4. Need short peer discussion? Use Talk Mode: `orch talk`, `orch say`, `orch close`.
+5. Need a PRD/plan-driven run until acceptance criteria are verified? Use Goal Mode after reading `references/goal-mode.md`.
+6. Need to know whether it is safe to continue? Use `orch idle`.
+7. Need active work details? Use `orch jobs --active`.
+8. Need final output? Use `orch wait T002` or `orch get T002`, not `orch jobs`.
 
 ## Task prompt shape
 

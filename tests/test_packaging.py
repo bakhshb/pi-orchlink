@@ -1,3 +1,5 @@
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -58,6 +60,11 @@ def test_windows_installer_exists_and_sets_up_command_shim():
     assert "ORCHLINK_BIN_DIR" in text
     assert "ORCHLINK_PYTHON" in text
     assert "ORCHLINK_SOURCE_DIR" in text
+    assert "SkillsOnly" in text
+    assert "NoSkills" in text
+    assert ".agents\\skills\\orchlink" in text
+    assert "Get-Command openclaw" in text
+    assert "Get-Command hermes" in text
 
 
 def test_installers_offer_interactive_dependency_install():
@@ -85,6 +92,9 @@ def test_readme_documents_windows_install_and_worker_background_option():
     assert "-Uninstall" in text
     assert "ORCHLINK_INSTALL_DIR" in text
     assert "Close running `orch lead` / `orch work` / Pi terminals" in text
+    assert "-SkillsOnly" in text
+    assert "-NoSkills" in text
+    assert "%USERPROFILE%\\.agents\\skills\\orchlink" in text
     assert "%LOCALAPPDATA%\\orchlink" in text
     assert "open a fresh terminal where `orch` is on PATH" in text
     assert "Start-Process orch" in text
@@ -156,11 +166,35 @@ def test_project_skill_templates_are_packaged_markdown_files():
     assert "LEAD_SKILL" not in (ROOT / "src" / "orchlink" / "project" / "init.py").read_text(encoding="utf-8")
 
 
+def test_install_script_supports_optional_skill_install():
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert "--skills-only" in text
+    assert "--no-skills" in text
+    assert "$HOME/.agents/skills/orchlink" in text
+    assert "command_exists openclaw" in text
+    assert "command_exists hermes" in text
+    assert "openclaw skills install" in text
+    assert "hermes skills install" in text
+
+
+def test_general_skill_is_platform_neutral_and_references_match_adapters():
+    general = ROOT / "skills" / "general" / "orchlink"
+    openclaw = ROOT / "skills" / "openclaw" / "orchlink"
+    hermes = ROOT / "skills" / "hermes" / "orchlink"
+
+    for skill_dir in [general, openclaw, hermes]:
+        assert "platforms: [linux, macos, windows]" in (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    assert {path.name for path in (general / "references").glob("*.md")} == {path.name for path in (openclaw / "references").glob("*.md")}
+    assert {path.name for path in (general / "references").glob("*.md")} == {path.name for path in (hermes / "references").glob("*.md")}
+    assert subprocess.run([sys.executable, str(ROOT / "skills" / "sync_orchlink_skills.py"), "--check"], check=False).returncode == 0
+
+
 def test_adapter_skills_share_prompt_policy_text():
     from orchlink.core.prompt_policy import TaskPromptPolicy
 
     policy = TaskPromptPolicy()
-    for relative_path in ["skills/openclaw/orchlink", "skills/hermes/orchlink"]:
+    for relative_path in ["skills/general/orchlink", "skills/openclaw/orchlink", "skills/hermes/orchlink"]:
         skill_dir = ROOT / relative_path
         text = "\n".join(path.read_text(encoding="utf-8") for path in sorted(skill_dir.rglob("*.md")))
         assert policy.lead_task_prompt_guidance_markdown() in text

@@ -1,20 +1,19 @@
 ---
 name: orchlink
-description: Use when Hermes is the Orchlink lead for a local Pi worker: coordinate ask/send/talk/goal tasks, review gates, wait/get results, cancellation, and stale-state recovery.
+description: Use when this agent is the Orchlink lead for a local Pi worker: coordinate ask/send/talk/goal tasks, review gates, wait/get results, cancellation, and stale-state recovery.
 version: 1.1.1
 platforms: [linux, macos, windows]
 metadata:
-  hermes:
-    tags: [coding, local-coordination, cli]
-    category: coding
-    requires_toolsets: [terminal]
+  tags: [coding, local-coordination, cli]
+  category: coding
+  requires_tools: [shell]
 ---
 
-# Orchlink Lead for Hermes
+# Orchlink Lead
 
-Hermes is the lead agent. Pi `work` is the visible worker agent. Use Orchlink when a second local coding agent should inspect, review, test, implement, or challenge a scoped slice of work.
+You are the lead coding agent. Pi `work` is the visible worker agent. Use Orchlink when a second local coding agent should inspect, review, test, implement, or challenge a scoped slice of work.
 
-Treat Orchlink as one local lead/work loop, not as a workflow engine or agent platform. Use terminal commands when available. If Hermes has no terminal access, tell the human the exact `orch ...` command to run and what output to return.
+Treat Orchlink as one local lead/work loop, not as a workflow engine or agent platform. Use terminal commands when available. If you have no terminal access, tell the human the exact `orch ...` command to run and what output to return.
 
 ## Reference files
 
@@ -46,9 +45,7 @@ cd /home/debian/projects/orchlink
 If the project is not initialized, ask the human to run `orch init`. If no worker session is active, offer exactly two choices instead of assuming:
 
 1. Start a visible worker terminal, recommended for reliability: ask the human to run `orch work --new` in a separate terminal.
-2. Run the worker in the background, only with human approval and terminal access: `mkdir -p .orch/run && nohup orch work --new > .orch/run/orch-work.log 2>&1 & echo $!`, then run `orch sessions` to confirm it registered. If it fails, read `.orch/run/orch-work.log` and fall back to the visible-terminal option.
-
-Do not start `orch lead` by default. Hermes can act as lead through CLI commands. Start `orch lead --new` only when the human wants a visible Pi lead chat to receive worker replies or Talk messages.
+2. Run the worker in the background, only with human approval and shell access: `mkdir -p .orch/run && nohup orch work --new > .orch/run/orch-work.log 2>&1 & echo $!`, then run `orch sessions` to confirm it registered. If it fails, read `.orch/run/orch-work.log` and fall back to the visible-terminal option.
 
 ## Quick command chooser
 
@@ -62,7 +59,7 @@ Do not start `orch lead` by default. Hermes can act as lead through CLI commands
 
 ## Safety rules
 
-- Keep Hermes-owned work and worker-owned work separate.
+- Keep lead-owned work and worker-owned work separate.
 - Do not expose API keys, tokens, secrets, or private logs in prompts.
 - Do not ask the worker to edit outside the allowed scope.
 - Do not run dependent full tests while worker work is active.

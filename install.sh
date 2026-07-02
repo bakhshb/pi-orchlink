@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_NAME="orchlink"
 DEFAULT_REPO_URL="https://github.com/bakhshb/pi-orchlink.git"
 DEFAULT_REF="main"
 
@@ -12,6 +11,8 @@ REF="${ORCHLINK_REF:-$DEFAULT_REF}"
 PYTHON_BIN="${ORCHLINK_PYTHON:-python3}"
 FORCE=0
 UNINSTALL=0
+SKILLS_ONLY=0
+NO_SKILLS=0
 
 if [[ -t 1 ]]; then
   BOLD='\033[1m'
@@ -47,6 +48,8 @@ Options:
   --python PATH    Python executable. Default: python3
   --force          Replace an existing non-git install directory
   --uninstall      Remove installed files and command symlinks
+  --skills-only    Install Orchlink agent skills only; skip package install/update
+  --no-skills      Do not prompt to install optional agent skills
   -h, --help       Show this help
 
 Environment overrides:
@@ -87,6 +90,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --uninstall)
       UNINSTALL=1
+      shift
+      ;;
+    --skills-only)
+      SKILLS_ONLY=1
+      shift
+      ;;
+    --no-skills)
+      NO_SKILLS=1
       shift
       ;;
     -h|--help)
@@ -366,6 +377,102 @@ install_package() {
   ln -sf "$VENV_DIR/bin/orch" "$BIN_DIR/orch"
 }
 
+skill_source_dir() {
+  if [[ -n "$LOCAL_SOURCE_DIR" && -d "$LOCAL_SOURCE_DIR/skills/general/orchlink" ]]; then
+    printf "%s\n" "$LOCAL_SOURCE_DIR/skills"
+  elif [[ -d "$INSTALL_DIR/skills/general/orchlink" ]]; then
+    printf "%s\n" "$INSTALL_DIR/skills"
+  else
+    return 1
+  fi
+}
+
+copy_skill_dir() {
+  local source_dir="$1"
+  local target_dir="$2"
+  rm -rf "$target_dir"
+  mkdir -p "$(dirname "$target_dir")"
+  cp -R "$source_dir" "$target_dir"
+}
+
+install_optional_skills() {
+  [[ "$NO_SKILLS" -eq 1 ]] && return
+  local skills_root=""
+  if ! skills_root="$(skill_source_dir)"; then
+    warn "Orchlink skill files were not found; skipping optional skill install. Install Orchlink first, or run this installer from the source checkout."
+    return
+  fi
+
+  local general_target="$HOME/.agents/skills/orchlink"
+  local options=()
+  local labels=()
+  local choices=""
+  local reply=""
+
+  options+=("general")
+  labels+=("General skill  -> $general_target")
+  if command_exists openclaw; then
+    options+=("openclaw")
+    labels+=("OpenClaw skill -> $(command -v openclaw)")
+  fi
+  if command_exists hermes; then
+    options+=("hermes")
+    labels+=("Hermes skill   -> $(command -v hermes)")
+  fi
+
+  if ! is_interactive; then
+    log "Optional skills available. Re-run with --skills-only in an interactive shell to install them."
+    return
+  fi
+
+  printf "\n%b[orchlink]%b Optional agent skills are available.\n\n" "$GREEN" "$RESET" > /dev/tty
+  printf "Install Orchlink skills?\n" > /dev/tty
+  local i=0
+  for label in "${labels[@]}"; do
+    i=$((i + 1))
+    printf "  [%s] %s\n" "$i" "$label" > /dev/tty
+  done
+  local all_index=$((i + 1))
+  local skip_index=$((i + 2))
+  printf "  [%s] All\n" "$all_index" > /dev/tty
+  printf "  [%s] Skip\n" "$skip_index" > /dev/tty
+  printf "\nSelect one or more options, comma-separated [%s]: " "$skip_index" > /dev/tty
+  IFS= read -r reply < /dev/tty || return
+  reply="${reply:-$skip_index}"
+  [[ "$reply" == "$skip_index" ]] && return
+
+  if [[ "$reply" == "$all_index" ]]; then
+    choices="${options[*]}"
+  else
+    choices=""
+    IFS=',' read -ra selected <<< "$reply"
+    for raw in "${selected[@]}"; do
+      local index="${raw//[[:space:]]/}"
+      [[ "$index" =~ ^[0-9]+$ ]] || continue
+      if (( index >= 1 && index <= ${#options[@]} )); then
+        choices+=" ${options[$((index - 1))]}"
+      fi
+    done
+  fi
+
+  for choice in $choices; do
+    case "$choice" in
+      general)
+        log "Installing general skill to $general_target"
+        copy_skill_dir "$skills_root/general/orchlink" "$general_target"
+        ;;
+      openclaw)
+        log "Installing OpenClaw skill"
+        openclaw skills install "$skills_root/openclaw/orchlink" --as orchlink --force
+        ;;
+      hermes)
+        log "Installing Hermes skill"
+        hermes skills install "$skills_root/hermes/orchlink" --name orchlink --force --yes
+        ;;
+    esac
+  done
+}
+
 print_success() {
   log "Installed Orchlink"
   printf "\n%sCommands:%s\n" "$BOLD" "$RESET"
@@ -390,6 +497,11 @@ main() {
     exit 0
   fi
 
+  if [[ "$SKILLS_ONLY" -eq 1 ]]; then
+    install_optional_skills
+    exit 0
+  fi
+
   log "Installing Orchlink to $INSTALL_DIR"
   if using_local_source; then
     ensure_requirements 0
@@ -401,6 +513,7 @@ main() {
   install_package
   "$BIN_DIR/orch" --help >/dev/null
   print_success
+  install_optional_skills
 }
 
 main "$@"
