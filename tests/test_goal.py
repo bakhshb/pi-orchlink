@@ -1,6 +1,6 @@
 """Tests for Orchlink Goal Mode MVP.
 
-These tests pin the user-facing contract described in docs/goal-mode-design.md:
+These tests pin the user-facing Goal Mode contract:
 
 - a guarded ``orch goal`` Typer sub-app registered on the main CLI app;
 - ``orch goal start "<title>" --prd|--plan|--text`` creates a goal directory

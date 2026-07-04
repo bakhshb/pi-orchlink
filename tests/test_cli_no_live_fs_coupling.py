@@ -8,9 +8,7 @@ flow through broker HTTP APIs (``BrokerClient``), not direct filesystem
 reads of ``.orch/goals/*`` or live ``.orch/run/*`` state.
 
 This guard prevents regressions that would re-introduce
-filesystem-as-coordination for task/talk state, which would block the v1.1
-Goal Mode projection (M6). See ``docs/v1.1-roadmap.md`` and
-``docs/coordination-kernel-implementation-plan.md`` (M5/M6).
+filesystem-as-coordination for task/talk state.
 
 Rules enforced
 --------------
