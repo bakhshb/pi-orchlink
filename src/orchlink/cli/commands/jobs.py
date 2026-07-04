@@ -30,7 +30,7 @@ from orchlink.cli.commands._helpers import (
     task_activity_query,
     task_body_project_id,
 )
-from orchlink.project.config import broker_api_key, broker_url
+from orchlink.project.config import broker_api_key, broker_url, normalize_worker_name, resolve_agent_id, worker_name_from_agent
 
 
 console = Console()
@@ -100,6 +100,18 @@ def _print_task_body(body: dict[str, Any]) -> None:
     _ask_version(body)
 
 
+def worker_name_for_job(config: dict[str, Any], job: dict[str, Any]) -> str:
+    return str(job.get("worker_name") or worker_name_from_agent(config, str(job.get("to_agent") or "")))
+
+
+def filter_jobs_by_worker_name(config: dict[str, Any], jobs: list[dict[str, Any]], worker_name: str | None) -> list[dict[str, Any]]:
+    if not worker_name:
+        return jobs
+    target_name = normalize_worker_name(worker_name)
+    target_agent = resolve_agent_id(config, target_name)
+    return [job for job in jobs if str(job.get("to_agent") or "") == target_agent or worker_name_for_job(config, job) == target_name]
+
+
 def validate_task_body_project(config: dict[str, Any], body: dict[str, Any], task_id: str) -> None:
     """Refuse cross-project / unscoped task results so lead does not act on stale data."""
     status = str(body.get("status") or "").upper()
@@ -117,7 +129,7 @@ def validate_task_body_project(config: dict[str, Any], body: dict[str, Any], tas
         console.print(
             f"[Orch] Refusing unscoped result for {task_id}: broker response has no project_id. The broker is likely stale."
         )
-    console.print("[Orch] Run: orch stop && orch lead --new && orch work --new")
+    console.print("[Orch] Run: orch stop --all && orch lead --new && orch work --new")
     raise typer.Exit(1)
 
 
@@ -179,6 +191,7 @@ def register_jobs(app: typer.Typer) -> None:
         status: Annotated[str | None, typer.Option("--status", help="Show only jobs with this status.")] = None,
         kind: Annotated[str | None, typer.Option("--kind", help="Show only task or talk jobs.")] = None,
         item_id: Annotated[str | None, typer.Option("--id", help="Show one task/conversation/message ID.")] = None,
+        worker_name: Annotated[str | None, typer.Option("--name", help="Show jobs for one named worker.")] = None,
         json_output: Annotated[bool, typer.Option("--json", help="Print raw jobs JSON.")] = False,
     ) -> None:
         normalized_kind = kind.lower() if kind else None
@@ -204,37 +217,37 @@ def register_jobs(app: typer.Typer) -> None:
         except (RuntimeError, httpx.HTTPError) as exc:
             console.print(f"[Orch] {exc}")
             raise typer.Exit(1) from exc
-        body["jobs"] = [
-            sanitize_job(job)
-            for job in filter_jobs(
-                body.get("jobs", []),
-                active=active,
-                status=status,
-                kind=normalized_kind,
-                item_id=item_id,
-            )[:limit]
-        ]
+        filtered = filter_jobs(
+            body.get("jobs", []),
+            active=active,
+            status=status,
+            kind=normalized_kind,
+            item_id=item_id,
+        )
+        filtered = filter_jobs_by_worker_name(config, filtered, worker_name)
+        body["jobs"] = [sanitize_job(job) for job in filtered[:limit]]
         if json_output:
             console.print_json(json.dumps(body))
             return
 
-        console.print("ID\tKIND\tMODE\tSTATUS\tUPDATED\tROUTE\tPREVIEW")
+        console.print("ID\tWORKER\tKIND\tMODE\tSTATUS\tUPDATED\tROUTE\tPREVIEW")
         for job in body.get("jobs", []):
             preview = str(job.get("preview") or job.get("last_message_preview") or "")
             console.print(
-                f"{job_id(job)}\t{job_kind(job)}\t{job.get('mode', '-')}\t{job.get('status', '-')}\t"
+                f"{job_id(job)}\t{worker_name_for_job(config, job)}\t{job_kind(job)}\t{job.get('mode', '-')}\t{job.get('status', '-')}\t"
                 f"{human_age(job.get('updated_at') or job.get('created_at'))}\t{job_route(job)}\t{preview}"
             )
             activity = _cli_main.job_activity_line(job)
             if activity:
                 console.print(f"  last activity: {activity}")
 
-    @app.command(help="Show registered lead/work Pi sessions for the current project.")
+    @app.command(help="Show registered lead and named worker Pi sessions for the current project.")
     def sessions(
         active: Annotated[
             bool,
             typer.Option("--active/--all", help="Show only active sessions, or include released history."),
         ] = True,
+        worker_name: Annotated[str | None, typer.Option("--name", help="Show sessions for one named worker.")] = None,
         json_output: Annotated[bool, typer.Option("--json", help="Print raw sessions JSON.")] = False,
     ) -> None:
         config = load_project_or_exit()
@@ -249,6 +262,16 @@ def register_jobs(app: typer.Typer) -> None:
             raise typer.Exit(1) from exc
 
         sessions_list = body.get("sessions", [])
+        if worker_name:
+            target_name = normalize_worker_name(worker_name)
+            target_agent = resolve_agent_id(config, target_name)
+            sessions_list = [
+                session
+                for session in sessions_list
+                if str(session.get("agent_id") or "") == target_agent
+                or str(session.get("worker_name") or "") == target_name
+            ]
+            body["sessions"] = sessions_list
         if json_output:
             console.print_json(json.dumps(body))
             return
@@ -261,16 +284,20 @@ def register_jobs(app: typer.Typer) -> None:
             )
             return
 
-        console.print("AGENT\tROLE\tSTATUS\tPID\tSESSION\tHEARTBEAT")
+        console.print("NAME\tAGENT\tROLE\tRUNTIME\tBACKEND\tSTATUS\tPID\tSESSION\tREADY\tHEARTBEAT")
         for session in sessions_list:
             console.print(
-                f"{session.get('agent_id', '-')}\t{session.get('role', '-')}\t{session.get('status', '-')}\t"
-                f"{session.get('pid', '-')}\t{session.get('session_id', '-')}\t{human_age(session.get('last_heartbeat_at'))}"
+                f"{session.get('worker_name') or worker_name_from_agent(config, str(session.get('agent_id') or ''))}\t"
+                f"{session.get('agent_id', '-')}\t{session.get('role', '-')}\t"
+                f"{session.get('runtime_mode') or '-'}\t{session.get('backend') or '-'}\t{session.get('status', '-')}\t"
+                f"{session.get('pid', '-')}\t{session.get('session_id', '-')}\t{session.get('ready', '-')}\t"
+                f"{human_age(session.get('last_heartbeat_at'))}"
             )
 
-    @app.command(help="Exit 0 if the worker lane is idle; exit 1 if active work exists.")
+    @app.command(help="Exit 0 if named workers are idle; exit 1 if active work exists.")
     def idle(
         limit: Annotated[int, typer.Option("--limit", help="Maximum number of recent jobs to inspect.")] = 50,
+        worker_name: Annotated[str | None, typer.Option("--name", help="Check one named worker only.")] = None,
     ) -> None:
         config = load_project_or_exit()
         try:
@@ -280,15 +307,18 @@ def register_jobs(app: typer.Typer) -> None:
             console.print(f"[Orch] {exc}")
             raise typer.Exit(1) from exc
 
-        pending = blocking_jobs(body.get("jobs", []))
+        pending = blocking_jobs(filter_jobs_by_worker_name(config, body.get("jobs", []), worker_name))
         if not pending:
-            console.print("[Orch] Worker idle: no pending tasks or open talks.")
+            label = f"Worker '{normalize_worker_name(worker_name)}'" if worker_name else "Worker"
+            console.print(f"[Orch] {label} idle: no pending tasks or open talks.")
             return
 
         console.print("[Orch] Worker is not idle. Pending worker work exists:")
         for job in pending:
             preview = str(job.get("preview") or job.get("last_message_preview") or "")
-            console.print(f"- {job_id(job)} {job_kind(job)} {job.get('mode', '-')} {job.get('status', '-')}: {preview}")
+            console.print(
+                f"- {worker_name_for_job(config, job)}: {job_id(job)} {job_kind(job)} {job.get('mode', '-')} {job.get('status', '-')}: {preview}"
+            )
             activity = _cli_main.job_activity_line(job)
             if activity:
                 console.print(f"  last activity: {activity}")
@@ -297,18 +327,31 @@ def register_jobs(app: typer.Typer) -> None:
 
     @app.command(help="Show recent worker activity for a long-running task or conversation.")
     def peek(
-        item_id: str,
+        item_id: Annotated[str | None, typer.Argument(help="Task, conversation, or message ID to inspect.")] = None,
+        worker_name: Annotated[str | None, typer.Option("--name", help="Peek at the latest active job for one named worker.")] = None,
         limit: Annotated[int, typer.Option("--limit", min=1, max=100, help="Maximum activity rows to show.")] = 10,
     ) -> None:
         config = load_project_or_exit()
         try:
             _cli_main.ensure_broker_running(config)
+            if item_id is None:
+                if not worker_name:
+                    console.print("[Orch] Provide an item ID, or use --name to peek at one worker's active job.")
+                    raise typer.Exit(1)
+                jobs_body = _cli_main.broker_get_sync(config, jobs_query(config, limit=500, active=True))
+                active_jobs = blocking_jobs(filter_jobs_by_worker_name(config, jobs_body.get("jobs", []), worker_name))
+                if not active_jobs:
+                    console.print(f"[Orch] Worker '{normalize_worker_name(worker_name)}' has no active work to peek.")
+                    return
+                item_id = job_id(active_jobs[0])
             try:
                 body = _cli_main.broker_get_sync(config, task_activity_query(config, item_id, limit=limit))
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code != 404:
                     raise
                 body = _cli_main.broker_get_sync(config, activity_query(config, item_id=item_id, limit=limit))
+        except typer.Exit:
+            raise
         except (RuntimeError, httpx.HTTPError) as exc:
             console.print(f"[Orch] {exc}")
             raise typer.Exit(1) from exc

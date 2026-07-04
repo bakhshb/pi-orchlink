@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import signal
+import subprocess
+import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -18,10 +22,11 @@ from rich.console import Console
 # patterns keep working. See ``orchlink/cli/main.py`` for the full rationale.
 from orchlink.cli import main as _cli_main
 
-from orchlink.cli.commands._helpers import auto_refresh_project_skills, load_project_or_exit
+from orchlink.broker.state import is_active_session_status
+from orchlink.cli.commands._helpers import auto_refresh_project_skills, load_project_or_exit, project_query
 from orchlink.client.process import broker_pid_path
 from orchlink.connector.pi_connector import PiConnectorError
-from orchlink.project.config import role_agent_id, save_project_config
+from orchlink.project.config import DEFAULT_WORKER_NAME, normalize_worker_name, project_root, role_agent_id, save_project_config, with_worker_name, worker_agent_id
 
 
 console = Console()
@@ -40,24 +45,232 @@ def with_new_pi_session(config: dict[str, Any], role: str) -> tuple[dict[str, An
     return updated, session_id
 
 
-def stop_pid_file(path: Path, label: str) -> None:
+def worker_runtime_state_path(config: dict[str, Any], worker_name: str) -> Path:
+    return project_root(config) / ".orch" / "run" / "workers" / worker_name / "state.json"
+
+
+def saved_worker_session_id(config: dict[str, Any], worker_name: str) -> str:
+    if worker_name == DEFAULT_WORKER_NAME:
+        return str((config.get("work") or {}).get("session_id") or DEFAULT_WORKER_NAME)
+    path = worker_runtime_state_path(config, worker_name)
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return worker_name
+    return str(state.get("session_id") or worker_name)
+
+
+def save_worker_runtime_state(config: dict[str, Any], worker_name: str, session_id: str) -> None:
+    if worker_name == DEFAULT_WORKER_NAME:
+        return
+    path = worker_runtime_state_path(config, worker_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "name": worker_name,
+                "agent_id": worker_agent_id(config, worker_name),
+                "session_id": session_id,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def with_named_worker_session(config: dict[str, Any], worker_name: str, new: bool = False) -> tuple[dict[str, Any], str]:
+    if worker_name == DEFAULT_WORKER_NAME and new:
+        updated, session_id = with_new_pi_session(config, "work")
+        return with_worker_name(updated, worker_name, session_id=session_id), session_id
+    if new:
+        session_id = f"{worker_name}-{time.strftime('%Y%m%d-%H%M%S')}"
+        save_worker_runtime_state(config, worker_name, session_id)
+    else:
+        session_id = saved_worker_session_id(config, worker_name)
+    return with_worker_name(config, worker_name, session_id=session_id), session_id
+
+
+def active_work_sessions(config: dict[str, Any], worker_name: str | None = None) -> list[dict[str, Any]]:
+    body = _cli_main.broker_get_sync(config, f"/v1/sessions?active=true{project_query(config, '&')}")
+    # Sessions created by the visible Pi launcher use role="work"; agent
+    # registration uses role="worker". Accept both so old and new workers show up.
+    sessions = [
+        session
+        for session in body.get("sessions", [])
+        if str(session.get("role") or "") in {"work", "worker"}
+        or str(session.get("agent_id") or "").endswith(".work")
+    ]
+    if worker_name is None:
+        return sessions
+    target_agent = role_agent_id(config, "work") if worker_name == DEFAULT_WORKER_NAME else worker_agent_id(config, worker_name)
+    return [
+        session
+        for session in sessions
+        if str(session.get("agent_id") or "") == target_agent
+        or str(session.get("worker_name") or session.get("name") or "") == worker_name
+        or (worker_name == DEFAULT_WORKER_NAME and str(session.get("agent_id") or "") in {"", target_agent})
+    ]
+
+
+def work_background_paths(config: dict[str, Any], worker_name: str = DEFAULT_WORKER_NAME) -> tuple[Path, Path]:
+    run_path = project_root(config) / ".orch" / "run"
+    if worker_name == DEFAULT_WORKER_NAME:
+        return run_path / "orch-work.pid", run_path / "orch-work.log"
+    worker_run_path = run_path / "workers" / worker_name
+    return worker_run_path / "orch-work.pid", worker_run_path / "orch-work.log"
+
+
+def read_pid_file(path: Path) -> int | None:
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def is_ready_work_session(config: dict[str, Any], session: dict[str, Any]) -> bool:
+    if not bool(session.get("ready")):
+        return False
+    last_ready = _parse_time(session.get("last_ready_heartbeat_at") or session.get("ready_at"))
+    if last_ready is None:
+        return False
+    if last_ready.tzinfo is None:
+        last_ready = last_ready.replace(tzinfo=timezone.utc)
+    grace = int(((config.get("broker") or {}).get("session_grace_seconds")) or 25)
+    return (datetime.now(timezone.utc) - last_ready).total_seconds() < grace
+
+
+def _session_int(session: dict[str, Any], key: str) -> int | None:
+    try:
+        return int(session.get(key) or 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def background_work_sessions(sessions: list[dict[str, Any]], tracked_pid: int | None) -> list[dict[str, Any]]:
+    # Prefer explicit runtime/backend metadata from the RPC supervisor. PID
+    # matching is a fallback for older sessions or partially recorded launches.
+    selected: list[dict[str, Any]] = []
+    for session in sessions:
+        backend = str(session.get("backend") or "")
+        runtime_mode = str(session.get("runtime_mode") or "")
+        if backend == "rpc-supervisor" or runtime_mode == "rpc":
+            selected.append(session)
+            continue
+        if tracked_pid is not None and _session_int(session, "pid") == tracked_pid:
+            selected.append(session)
+            continue
+        if tracked_pid is not None and _session_int(session, "supervisor_pid") == tracked_pid:
+            selected.append(session)
+    return selected
+
+
+def release_work_sessions(config: dict[str, Any], sessions: list[dict[str, Any]], reason: str) -> None:
+    for session in sessions:
+        if not is_active_session_status(session.get("status")):
+            continue
+        lease_id = str(session.get("lease_id") or "")
+        if not lease_id:
+            continue
+        try:
+            _cli_main.broker_post_sync(
+                config,
+                f"/v1/sessions/{lease_id}/release",
+                {"project_id": str(config.get("project_id") or "default"), "reason": reason},
+            )
+        except httpx.HTTPError:
+            continue
+
+
+def launch_work_background(config: dict[str, Any], worker_name: str = DEFAULT_WORKER_NAME) -> int:
+    pid_path, log_path = work_background_paths(config, worker_name)
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        sys.executable,
+        "-m",
+        "orchlink.worker.supervisor",
+        "--project-root",
+        str(project_root(config)),
+        "--worker-name",
+        worker_name,
+    ]
+    env = os.environ.copy()
+    python_path = str(Path(sys.executable).parent)
+    path_value = env.get("PATH") or env.get("Path") or ""
+    env["PATH"] = python_path if not path_value else f"{python_path}{os.pathsep}{path_value}"
+    env["Path"] = env["PATH"]
+    log_file = log_path.open("w", encoding="utf-8")
+    start_new_session = sys.platform != "win32"
+    creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if sys.platform == "win32" else 0
+    try:
+        process = subprocess.Popen(  # noqa: S603 - starts the local Orchlink worker supervisor.
+            command,
+            cwd=project_root(config),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=start_new_session,
+            creationflags=creationflags,
+        )
+    finally:
+        log_file.close()
+    pid_path.write_text(str(process.pid), encoding="utf-8")
+    return process.pid
+
+
+def tail_file(path: Path, lines: int = 20) -> str:
+    if not path.is_file():
+        return ""
+    return "\n".join(path.read_text(encoding="utf-8", errors="replace").splitlines()[-lines:])
+
+
+def wait_for_background_worker(
+    config: dict[str, Any], timeout_seconds: int, expected_session_id: str, worker_name: str = DEFAULT_WORKER_NAME
+) -> dict[str, Any] | None:
+    deadline = time.monotonic() + max(0, timeout_seconds)
+    while True:
+        sessions = active_work_sessions(config, worker_name)
+        for session in sessions:
+            if str(session.get("session_id") or "") == expected_session_id and is_ready_work_session(config, session):
+                return session
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(1)
+
+
+def stop_pid_file(path: Path, label: str) -> bool:
     """Stop the background process recorded in ``path`` (a PID file)."""
     if not path.is_file():
         console.print(f"[Orch] No {label} PID file found for this project.")
-        return
+        return False
     try:
         pid = int(path.read_text(encoding="utf-8").strip())
     except ValueError:
         path.unlink(missing_ok=True)
         console.print(f"[Orch] Removed invalid {label} PID file.")
-        return
+        return False
+    stopped = False
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         console.print(f"[Orch] {label} process was not running.")
     else:
+        stopped = True
         console.print(f"[Orch] Stopped {label} PID {pid}")
     path.unlink(missing_ok=True)
+    return stopped
 
 
 def register_lead(app: typer.Typer) -> None:
@@ -84,41 +297,164 @@ def register_lead(app: typer.Typer) -> None:
             console.print("[Orch] Starting Pi lead session...")
             console.print("[Orch] Lead will listen for worker replies and talk messages.")
             exit_code = _cli_main.PiConnector(config).run_lead()
+        except typer.Exit:
+            raise
         except (RuntimeError, PiConnectorError, httpx.HTTPError) as exc:
             console.print(f"[Orch] {exc}")
             raise typer.Exit(1) from exc
         raise typer.Exit(exit_code)
 
-    @app.command(help="Start or reopen the visible Pi worker session for this project.")
+    @app.command(help="Start or reopen the Pi worker session; use --background for the headless RPC worker.")
     def work(
         new: Annotated[
             bool,
             typer.Option("--new", help="Start a new Pi worker session instead of reopening the saved worker session."),
         ] = False,
+        background: Annotated[
+            bool,
+            typer.Option("--background", help="Start the headless RPC worker, wait for readiness, then return."),
+        ] = False,
+        timeout: Annotated[
+            int,
+            typer.Option("--timeout", min=1, help="Seconds to wait for background worker readiness."),
+        ] = 30,
+        worker_name: Annotated[
+            str,
+            typer.Option("--name", help="Configless worker name to start or reopen, default: work."),
+        ] = DEFAULT_WORKER_NAME,
+        replace: Annotated[
+            bool,
+            typer.Option("--replace", help="Release/fence an active session with the same worker name before starting."),
+        ] = False,
+        background_test: Annotated[
+            bool,
+            typer.Option("--test", help="Start a safe fresh background test worker (default name: bg-test)."),
+        ] = False,
     ) -> None:
         config = load_project_or_exit()
         try:
+            if background_test:
+                background = True
+                new = True
+                if worker_name == DEFAULT_WORKER_NAME:
+                    worker_name = "bg-test"
+            worker_name = normalize_worker_name(worker_name)
+            config, session_id = with_named_worker_session(config, worker_name, new=new)
+            named_worker_label = f" worker '{worker_name}'" if worker_name != DEFAULT_WORKER_NAME else " worker"
             auto_refresh_project_skills(config)
             _cli_main.ensure_broker_running(config)
             console.print("[Orch] Broker online")
-            _cli_main.register_project_role_sync(config, "worker")
-            console.print(f"[Orch] Registered: {role_agent_id(config, 'work')}")
-            if new:
-                config, session_id = with_new_pi_session(config, "work")
-                console.print(f"[Orch] New Pi worker session: {session_id}")
-
             connector = _cli_main.PiConnector(config)
             if not connector.check_available():
                 raise PiConnectorError(f"Pi command not found: {connector.pi_command()}")
-            console.print("[Orch] Starting Pi worker session...")
+
+            pid_path, log_path = work_background_paths(config, worker_name)
+            existing = active_work_sessions(config, worker_name)
+            tracked_pid = read_pid_file(pid_path)
+            existing_background = background_work_sessions(existing, tracked_pid)
+            ready_background = [session for session in existing_background if is_ready_work_session(config, session)]
+            if existing and not replace:
+                if background and ready_background and not new and len(existing_background) == len(existing):
+                    session_id = str(ready_background[0].get("session_id") or "unknown")
+                    console.print(f"[Orch] Background worker already ready: {session_id}")
+                    console.print("[Orch] Use --new --replace to start a fresh worker session.")
+                    raise typer.Exit(0)
+                console.print(f"[Orch] Worker '{worker_name}' is already active.")
+                if background and worker_name == DEFAULT_WORKER_NAME:
+                    console.print("[Orch] To test background safely, run: orch work --background --name bg-test --new")
+                console.print(f"[Orch] Use `orch stop --name {worker_name}` first, or pass --replace after confirming it is safe.")
+                raise typer.Exit(1)
+            if existing and replace:
+                stopped_existing = stop_pid_file(pid_path, f"worker '{worker_name}'")
+                release_work_sessions(config, existing_background, f"Replaced by orch work --name {worker_name} --replace.")
+                remaining_sessions = [session for session in existing if session not in existing_background]
+                if remaining_sessions:
+                    console.print(f"[Orch] Worker '{worker_name}' still has a visible active session.")
+                    console.print("[Orch] Stop it in that terminal with Ctrl-C, then retry.")
+                    raise typer.Exit(1)
+                if existing and not stopped_existing:
+                    console.print(f"[Orch] Fenced existing worker '{worker_name}' session lease(s).")
+            elif background and new and tracked_pid is not None:
+                stop_pid_file(pid_path, f"worker '{worker_name}'")
+
+            if background:
+                if new:
+                    console.print(f"[Orch] New Pi{named_worker_label} session: {session_id}")
+                console.print(f"[Orch] Starting headless Pi RPC{named_worker_label}...")
+                pid = launch_work_background(config, worker_name)
+                console.print(f"[Orch] Supervisor PID: {pid} ({pid_path})")
+                console.print(f"[Orch] Log: {log_path}")
+                session = wait_for_background_worker(config, timeout, session_id, worker_name)
+                if session is None:
+                    console.print(f"[Orch] Worker process started but did not become ready within {timeout}s.")
+                    console.print(f"[Orch] Check log: {log_path}")
+                    fallback_command = "orch work" if worker_name == DEFAULT_WORKER_NAME else f"orch work --name {worker_name}"
+                    console.print(f"[Orch] Fallback: run `{fallback_command}` in another terminal for a visible worker.")
+                    tail = tail_file(log_path)
+                    if tail:
+                        console.print("[Orch] Last worker log lines:")
+                        console.print(tail)
+                    raise typer.Exit(1)
+                console.print(f"[Orch] Headless worker ready: {session.get('session_id') or 'unknown'}")
+                raise typer.Exit(0)
+
+            _cli_main.register_project_role_sync(config, "worker")
+            console.print(f"[Orch] Registered: {role_agent_id(config, 'work')}")
+            if new:
+                console.print(f"[Orch] New Pi{named_worker_label} session: {session_id}")
+                connector = _cli_main.PiConnector(config)
+
+            console.print(f"[Orch] Starting Pi{named_worker_label} session...")
             console.print("[Orch] Tasks and talk turns will be posted directly into this Pi chat.")
             exit_code = connector.run_work()
-        except (RuntimeError, PiConnectorError, httpx.HTTPError) as exc:
+        except typer.Exit:
+            raise
+        except (RuntimeError, PiConnectorError, httpx.HTTPError, ValueError) as exc:
             console.print(f"[Orch] {exc}")
             raise typer.Exit(1) from exc
         raise typer.Exit(exit_code)
 
-    @app.command(help="Stop the background broker process for this project.")
-    def stop() -> None:
+    @app.command(help="Stop this project's background worker by default; add --broker or --all for broker cleanup.")
+    def stop(
+        broker: Annotated[
+            bool,
+            typer.Option("--broker", help="Stop the shared broker only; use carefully when other projects may be active."),
+        ] = False,
+        all_: Annotated[
+            bool,
+            typer.Option("--all", help="Stop this project's background worker and the shared broker."),
+        ] = False,
+        worker_name: Annotated[
+            str | None,
+            typer.Option("--name", help="Stop/release one named worker, default: work."),
+        ] = None,
+    ) -> None:
+        if broker and all_:
+            console.print("[Orch] Use either --broker or --all, not both.")
+            raise typer.Exit(1)
         config = load_project_or_exit()
-        stop_pid_file(broker_pid_path(config), "broker")
+        target_worker_name = normalize_worker_name(worker_name or DEFAULT_WORKER_NAME)
+        explicit_worker_name = worker_name is not None
+        stop_worker = not broker or all_
+        stop_broker = broker or all_
+        if stop_worker:
+            worker_pid_path, _ = work_background_paths(config, target_worker_name)
+            tracked_pid = read_pid_file(worker_pid_path)
+            try:
+                sessions = active_work_sessions(config, target_worker_name)
+            except httpx.HTTPError:
+                sessions = []
+            background_sessions = background_work_sessions(sessions, tracked_pid)
+            if stop_pid_file(worker_pid_path, f"worker '{target_worker_name}'"):
+                release_work_sessions(config, background_sessions, f"Stopped by orch stop --name {target_worker_name}.")
+            elif sessions and explicit_worker_name:
+                release_work_sessions(config, sessions, f"Stopped by orch stop --name {target_worker_name}.")
+                console.print(f"[Orch] Fenced active worker '{target_worker_name}' session lease(s).")
+                console.print("[Orch] If it is a visible worker terminal, stop it there with Ctrl-C.")
+            elif sessions:
+                console.print("[Orch] Active worker session exists but no tracked background PID was found.")
+                console.print("[Orch] If it is a visible worker terminal, stop it there with Ctrl-C.")
+        if stop_broker:
+            stop_pid_file(broker_pid_path(config), "broker")
+        else:
+            console.print("[Orch] Broker left running. Use `orch stop --broker` or `orch stop --all` only when no other project needs it.")

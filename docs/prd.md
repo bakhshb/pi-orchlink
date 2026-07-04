@@ -2,14 +2,14 @@
 
 ## 1. Product thesis
 
-Orchlink coordinates one visible lead Pi session and one visible worker Pi session inside a local project.
+Orchlink coordinates a lead agent and one or more named Pi worker sessions inside a local project. A worker name is a durable context handle; each named worker can be visible or headless, and only one active runtime may own the same name at a time.
 
-The product is not a platform, workflow engine, cloud service, or hidden agent swarm. It is a local lead/work loop that removes copy-paste while keeping both coding-agent sessions visible and accountable.
+The product is not a platform, workflow engine, cloud service, or hidden agent swarm. It is a local lead/work loop that removes copy-paste while keeping the worker path explicit and accountable.
 
-Secondary adapter mode: an external lead agent such as OpenClaw or Hermes may use the `orch` CLI to coordinate with a visible Pi worker. That is supported adapter usage, but the core product remains the same local lead/work loop.
+Secondary adapter mode: an external lead agent such as OpenClaw or Hermes may use the `orch` CLI to coordinate with the Pi worker, usually through `orch work --background`. That is supported adapter usage, but the core product remains the same local lead/work loop.
 
 ```text
-human → visible lead Pi → Orchlink broker → visible work Pi → Orchlink broker → visible lead Pi → human
+human → lead agent → Orchlink broker → named Pi worker session → Orchlink broker → lead agent → human
 ```
 
 Product language:
@@ -66,7 +66,7 @@ The broker should only coordinate:
 
 - validate protocol
 - register sessions
-- enforce the single-flight worker lane
+- enforce single-flight per named worker
 - route jobs
 - track state
 - record events
@@ -116,10 +116,10 @@ The codebase already implements:
 - in-memory `MessageStore` abstraction and `MemoryMessageStore`
 - API-key protected broker endpoints
 - project scoping through project IDs and `X-Orchlink-Project-ID`
-- visible Pi launcher and generated Pi extension
+- Pi launcher for visible sessions and headless RPC worker mode, with generated Pi extension
 - lead and worker session leases, heartbeats, release/expiry, and auto-stop support
 - task jobs, Talk conversations, events, activity, result retrieval, waiters, cancellation, and status views
-- single-flight worker lane enforcement
+- single-flight per named worker enforcement
 - separated human, agent-coordination, and debug command surfaces
 - tests for broker, protocol, memory store, CLI, events, packaging, project init, state, and request/reply behavior
 
@@ -149,7 +149,7 @@ Do not turn Orchlink into:
 - a multi-user collaboration backend
 - a general workflow engine
 - a dashboard-first product
-- a tmux automation layer
+- a terminal-multiplexer automation layer
 - a Redis/RabbitMQ/Postgres platform
 - an automatic git merge system
 - a hidden autonomous agent swarm
@@ -167,10 +167,10 @@ Humans should mostly need:
 ```bash
 orch init      # set up .orch for this project
 orch lead      # start/reopen visible lead Pi
-orch work      # start/reopen visible worker Pi
+orch work      # start/reopen visible worker named work; add --name or --background/--test for named/headless workers
 orch doctor    # check setup and compatibility
 orch jobs      # see recent/current work
-orch stop      # stop the project broker
+orch stop      # stop this project's tracked background worker; use --all for broker cleanup
 orch update    # update the install
 ```
 
@@ -237,7 +237,7 @@ Creates:
 
 `orch lead` and `orch work` refresh stale generated skills before launching Pi.
 
-### 7.2 Start visible sessions
+### 7.2 Start worker sessions
 
 Terminal 1:
 
@@ -245,10 +245,16 @@ Terminal 1:
 orch lead
 ```
 
-Terminal 2:
+Terminal 2, visible worker:
 
 ```bash
 orch work
+```
+
+Or, for an external lead/background flow:
+
+```bash
+orch work --background
 ```
 
 Expected behavior:
@@ -256,7 +262,7 @@ Expected behavior:
 - broker starts when needed
 - lead/work register with broker
 - sessions acquire leases and heartbeat
-- visible Pi sessions receive role instructions and the Orchlink extension
+- Pi sessions receive role instructions and the Orchlink extension
 - worker listens for tasks and Talk turns
 - lead receives worker replies in visible chat
 
@@ -268,7 +274,7 @@ orch ask work --wait -t T001 -m "Review the plan. Reply with verdict, risks, fil
 
 Expected behavior:
 
-- broker rejects the request if worker is offline or busy
+- broker rejects the request if the named worker is offline or busy
 - work appears in `orch jobs`
 - worker receives a scoped prompt
 - worker reply resolves the waiter
@@ -283,7 +289,7 @@ orch send work -t T002 -m "Implement only the parser change. Run parser tests."
 
 Expected behavior:
 
-- broker enforces the single-flight worker lane
+- broker enforces single-flight per named worker
 - lead may continue only on a separate scope
 - lead must reconcile the worker result before dependent final steps
 
@@ -337,7 +343,7 @@ Default IDs:
 
 ### 8.3 Visible session
 
-A visible session is a running Pi process managed by `orch lead` or `orch work`.
+A visible session is a running Pi process managed by `orch lead` or `orch work`. A worker session has a configless name such as `work`, `review`, or `bg-test` that maps deterministically to `<project_id>.<name>`.
 
 Sessions have:
 
@@ -460,7 +466,7 @@ Storage interface
   └─ MemoryMessageStore today
 
 Pi connector
-  ├─ launches visible Pi sessions
+  ├─ launches visible Pi sessions and the headless RPC worker
   ├─ injects generated skills
   ├─ injects Orchlink Pi extension
   ├─ sets runtime env vars
@@ -514,7 +520,7 @@ API requirements:
 - reject invalid mode/delivery combinations
 - reject turns above `max_turns`
 - reject worker-bound work when peer session is required and offline
-- reject worker-bound work when the worker lane is busy
+- reject worker-bound work when the named worker is busy
 - preserve project scoping on jobs, tasks, events, activity, sessions, and results
 - never print or log API keys
 
@@ -574,9 +580,9 @@ Status vocabulary:
 - active/busy: `PENDING`, `QUEUED`, `DELIVERED`, `RUNNING`, `IN_PROGRESS`, `OPEN`
 - terminal/settled: `DONE`, `COMPLETED`, `FAILED`, `TIMEOUT`, `CANCELLED`, `CLOSED`
 
-## 13. Single-flight worker lane
+## 13. Single-flight per named worker
 
-The worker lane is single-flight per project and worker agent.
+Each named worker is single-flight per project and worker agent.
 
 A new worker-bound task or Talk turn must be rejected when:
 
@@ -618,11 +624,11 @@ The Pi connector is the riskiest integration point and must be treated as a main
 
 Required capabilities:
 
-- launch or reopen named visible Pi sessions
+- launch or reopen named visible Pi worker sessions, or start named headless RPC workers
 - append role-specific system prompts
 - load the Orchlink extension
 - pass broker URL, API key, project ID, agent ID, role, and polling settings through env vars
-- inject worker task and Talk prompts into the visible worker session
+- inject worker task and Talk prompts into the worker session
 - capture assistant outputs as worker replies
 - deliver worker replies into the visible lead session
 - record activity telemetry where supported
@@ -697,7 +703,7 @@ Ensures broker, registers lead, acquires session lease, launches visible Pi lead
 
 #### `orch work`
 
-Ensures broker, registers worker, acquires session lease, launches visible Pi worker with worker skill and extension.
+Ensures broker, registers a named worker, acquires a session lease, and launches the visible Pi worker with worker skill and extension. `--name review` starts/reopens a separate configless worker context. With `--background`, starts the named headless RPC supervisor and waits for an extension-owned ready heartbeat; `--background --test` starts a fresh isolated `bg-test` worker.
 
 #### `orch doctor`
 
@@ -721,7 +727,7 @@ Output should show ID, kind, mode, status, updated age, route, preview, and late
 
 #### `orch stop`
 
-Stops the project broker without killing unrelated Pi sessions.
+Stops this project's tracked default background worker without killing unrelated Pi sessions or the shared broker. Use `orch stop --name <worker>` for a named worker, or `orch stop --broker`/`--all` for broker cleanup.
 
 #### `orch update`
 
@@ -787,10 +793,10 @@ Runs the broker foreground server for debugging/development.
 Orchlink is acceptable for v1 when:
 
 1. `orch init` creates valid config and generated skills.
-2. `orch lead` and `orch work` start visible Pi sessions with the Orchlink extension.
+2. `orch lead` and `orch work` start visible Pi sessions with the Orchlink extension; `orch work --background` starts a ready-checked headless RPC worker.
 3. Broker auto-start works for normal commands.
 4. Lead and worker register and maintain session leases.
-5. Worker offline is detected when peer sessions are required.
+5. Named worker offline is detected when peer sessions are required.
 6. `orch ask --wait` completes a request/reply loop.
 7. `orch send` supports async work without stacking worker work.
 8. `orch talk/say/close` supports visible Talk conversations.
@@ -805,7 +811,7 @@ Orchlink is acceptable for v1 when:
 17. Generated skills teach the intended lead/worker behavior.
 18. README documents human, agent coordination, and debug commands separately.
 19. Unit tests pass.
-20. Manual smoke tests cover real visible Pi sessions.
+20. Manual smoke tests cover real visible Pi sessions and the headless background worker.
 
 ## 20. Near-term roadmap
 

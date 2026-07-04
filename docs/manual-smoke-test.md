@@ -1,6 +1,6 @@
 # Orchlink full manual smoke test
 
-Use this plan when validating a real visible lead/work Pi pair before a release or after changing coordination behavior. It is intentionally broader than a quick smoke: it exercises every documented `orch` command surface, Goal Mode, generated skill references, compaction hooks, the main broker/session/storage paths, and the real Pi handoff paths that unit tests cannot prove.
+Use this plan when validating real visible lead and named worker Pi sessions before a release or after changing coordination behavior. It is intentionally broader than a quick smoke: it exercises every documented `orch` command surface, Goal Mode, generated skill references, compaction hooks, the main broker/session/storage paths, and the real Pi handoff paths that unit tests cannot prove.
 
 This is still not a mathematical proof of every timing race. Treat the full validation as:
 
@@ -36,7 +36,7 @@ orch broker run --help
 
 for cmd in \
   init lead work ask send task talk say close jobs sessions idle peek get wait \
-  cancel update watch stop status doctor goal; do
+  cancel update watch stop status doctor resume goal; do
   orch "$cmd" --help >/tmp/orch-help-$cmd.txt || exit 1
 done
 ```
@@ -88,6 +88,8 @@ task_activity_endpoint
 scoped_task_results
 status_filters
 session_leases
+session_readiness
+session_lease_fencing
 ```
 
 Also verify skill refresh paths:
@@ -139,7 +141,7 @@ Pass criteria:
 Goal: prove broker start/stop behavior and public/private API behavior.
 
 ```bash
-orch stop || true
+orch stop --broker || true
 orch doctor
 curl -s http://127.0.0.1:8787/health || true
 
@@ -150,6 +152,9 @@ curl -s http://127.0.0.1:8787/health
 # Authenticated status succeeds with the development key.
 curl -s -H 'X-API-Key: change-me' 'http://127.0.0.1:8787/v1/status?project_id=smoke-full'
 
+# Resume report is safe when no active work exists.
+orch resume
+
 # Missing API key is rejected.
 curl -i -s 'http://127.0.0.1:8787/v1/status?project_id=smoke-full' | head
 ```
@@ -158,7 +163,7 @@ Extended foreground broker flag check from a second terminal:
 
 ```bash
 cd "$ORCH_SMOKE_ROOT"
-orch stop || true
+orch stop --broker || true
 orch broker run --store-backend jsonl --store-path .orch/run/smoke-journal.jsonl
 # Ctrl-C after /health works from another terminal.
 ```
@@ -168,6 +173,7 @@ Pass criteria:
 - `orch jobs` auto-starts a reachable broker if needed.
 - `/health` is public.
 - `/v1/status` rejects missing API keys.
+- `orch resume` prints active task/goal, sessions, checkpoint state, and ends with `Safe to continue.` when there is no active or drifted current-project work.
 - `orch broker run` accepts memory/jsonl store flags.
 
 ## 5. Start visible Pi sessions
@@ -212,6 +218,25 @@ Pass criteria:
 - `orch sessions` shows active lead/work registrations for `smoke-full`.
 - `orch sessions --all` includes released history if any exists.
 - `orch sessions --json` is machine-readable.
+
+## 5a. Named worker and background-test smoke
+
+Goal: prove configless named workers do not steal the default visible worker session.
+
+```bash
+cd "$ORCH_SMOKE_ROOT"
+orch work --background --name bg-test --new --timeout 45
+orch sessions --name bg-test
+orch ask bg-test --wait -t TASK-BG-TEST-001 -m "Smoke test only. Reply exactly: bg-test-ok"
+orch stop --name bg-test
+orch sessions --all --name bg-test
+```
+
+Pass criteria:
+
+- `bg-test` appears as a separate worker name with runtime/backend and ready state.
+- `TASK-BG-TEST-001` routes to `bg-test`, not the default `work` worker.
+- `orch stop --name bg-test` stops/releases only the named background worker.
 
 ## 6. Blocking task, async task, and wait/get paths
 
@@ -525,9 +550,9 @@ Pass criteria for derivation:
 - The artifacts mention concrete `--name=value` behavior, not generic "work on everything" language.
 - If artifacts are vague, reject the gate and record the failure.
 
-## 8B. Compaction: native Pi compact and auto phase compact
+## 8B. Compaction: native Pi compact and default no auto review compact
 
-Goal: prove there is no separate Orchlink manual compact command, normal Pi `/compact` preserves Orchlink state, and auto-compaction runs only after the lead reconciles a review/phase boundary.
+Goal: prove there is no separate Orchlink manual compact command, normal Pi `/compact` preserves Orchlink state, and review gates do not compact unexpectedly by default.
 
 Manual native Pi compaction:
 
@@ -549,36 +574,34 @@ Pass criteria:
 - The post-compact lead response can recover the project and goal context, either from the compaction summary or by reading `.orch/goals/`.
 - No docs or skills tell the user to run an Orchlink-specific compact command.
 
-Auto review-phase compaction:
+Default review flow must not compact:
 
 ```bash
-orch ask work --wait -t TASK-AUTO-COMPACT-001 -m "Please review only orch_task.py and tests/test_orch_task.py for the smoke compaction drill. Do not edit. You may run python3 -m pytest tests/test_orch_task.py -v. Return verdict, risks, files inspected, and tests run."
+orch ask work --wait -t TASK-NO-AUTO-COMPACT-001 -m "Please review only orch_task.py and tests/test_orch_task.py for the smoke compaction drill. Do not edit. You may run python3 -m pytest tests/test_orch_task.py -v. Return verdict, risks, files inspected, and tests run."
 orch idle
 ```
 
 After the review result appears in the visible lead Pi chat, prompt lead in that same chat:
 
 ```text
-Reconcile the review in one short response. Start exactly with: Review reconciled:
-Include decision, tests, and next step. Do not run tools.
+Reconcile the review in one short response. Include decision, tests, and next step. Do not run tools.
 ```
 
 Pass criteria:
 
-- The lead response starts with `Review reconciled:`.
-- Orchlink starts auto phase compaction after that response.
-- The Pi UI shows an `Orchlink auto phase compaction started` or completed notification.
-- Auto-compaction does not trigger before the lead reconciliation response.
-- Auto-compaction does not trigger if `orch idle` reports active work.
+- The worker result remains visible in the lead conversation.
+- The lead reconciliation remains visible after the review.
+- Orchlink does not start auto phase compaction with default settings.
+- The Pi UI does not show `Orchlink auto phase compaction started`.
 
-Disable-path check, required for any compaction/extension release and extended otherwise:
+Opt-in auto review compaction, required only for compaction/extension changes that touch the opt-in path:
 
 ```bash
-# Restart the lead Pi session with auto review compaction disabled.
-ORCHLINK_AUTO_COMPACT_PHASES=off orch lead --new
+# Restart the lead Pi session with auto review compaction explicitly enabled.
+ORCHLINK_AUTO_COMPACT_PHASES=review orch lead --new
 ```
 
-Repeat the review/reconcile drill. Pass criteria: no auto compaction starts while `ORCHLINK_AUTO_COMPACT_PHASES=off`; native `/compact` still works.
+Repeat the review/reconcile drill with a response that starts with `Review reconciled:`. Pass criteria: auto compaction starts only in this explicit opt-in session, never before the reconciliation response, and never while `orch idle` reports active work. Native `/compact` must still work.
 
 ## 9. Talk Mode follow-up, disagreement, max-turn discipline, and close
 
@@ -657,17 +680,17 @@ orch wait TASK-IDLE-ACTIVE-001 --timeout 60
 orch idle
 ```
 
-Extended worker-lane locking and hard-timeout drills:
+Extended worker-name locking and hard-timeout drills:
 
 ```bash
-orch send work -t TASK-LANE-LOCK-001 -m "Worker lane locking drill. Do not edit files. Wait about 20 seconds, then reply that TASK-LANE-LOCK-001 completed."
-orch send work -t TASK-LANE-LOCK-002 -m "This should be rejected while TASK-LANE-LOCK-001 owns the worker lane." || true
-orch wait TASK-LANE-LOCK-001 --timeout 60
+orch send work -t TASK-WORKER-LOCK-001 -m "Worker-name locking drill. Do not edit files. Wait about 20 seconds, then reply that TASK-WORKER-LOCK-001 completed."
+orch send work -t TASK-WORKER-LOCK-002 -m "This should be rejected while TASK-WORKER-LOCK-001 owns the worker named work." || true
+orch wait TASK-WORKER-LOCK-001 --timeout 60
 
 orch talk work -m "Keep this talk open until I close it; I will verify open Talk blocks new worker tasks." -r 3
 # Replace C004 with the printed conversation ID.
 orch send work -t TASK-TALK-BLOCKED-001 -m "This should be rejected while Talk is open." || true
-orch close C004 -m "Decision: open Talk blocks worker tasks. Rationale: single-flight lane. Dissent/risk accepted: none. Next step: continue smoke. Owner: lead. Human approval needed: no"
+orch close C004 -m "Decision: open Talk blocks tasks for the same worker name. Rationale: single-flight per named worker. Dissent/risk accepted: none. Next step: continue smoke. Owner: lead. Human approval needed: no"
 
 orch send work --timeout 2 -t TASK-HARD-TIMEOUT-001 -m "Hard timeout drill. Do not edit files. Wait about 30 seconds, then reply that TASK-HARD-TIMEOUT-001 completed."
 sleep 5
@@ -683,6 +706,8 @@ orch send work -t TASK-LEASE-001 -m "Lease drill. Do not edit files. Wait about 
 orch jobs --id TASK-LEASE-001   # note lease.epoch and lease.holder
 
 # Stop the worker so heartbeats stop and the lease expires.
+# If using the background worker, `orch stop` stops the tracked supervisor.
+# If using a visible worker terminal, close that terminal instead.
 orch stop || true
 # Wait past the lease TTL (default ~90s), then reclaim as a recovered holder.
 curl -s -H 'X-API-Key: change-me' 'http://127.0.0.1:8787/v1/jobs/TASK-LEASE-001/reclaim' \
@@ -692,8 +717,6 @@ curl -s -H 'X-API-Key: change-me' 'http://127.0.0.1:8787/v1/jobs/TASK-LEASE-001/
 
 # Restart the worker and confirm the OLD holder cannot renew or reply (409).
 orch work
-```
-
 ```
 
 Pass criteria:
@@ -707,7 +730,7 @@ Pass criteria:
 - Extended lease drill: after the lease TTL expires with no heartbeat, `POST /v1/jobs/{id}/reclaim` reassigns the holder and increments `epoch`; a stale-holder `POST /v1/jobs/{id}/heartbeat` or a reply with `X-Orchlink-Lease-Epoch`/`X-Orchlink-Lease-Holder` from the old holder returns 409 with no state change. Reclaim by the current holder while still valid is idempotent (`reclaimed=false`).
 - Extended: second worker task is rejected while one task is active.
 - Extended: open Talk blocks new worker tasks until closed.
-- Extended: hard timeout frees the worker lane and reports terminal state.
+- Extended: hard timeout frees the named worker and reports terminal state.
 
 ## 11. Cancellation drills
 
@@ -795,6 +818,7 @@ cd "$ORCH_SMOKE_ROOT_B"
 orch init --project-id smoke-full-b
 orch jobs
 orch status --limit 20
+orch resume
 ```
 
 From the original project:
@@ -804,15 +828,17 @@ cd "$ORCH_SMOKE_ROOT"
 orch jobs
 orch status --limit 20
 orch status --all-projects --limit 20
+orch resume
 ```
 
 If you have a visible lead/work pair for the second project, also submit the same task ID in both projects and verify each `orch get TASK-SAME-ID-001` returns only the local project result.
 
 Pass criteria:
 
-- Current-project `jobs`/`status` output does not show other project jobs.
+- Current-project `jobs`/`status`/`resume` output does not show other project jobs or checkpoint drift.
 - `--all-projects` is explicitly required for cross-project debug visibility.
 - Same task IDs in different projects do not collide.
+- `orch resume` filters checkpoint leases to the current project; stale leases for another project sharing the broker must not produce a `Needs intervention.` report.
 
 ## 14. JSONL persistence check
 
@@ -824,7 +850,7 @@ Use a separate terminal so the foreground broker can be stopped and restarted.
 
 ```bash
 cd "$ORCH_SMOKE_ROOT"
-orch stop || true
+orch stop --broker || true
 orch broker run --store-backend jsonl --store-path .orch/run/smoke-journal.jsonl
 ```
 
@@ -860,7 +886,7 @@ Use a throwaway foreground broker so you can kill only the smoke broker process:
 ```bash
 cd "$ORCH_SMOKE_ROOT"
 orch idle
-orch stop || true
+orch stop --broker || true
 orch broker run --store-backend jsonl --store-path .orch/run/crash-journal.jsonl
 ```
 
@@ -900,17 +926,20 @@ Pass criteria:
 - `orch get TASK-CRASH-PERSIST-001` still returns the completed result from JSONL storage.
 - `sessions`/`jobs` make stale or released sessions explicit instead of silently showing healthy active work.
 - `jobs --active` and `idle` reflect the real terminal state; stale heartbeats are not treated as proof of active work.
-- Optional stale-worker drill either cancels/times out the orphaned task or leaves an explicit terminal/recoverable state; it must not block the worker lane forever.
+- Optional stale-worker drill either cancels/times out the orphaned task or leaves an explicit terminal/recoverable state; it must not block the named worker forever.
 
 ## 15. Stop/restart and session release
 
-Goal: prove broker stop and visible session restart behavior.
+Goal: prove background-worker stop behavior, broker cleanup, and visible session restart behavior.
 
 ```bash
 cd "$ORCH_SMOKE_ROOT"
+orch work --background --new
 orch idle
 orch sessions
 orch stop
+orch sessions
+orch stop --broker
 orch doctor
 orch jobs
 orch sessions
@@ -930,7 +959,8 @@ orch sessions
 
 Pass criteria:
 
-- `orch stop` stops the project broker process when managed by Orchlink.
+- `orch stop` stops only this project's tracked background worker and leaves the broker running.
+- `orch stop --broker` stops the project broker process when managed by Orchlink.
 - A later command restarts the broker.
 - Sessions can be re-registered after restart.
 - `lead`/`work` without `--new` reopen saved sessions.
@@ -944,7 +974,7 @@ Goal: prove a broker configured to require peer sessions rejects work when the p
 
 ```bash
 cd "$ORCH_SMOKE_ROOT"
-orch stop || true
+orch stop --broker || true
 ORCHLINK_REQUIRE_PEER_SESSIONS=true orch broker run
 ```
 
@@ -1006,12 +1036,12 @@ Pass criteria:
 | REVIEW gate safety | Section 7 | Required |
 | Worker edits and tests | Section 8 | Required |
 | Goal Mode source, gate, work loop, evidence, audit, trial, signoff | Section 8A | Required for Goal Mode releases |
-| Native Pi compaction, auto review-phase compaction, and auto-compaction disable path | Section 8B | Required for compaction/extension changes |
+| Native Pi compaction, default no-auto review flow, and opt-in auto review compaction | Section 8B | Required for compaction/extension changes |
 | `talk`, `say`, `close`, closed/missing/max-turn errors | Section 9 | Required |
-| `jobs`, `idle`, worker-lane locks, hard timeout | Section 10 | Core required; lock/timeout drills extended |
+| `jobs`, `idle`, named-worker locks, hard timeout | Section 10 | Core required; lock/timeout drills extended |
 | `cancel` | Section 11 | Required; shell abort timing extended |
 | `task`, `peek`, `watch`, `status` | Section 12 | Required for CLI/debug changes |
-| Project scoping and same-ID safety | Section 13 | Required for scoping changes |
+| Project scoping, `resume` checkpoint scope, and same-ID safety | Section 13 | Required for scoping/resume changes |
 | JSONL persistence | Section 14 | Extended unless storage changed |
 | Ungraceful broker crash and stale-session recovery | Section 14A | Extended unless broker/session/persistence changed; required before production-readiness claims |
 | Peer-offline session guard | Section 16 | Extended unless session leases changed |
@@ -1030,7 +1060,7 @@ Task/conversation ID:
 Expected:
 Actual:
 Broker health output:
-Relevant orch jobs --id / orch get / orch status output:
+Relevant orch jobs --id / orch get / orch status / orch resume output:
 Relevant lead/work Pi chat excerpt:
 Files changed unexpectedly:
 ```

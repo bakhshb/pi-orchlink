@@ -8,18 +8,18 @@ Human daily commands:
 
 - `orch init` creates `.orch/project.yaml`, generated lead/work skills, and reference files for a project.
 - `orch lead` starts or reopens the visible Pi lead session.
-- `orch work` starts or reopens the visible Pi worker session.
+- `orch work` starts or reopens the default visible Pi worker named `work`. Use `orch work --name review` for another configless named worker, `orch work --background --name bg-test --new` for an isolated headless test worker, or `orch work --background --test` as the shortcut.
 - `orch doctor` checks project config, broker compatibility, Pi command, and generated skills.
-- `orch sessions` shows registered lead/work Pi sessions. Use `orch sessions --all` for released history and `--json` only when machine-readable output helps.
+- `orch sessions` shows registered lead and named worker Pi sessions with worker name, runtime, backend, ready state, and lease heartbeat. Use `orch sessions --name review`, `--all`, or `--json` when useful.
 - `orch jobs` browses recent and active work in the current project.
 - `orch goal ...` runs PRD/plan-driven Goal Mode from source to verified completion. Read `goal-mode.md` before using it.
-- `orch stop` stops the project broker when stale or when restarting sessions.
+- `orch stop` stops this project's tracked default background worker and leaves the shared broker running. Use `orch stop --name bg-test` for a named worker, or `orch stop --broker`/`--all` only when no other project needs that broker.
 - `orch update` updates Orchlink. Treat it as a human/operator command unless the human asks you to update.
 
 Lead coordination commands:
 
-- `orch ask work --wait -t T001 -m "..."` sends a blocking task. Use it for reviews, decisions, discussions, and any answer that changes your next action. `orch ask --no-wait` exists, but prefer `orch send` for async work so intent is obvious.
-- `orch send work -t T002 -m "..."` sends async work only when you can safely work on a different scope while Pi works.
+- `orch ask work --wait -t T001 -m "..."` sends a blocking task to a named worker (`work` by default; e.g. `orch ask review ...`). Use it for reviews, decisions, discussions, and any answer that changes your next action. `orch ask --no-wait` exists, but prefer `orch send` for async work so intent is obvious.
+- `orch send work -t T002 -m "..."` sends async work to one named worker only when you can safely work on a different scope while Pi works. Different worker names can run independent tasks; the same name remains single-flight.
 - `orch wait T002` waits for one exact task result. A wait timeout does not cancel the task.
 - `orch get T002` rereads a completed task result. Use `wait` or `get` routinely, not both.
 - `orch idle` is the safety gate. Run it before dependent tests, final conclusions, or assigning more worker work.
@@ -47,12 +47,12 @@ orch sessions
 orch idle
 ```
 
-If the user asks whether lead/work sessions exist, use `orch sessions` or `orch sessions --all` before raw `orch status` or ad hoc JSON parsing.
+If the user asks whether lead/work sessions exist, use `orch sessions`, `orch sessions --name <worker>`, or `orch sessions --all` before raw `orch status` or ad hoc JSON parsing.
 
 If Orchlink reports stale broker, missing capabilities, cross-project results, or confusing state, restart cleanly:
 
 ```bash
-orch stop
+orch stop --all
 orch lead --new
 orch work --new
 ```
@@ -87,7 +87,8 @@ orch wait TDO001
 
 Rules:
 
-- The worker lane is single-flight. Do not stack worker tasks.
+- Each named worker is single-flight. Do not stack worker tasks on the same name.
+- Named workers preserve their own Pi context. Use `--new` only when a fresh context is intended.
 - Do not send a dependent task while another task or Talk conversation is active.
 - If you no longer need active work, cancel it before assigning new work.
 - Do not use async REVIEW as a gate. If a review is unrelated and truly non-blocking, use `orch send --allow-async-review`, then verify the exact result with `orch wait TREV001` before using it.
@@ -129,14 +130,16 @@ orch jobs --kind talk
 orch jobs --id T002
 orch jobs --limit 20
 orch jobs --json
+orch jobs --name review
 ```
 
-`orch jobs --active` is not the same as `orch idle`: it shows details; it is not the safety gate. Use `--limit` when long sessions make the default recent list noisy.
+`orch jobs --active` is not the same as `orch idle`: it shows details; it is not the safety gate. Use `--name` for one worker and `--limit` when long sessions make the default recent list noisy.
 
 Use activity tools for long-running work:
 
 ```bash
 orch peek T002
+orch peek --name review
 orch task T002
 ```
 

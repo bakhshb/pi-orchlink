@@ -204,8 +204,17 @@ def test_generated_ts_uses_shared_recoverable_error_regex():
 
 def test_generated_ts_renewjoblease_posts_shared_body_shape():
     # The worker posts {holder, epoch, heartbeat_ms} to the heartbeat endpoint.
-    assert "holder: agentId, epoch, heartbeat_ms: activityHeartbeatMs" in ORCHLINK_PI_EXTENSION
+    assert 'holder: env("ORCHLINK_AGENT_ID")' in ORCHLINK_PI_EXTENSION
+    assert 'env("ORCHLINK_ACTIVITY_HEARTBEAT_MS", "15000")' in ORCHLINK_PI_EXTENSION
     assert "/v1/jobs/${encodeURIComponent(taskId)}/heartbeat" in ORCHLINK_PI_EXTENSION
+
+
+def test_generated_ts_sends_extension_ready_heartbeat():
+    assert "ORCHLINK_SESSION_LEASE_ID" in ORCHLINK_PI_EXTENSION
+    assert "async function sendReadyHeartbeat" in ORCHLINK_PI_EXTENSION
+    assert "ready: true" in ORCHLINK_PI_EXTENSION
+    assert "last_ready_heartbeat_at" not in ORCHLINK_PI_EXTENSION
+    assert "scheduleReadyHeartbeat(ctx)" in ORCHLINK_PI_EXTENSION
 
 
 def test_generated_ts_reconciliation_steer_uses_canonical_notice():

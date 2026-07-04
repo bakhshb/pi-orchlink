@@ -5,7 +5,7 @@ cannot be exercised directly by the Python test suite. This module is the
 **source of truth** for the rules that are correctness-critical and easy to
 break by hand-editing the template string:
 
-- review-reconciliation detection (triggers auto phase compaction),
+- review-reconciliation detection (used by opt-in auto phase compaction),
 - recoverable transport-error detection (defers instead of failing a task),
 - reply-type detection (``TYPE:`` prefix parsing),
 - compaction summary / phase-instruction text (the state-pointer summary

@@ -295,7 +295,7 @@ def test_jobs_rejects_stale_broker(monkeypatch, tmp_path):
     assert result.exit_code == 1
     assert "older incompatible Orchlink" in result.output
     assert "broker 0.1.0" in result.output
-    assert "orch stop" in result.output
+    assert "orch stop --all" in result.output
 
 
 def test_get_rejects_cross_project_result(monkeypatch, tmp_path):
@@ -765,6 +765,49 @@ def test_work_command_starts_visible_pi(monkeypatch, tmp_path):
     assert "posted directly into this Pi chat" in result.output
 
 
+def test_work_name_starts_visible_named_worker_without_project_yaml(monkeypatch, tmp_path):
+    paths = init_project(tmp_path, project_id="demo")
+    original_config = paths["config"].read_text(encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+        def run_work(self):
+            calls.append(
+                (
+                    "run_work",
+                    self.config["work"]["agent_id"],
+                    self.config["work"]["session_id"],
+                    self.config["work"].get("name"),
+                )
+            )
+            return 0
+
+    def fake_register(config, role):
+        calls.append(("register", role, config["work"]["agent_id"], config["work"]["session_id"]))
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "register_project_role_sync", fake_register)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+
+    result = runner.invoke(cli_main.app, ["work", "--name", "review"])
+
+    assert result.exit_code == 0
+    assert calls == [
+        ("register", "worker", "demo.review", "review"),
+        ("run_work", "demo.review", "review", "review"),
+    ]
+    assert "Registered: demo.review" in result.output
+    assert "Starting Pi worker 'review' session" in result.output
+    assert paths["config"].read_text(encoding="utf-8") == original_config
+
+
 def test_lead_auto_refreshes_stale_project_skills(monkeypatch, tmp_path):
     paths = init_project(tmp_path, project_id="demo")
     paths["lead_skill"].write_text("old lead", encoding="utf-8")
@@ -845,6 +888,559 @@ def test_work_new_uses_fresh_pi_session_id(monkeypatch, tmp_path):
     assert "New Pi worker session: work-20260621-010203" in result.output
 
 
+def test_pi_connector_builds_headless_rpc_worker_argv(tmp_path):
+    from orchlink.connector.pi_connector import PiConnector
+
+    config = init_project(tmp_path, project_id="demo")
+    loaded = load_project_config(tmp_path)
+    argv = PiConnector(loaded).work_rpc_argv()
+
+    assert "--mode" in argv
+    assert "rpc" in argv
+    assert "--no-extensions" in argv
+    assert "--approve" in argv
+    assert "--extension" in argv
+    assert str(config["run_dir"] / "orchlink-pi-extension.ts") in argv
+    assert "--append-system-prompt" in argv
+    assert str(config["work_skill"]) in argv
+
+
+def test_work_background_returns_when_existing_worker_ready(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "register_project_role_sync", lambda config, role: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(
+        cli_main,
+        "broker_get_sync",
+        lambda config, path: {
+            "sessions": [
+                {
+                    "role": "work",
+                    "status": "ACTIVE",
+                    "session_id": "work-active",
+                    "ready": True,
+                    "runtime_mode": "rpc",
+                    "backend": "rpc-supervisor",
+                    "last_ready_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                }
+            ]
+        },
+    )
+
+    result = runner.invoke(cli_main.app, ["work", "--background"])
+
+    assert result.exit_code == 0
+    assert "Background worker already ready: work-active" in result.output
+
+
+def test_work_background_does_not_treat_active_not_ready_as_ready(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(
+        cli_main,
+        "broker_get_sync",
+        lambda config, path: {"sessions": [{"role": "work", "status": "ACTIVE", "session_id": "work-active"}]},
+    )
+
+    result = runner.invoke(cli_main.app, ["work", "--background"])
+
+    assert result.exit_code == 1
+    assert "Worker 'work' is already active" in result.output
+    assert "--name bg-test" in result.output
+    assert "--new" in result.output
+
+
+def test_work_background_new_stops_existing_pid_before_start(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    pid_path = tmp_path / ".orch" / "run" / "orch-work.pid"
+    pid_path.write_text("1111", encoding="utf-8")
+    calls = {"stopped": [], "released": [], "sessions": 0, "popen": []}
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    class FakeProcess:
+        pid = 4321
+
+    def fake_stop_pid_file(path, label):
+        calls["stopped"].append((path, label))
+        path.unlink(missing_ok=True)
+        return True
+
+    def fake_popen(command, **kwargs):
+        calls["popen"].append((command, kwargs))
+        return FakeProcess()
+
+    def fake_broker_get_sync(config, path):
+        calls["sessions"] += 1
+        if calls["sessions"] == 1:
+            return {
+                "sessions": [
+                    {
+                        "role": "work",
+                        "status": "ACTIVE",
+                        "session_id": "old-work",
+                        "lease_id": "lease-old",
+                        "backend": "rpc-supervisor",
+                        "supervisor_pid": 1111,
+                    }
+                ]
+            }
+        return {
+            "sessions": [
+                {
+                    "role": "work",
+                    "status": "ACTIVE",
+                    "session_id": "work-20260621-010203",
+                    "ready": True,
+                    "last_ready_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                }
+            ]
+        }
+
+    def fake_broker_post_sync(config, path, body=None):
+        calls["released"].append((path, body))
+        return {"status": "released"}
+
+    monkeypatch.setattr(cli_main.time, "strftime", lambda fmt: "20260621-010203")
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "register_project_role_sync", lambda config, role: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(cli_main, "broker_post_sync", fake_broker_post_sync)
+    monkeypatch.setattr(lead_command, "stop_pid_file", fake_stop_pid_file)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(lead_command.time, "sleep", lambda seconds: None)
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--new", "--replace", "--timeout", "1"])
+
+    assert result.exit_code == 0
+    assert calls["stopped"] == [(pid_path, "worker 'work'")]
+    assert calls["released"] == [
+        ("/v1/sessions/lease-old/release", {"project_id": "demo", "reason": "Replaced by orch work --name work --replace."})
+    ]
+    assert pid_path.read_text(encoding="utf-8") == "4321"
+    assert calls["popen"][0][0][:3] == [lead_command.sys.executable, "-m", "orchlink.worker.supervisor"]
+    assert "New Pi worker session: work-20260621-010203" in result.output
+
+
+def test_work_background_new_stops_existing_pid_without_active_session(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    pid_path = tmp_path / ".orch" / "run" / "orch-work.pid"
+    pid_path.write_text("1111", encoding="utf-8")
+    calls = {"stopped": [], "sessions": 0}
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    class FakeProcess:
+        pid = 4321
+
+    def fake_stop_pid_file(path, label):
+        calls["stopped"].append((path, label))
+        path.unlink(missing_ok=True)
+        return True
+
+    def fake_broker_get_sync(config, path):
+        calls["sessions"] += 1
+        if calls["sessions"] == 1:
+            return {"sessions": []}
+        return {
+            "sessions": [
+                {
+                    "role": "work",
+                    "status": "ACTIVE",
+                    "session_id": "work-20260621-010203",
+                    "ready": True,
+                    "last_ready_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(cli_main.time, "strftime", lambda fmt: "20260621-010203")
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "register_project_role_sync", lambda config, role: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(lead_command, "stop_pid_file", fake_stop_pid_file)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(lead_command.time, "sleep", lambda seconds: None)
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--new", "--timeout", "1"])
+
+    assert result.exit_code == 0
+    assert calls["stopped"] == [(pid_path, "worker 'work'")]
+    assert pid_path.read_text(encoding="utf-8") == "4321"
+
+
+def test_work_background_new_does_not_release_visible_session_without_pid(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    calls = {"sessions": 0, "released": []}
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    class FakeProcess:
+        pid = 9876
+
+    def fake_broker_get_sync(config, path):
+        calls["sessions"] += 1
+        if calls["sessions"] == 1:
+            return {"sessions": [{"role": "work", "status": "ACTIVE", "session_id": "visible-work", "lease_id": "lease-visible"}]}
+        return {
+            "sessions": [
+                {
+                    "role": "work",
+                    "status": "ACTIVE",
+                    "session_id": "work-20260621-010203",
+                    "ready": True,
+                    "last_ready_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                }
+            ]
+        }
+
+    def fake_broker_post_sync(config, path, body=None):
+        calls["released"].append((path, body))
+        return {"status": "released"}
+
+    monkeypatch.setattr(cli_main.time, "strftime", lambda fmt: "20260621-010203")
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(cli_main, "broker_post_sync", fake_broker_post_sync)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(lead_command.time, "sleep", lambda seconds: None)
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--new", "--timeout", "1"])
+
+    assert result.exit_code == 1
+    assert calls["released"] == []
+    assert "Worker 'work' is already active" in result.output
+
+
+def test_work_background_replace_does_not_release_visible_session_without_pid(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    calls = {"released": []}
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    def fake_broker_get_sync(config, path):
+        return {
+            "sessions": [
+                {
+                    "role": "work",
+                    "status": "ACTIVE",
+                    "session_id": "visible-work",
+                    "lease_id": "lease-visible",
+                    "backend": "interactive",
+                }
+            ]
+        }
+
+    def fake_broker_post_sync(config, path, body=None):
+        calls["released"].append((path, body))
+        return {"status": "released"}
+
+    monkeypatch.setattr(cli_main.time, "strftime", lambda fmt: "20260621-010203")
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(cli_main, "broker_post_sync", fake_broker_post_sync)
+    monkeypatch.setattr(lead_command, "stop_pid_file", lambda path, label: False)
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--new", "--replace", "--timeout", "1"])
+
+    assert result.exit_code == 1
+    assert calls["released"] == []
+    assert "visible active session" in result.output
+    assert "Stop it in that terminal with Ctrl-C" in result.output
+
+
+def test_release_work_sessions_only_releases_active_sessions(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    config = load_project_config(tmp_path)
+    calls = []
+
+    def fake_broker_post_sync(config, path, body=None):
+        calls.append((path, body))
+        return {"status": "released"}
+
+    monkeypatch.setattr(cli_main, "broker_post_sync", fake_broker_post_sync)
+
+    lead_command.release_work_sessions(
+        config,
+        [
+            {"lease_id": "lease-active", "status": "ACTIVE"},
+            {"lease_id": "lease-released", "status": "RELEASED"},
+            {"lease_id": "lease-missing-status"},
+        ],
+        "test release",
+    )
+
+    assert calls == [("/v1/sessions/lease-active/release", {"project_id": "demo", "reason": "test release"})]
+
+
+def test_stop_defaults_to_worker_and_leaves_broker_running(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    pid_path = tmp_path / ".orch" / "run" / "orch-work.pid"
+    pid_path.write_text("1111", encoding="utf-8")
+    calls = {"stopped": [], "released": []}
+
+    def fake_stop_pid_file(path, label):
+        calls["stopped"].append((path, label))
+        return True
+
+    sessions = [
+        {"lease_id": "lease-lead", "role": "lead", "backend": "interactive"},
+        {"lease_id": "lease-visible", "role": "work", "backend": "interactive", "pid": 2222},
+        {"lease_id": "lease-worker", "role": "work", "backend": "rpc-supervisor", "supervisor_pid": 1111},
+    ]
+    monkeypatch.setattr(lead_command, "stop_pid_file", fake_stop_pid_file)
+    monkeypatch.setattr(lead_command, "active_work_sessions", lambda config, worker_name=None: sessions)
+    monkeypatch.setattr(
+        lead_command,
+        "release_work_sessions",
+        lambda config, sessions, reason: calls["released"].append((sessions, reason)),
+    )
+
+    result = runner.invoke(cli_main.app, ["stop"])
+
+    assert result.exit_code == 0
+    assert calls["stopped"] == [(pid_path, "worker 'work'")]
+    assert calls["released"] == [([{"lease_id": "lease-worker", "role": "work", "backend": "rpc-supervisor", "supervisor_pid": 1111}], "Stopped by orch stop --name work.")]
+    assert "Broker left running" in result.output
+
+
+def test_stop_all_stops_worker_and_broker(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    def fake_stop_pid_file(path, label):
+        calls.append((path, label))
+        return label == "worker 'work'"
+
+    monkeypatch.setattr(lead_command, "stop_pid_file", fake_stop_pid_file)
+    monkeypatch.setattr(lead_command, "active_work_sessions", lambda config, worker_name=None: [])
+
+    result = runner.invoke(cli_main.app, ["stop", "--all"])
+
+    assert result.exit_code == 0
+    assert calls == [
+        (tmp_path / ".orch" / "run" / "orch-work.pid", "worker 'work'"),
+        (tmp_path / ".orch" / "run" / "broker.pid", "broker"),
+    ]
+
+
+def test_stop_broker_only(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    calls = []
+
+    def fake_stop_pid_file(path, label):
+        calls.append((path, label))
+        return True
+
+    monkeypatch.setattr(lead_command, "stop_pid_file", fake_stop_pid_file)
+
+    result = runner.invoke(cli_main.app, ["stop", "--broker"])
+
+    assert result.exit_code == 0
+    assert calls == [(tmp_path / ".orch" / "run" / "broker.pid", "broker")]
+
+
+def test_stop_rejects_broker_and_all_together(tmp_path, monkeypatch):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_main.app, ["stop", "--broker", "--all"])
+
+    assert result.exit_code == 1
+    assert "Use either --broker or --all" in result.output
+
+
+def test_work_background_starts_rpc_supervisor_and_waits_for_readiness(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    calls = {"sessions": 0, "popen": [], "registered": []}
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    class FakeProcess:
+        pid = 4321
+
+    def fake_popen(command, **kwargs):
+        calls["popen"].append((command, kwargs))
+        return FakeProcess()
+
+    def fake_broker_get_sync(config, path):
+        calls["sessions"] += 1
+        if calls["sessions"] == 1:
+            return {"sessions": []}
+        return {
+            "sessions": [
+                {
+                    "role": "work",
+                    "status": "ACTIVE",
+                    "session_id": "work",
+                    "ready": True,
+                    "last_ready_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "register_project_role_sync", lambda config, role: calls["registered"].append(role))
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(lead_command.time, "sleep", lambda seconds: None)
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--timeout", "1"])
+
+    assert result.exit_code == 0
+    assert "Headless worker ready: work" in result.output
+    assert (tmp_path / ".orch" / "run" / "orch-work.pid").read_text(encoding="utf-8") == "4321"
+    assert calls["registered"] == []
+    assert calls["popen"][0][0][:3] == [lead_command.sys.executable, "-m", "orchlink.worker.supervisor"]
+    assert calls["popen"][0][1]["cwd"] == tmp_path
+
+
+def test_work_background_named_timeout_suggests_named_visible_fallback(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    class FakeProcess:
+        pid = 4321
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(cli_main, "broker_get_sync", lambda config, path: {"sessions": []})
+    monkeypatch.setattr(lead_command.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(lead_command.time, "sleep", lambda seconds: None)
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--name", "review", "--timeout", "1"])
+
+    assert result.exit_code == 1
+    assert "Fallback: run `orch work --name review`" in result.output
+
+
+def test_work_background_reports_readiness_timeout(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    class FakeProcess:
+        pid = 4321
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "register_project_role_sync", lambda config, role: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(cli_main, "broker_get_sync", lambda config, path: {"sessions": []})
+    monkeypatch.setattr(lead_command.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr(lead_command.time, "sleep", lambda seconds: None)
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--timeout", "1"])
+
+    assert result.exit_code == 1
+    assert "did not become ready within 1s" in result.output
+    assert "Fallback: run `orch work` in another terminal" in result.output
+
+
+def test_work_background_has_no_fake_tty_fallback():
+    from orchlink.cli.commands import lead as lead_command
+
+    import inspect
+
+    source = inspect.getsource(lead_command.launch_work_background)
+
+    assert "t" + "mux" not in source
+    assert "no" + "hup" not in source
+    assert "DETACHED_PROCESS" not in source
+
+
 def test_lead_new_persists_fresh_pi_session_id(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
@@ -895,6 +1491,7 @@ def test_update_runs_git_and_reinstalls_package(monkeypatch, tmp_path):
     assert ["/venv/bin/python", "-m", "pip", "install", "-e", str(tmp_path)] in calls
     assert "Update complete" in result.output
     assert "orch init --refresh-skills" in result.output
+    assert "orch stop --all" in result.output
     assert "orch lead --new" in result.output
     assert "orch work --new" in result.output
 
@@ -968,3 +1565,148 @@ def test_status_command_prints_status(monkeypatch):
     assert called["since"] == 7
     assert called["limit"] == 3
     assert '"broker": "ok"' in result.output
+
+
+def test_work_background_test_uses_bg_test_named_worker(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    paths = init_project(tmp_path, project_id="demo")
+    original_config = paths["config"].read_text(encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    calls = {"sessions": 0, "popen": []}
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    class FakeProcess:
+        pid = 5432
+
+    def fake_popen(command, **kwargs):
+        calls["popen"].append((command, kwargs))
+        return FakeProcess()
+
+    def fake_broker_get_sync(config, path):
+        calls["sessions"] += 1
+        if calls["sessions"] == 1:
+            return {"sessions": []}
+        return {
+            "sessions": [
+                {
+                    "role": "work",
+                    "worker_name": "bg-test",
+                    "agent_id": "demo.bg-test",
+                    "status": "ACTIVE",
+                    "session_id": "bg-test-20260621-010203",
+                    "ready": True,
+                    "runtime_mode": "rpc",
+                    "backend": "rpc-supervisor",
+                    "last_ready_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(cli_main.time, "strftime", lambda fmt: "20260621-010203")
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(lead_command.time, "sleep", lambda seconds: None)
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--test", "--timeout", "1"])
+
+    assert result.exit_code == 0
+    assert "New Pi worker 'bg-test' session: bg-test-20260621-010203" in result.output
+    assert "Headless worker ready: bg-test-20260621-010203" in result.output
+    assert (tmp_path / ".orch" / "run" / "workers" / "bg-test" / "orch-work.pid").read_text(encoding="utf-8") == "5432"
+    assert calls["popen"][0][0][-2:] == ["--worker-name", "bg-test"]
+    assert paths["config"].read_text(encoding="utf-8") == original_config
+
+
+def test_stop_name_releases_only_named_visible_session(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    calls = {"released": []}
+    sessions = [
+        {"lease_id": "lease-work", "role": "work", "worker_name": "work", "agent_id": "demo.work", "backend": "interactive"},
+        {"lease_id": "lease-review", "role": "work", "worker_name": "review", "agent_id": "demo.review", "backend": "interactive"},
+    ]
+
+    monkeypatch.setattr(lead_command, "active_work_sessions", lambda config, worker_name=None: [s for s in sessions if s["worker_name"] == worker_name])
+    monkeypatch.setattr(lead_command, "stop_pid_file", lambda path, label: False)
+    monkeypatch.setattr(
+        lead_command,
+        "release_work_sessions",
+        lambda config, sessions, reason: calls["released"].append((sessions, reason)),
+    )
+
+    result = runner.invoke(cli_main.app, ["stop", "--name", "review"])
+
+    assert result.exit_code == 0
+    assert calls["released"] == [([sessions[1]], "Stopped by orch stop --name review.")]
+    assert "Fenced active worker 'review'" in result.output
+
+
+def test_sessions_output_shows_worker_name_runtime_and_ready(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "broker_get_sync",
+        lambda config, path: {
+            "sessions": [
+                {
+                    "worker_name": "review",
+                    "agent_id": "demo.review",
+                    "role": "work",
+                    "runtime_mode": "rpc",
+                    "backend": "rpc-supervisor",
+                    "status": "ACTIVE",
+                    "pid": 123,
+                    "session_id": "review-session",
+                    "ready": True,
+                    "last_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                }
+            ]
+        },
+    )
+
+    result = runner.invoke(cli_main.app, ["sessions", "--name", "review"])
+
+    assert result.exit_code == 0
+    assert "NAME" in result.output
+    assert "review" in result.output
+    assert "rpc-supervisor" in result.output
+    assert "True" in result.output
+
+
+def test_jobs_active_name_filter_shows_worker_column(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(
+        cli_main,
+        "broker_get_sync",
+        lambda config, path: {
+            "jobs": [
+                {"task_id": "R001", "kind": "task", "mode": "REVIEW", "status": "RUNNING", "to_agent": "demo.review", "from_agent": "demo.lead", "preview": "review"},
+                {"task_id": "W001", "kind": "task", "mode": "PLAN", "status": "RUNNING", "to_agent": "demo.work", "from_agent": "demo.lead", "preview": "work"},
+            ]
+        },
+    )
+
+    result = runner.invoke(cli_main.app, ["jobs", "--active", "--name", "review"])
+
+    assert result.exit_code == 0
+    assert "WORKER" in result.output
+    assert "R001" in result.output
+    assert "review" in result.output
+    assert "W001" not in result.output

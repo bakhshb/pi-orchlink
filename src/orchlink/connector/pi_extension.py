@@ -201,7 +201,8 @@ async function getJson(path: string): Promise<any> {
 
 async function markMessageStatus(messageId: string, status: string): Promise<void> {
   if (!messageId) return;
-  await postJson(`/v1/messages/${encodeURIComponent(messageId)}/status`, { status });
+  const sessionLeaseId = env("ORCHLINK_SESSION_LEASE_ID");
+  await postJson(`/v1/messages/${encodeURIComponent(messageId)}/status`, { status, session_lease_id: sessionLeaseId || undefined });
 }
 
 async function renewJobLease(taskId: string, epoch: number): Promise<{ ok: boolean; status: number }> {
@@ -215,7 +216,11 @@ async function renewJobLease(taskId: string, epoch: number): Promise<{ ok: boole
         "x-api-key": env("ORCHLINK_API_KEY", "change-me"),
         "x-orchlink-project-id": env("ORCHLINK_PROJECT_ID", "default"),
       },
-      body: JSON.stringify({ holder: agentId, epoch, heartbeat_ms: activityHeartbeatMs }),
+      body: JSON.stringify({
+        holder: env("ORCHLINK_AGENT_ID"),
+        epoch,
+        heartbeat_ms: Math.max(5000, Number(env("ORCHLINK_ACTIVITY_HEARTBEAT_MS", "15000")) || 15000),
+      }),
     });
     return { ok: response.ok, status: response.status };
   } catch (error: any) {
@@ -296,7 +301,7 @@ function orchlinkPostCompactionResumeSteer(summary: string): string {
 }
 
 function autoReviewCompactionEnabled(): boolean {
-  const value = env("ORCHLINK_AUTO_COMPACT_PHASES", "review").toLowerCase().trim();
+  const value = env("ORCHLINK_AUTO_COMPACT_PHASES", "off").toLowerCase().trim();
   return ["1", "true", "yes", "review", "reviews", "phase", "phases"].includes(value);
 }
 
@@ -336,6 +341,12 @@ export default function (pi: ExtensionAPI) {
   let abortCurrentTurn: (() => void) | undefined;
   let cancelNoticeSent = false;
   let activityUnsupported = false;
+  let readyTimer: ReturnType<typeof setTimeout> | undefined;
+  const sessionLeaseId = env("ORCHLINK_SESSION_LEASE_ID");
+  const runtimeMode = env("ORCHLINK_RUNTIME_MODE");
+  const backgroundBackend = env("ORCHLINK_BACKGROUND_BACKEND");
+  const supervisorPid = Number(env("ORCHLINK_SUPERVISOR_PID", "0")) || undefined;
+  const readyHeartbeatMs = Math.max(1000, Number(env("ORCHLINK_READY_HEARTBEAT_MS", "5000")) || 5000);
   // M3 job lease: the worker captures the lease epoch at pickup and renews it
   // via /v1/jobs/{id}/heartbeat. On a 409 (stale/reclaimed) it stops and steers.
   let currentLeaseEpoch: number = 0;
@@ -450,6 +461,28 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
+  async function sendReadyHeartbeat(ctx?: any) {
+    if (!sessionLeaseId || !["lead", "work"].includes(role)) return;
+    await postJson(`/v1/sessions/${encodeURIComponent(sessionLeaseId)}/heartbeat`, {
+      project_id: projectId,
+      ready: true,
+      runtime_mode: runtimeMode || ctx?.mode || "tui",
+      backend: backgroundBackend || (ctx?.mode === "rpc" ? "rpc-supervisor" : "interactive"),
+      supervisor_pid: supervisorPid,
+      pi_pid: typeof process?.pid === "number" ? process.pid : undefined,
+    });
+  }
+
+  function scheduleReadyHeartbeat(ctx?: any, delayMs = readyHeartbeatMs) {
+    if (readyTimer) clearTimeout(readyTimer);
+    if (stopped || !sessionLeaseId || !["lead", "work"].includes(role)) return;
+    readyTimer = setTimeout(() => {
+      void sendReadyHeartbeat(ctx)
+        .catch((error) => console.error(`[orchlink] ready heartbeat failed: ${error?.message || error}`))
+        .finally(() => scheduleReadyHeartbeat(ctx, readyHeartbeatMs));
+    }, delayMs);
+  }
+
   function schedule(delayMs = 0) {
     if (stopped || !["lead", "work"].includes(role)) return;
     if (timer) clearTimeout(timer);
@@ -506,6 +539,7 @@ export default function (pi: ExtensionAPI) {
         tool_name: extra.tool_name || null,
         detail,
         status: "RUNNING",
+        session_lease_id: sessionLeaseId || undefined,
       });
     } catch (error: any) {
       if (String(error?.message || error).startsWith("404")) activityUnsupported = true;
@@ -549,6 +583,7 @@ export default function (pi: ExtensionAPI) {
         "x-orchlink-lease-epoch": String(currentLeaseEpoch),
         "x-orchlink-lease-holder": String(agentId || ""),
       } : {};
+      if (sessionLeaseId) leaseHeaders["x-orchlink-session-lease-id"] = sessionLeaseId;
       await postJson(`/v1/messages/${encodeURIComponent(task.message_id)}/reply`, reply, leaseHeaders);
       const label = task.task_id || task.conversation_id;
       ctx.ui.notify(`Orchlink reply sent for ${label}`, "info");
@@ -618,7 +653,10 @@ export default function (pi: ExtensionAPI) {
     if (stopped || !["lead", "work"].includes(role)) return;
     if (role === "work" && (pendingTask || currentTask)) return;
     try {
-      const body = await getJson(`/v1/agents/${encodeURIComponent(agentId)}/next?wait_seconds=${pollWaitSeconds}`);
+      const params = new URLSearchParams({ wait_seconds: String(pollWaitSeconds) });
+      if (sessionLeaseId) params.set("lease_id", sessionLeaseId);
+      if (projectId) params.set("project_id", projectId);
+      const body = await getJson(`/v1/agents/${encodeURIComponent(agentId)}/next?${params.toString()}`);
       if (body.status === "message") {
         const message = body.message;
         const label = message?.task_id || message?.conversation_id || "message";
@@ -653,6 +691,8 @@ export default function (pi: ExtensionAPI) {
     if (!role || !agentId) return;
     try {
       await register();
+      await sendReadyHeartbeat(ctx);
+      scheduleReadyHeartbeat(ctx);
       ctx.ui.notify(`Orchlink ${role} connected as ${agentId}`, "info");
       if (["lead", "work"].includes(role)) schedule(0);
     } catch (error: any) {
@@ -751,6 +791,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", async () => {
     stopped = true;
     if (timer) clearTimeout(timer);
+    if (readyTimer) clearTimeout(readyTimer);
     clearCancelCheck();
     clearRecoveryTimer();
     clearActivityHeartbeat();

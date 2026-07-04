@@ -638,3 +638,72 @@ def test_auto_stop_keeps_shared_broker_alive_when_another_project_is_active(monk
     asyncio.run(run())
 
     assert killed == []
+
+
+def test_broker_rejects_duplicate_active_session_for_same_named_worker():
+    client = make_client()
+    first = client.post(
+        "/v1/sessions/acquire",
+        headers=auth_headers(),
+        json={"project_id": "test", "agent_id": "test.review", "role": "work", "worker_name": "review"},
+    )
+    assert first.status_code == 200
+
+    duplicate = client.post(
+        "/v1/sessions/acquire",
+        headers=auth_headers(),
+        json={"project_id": "test", "agent_id": "test.review", "role": "work", "worker_name": "review"},
+    )
+    assert duplicate.status_code == 409
+    assert "Active session already exists" in duplicate.text
+
+    duplicate_name = client.post(
+        "/v1/sessions/acquire",
+        headers=auth_headers(),
+        json={"project_id": "test", "agent_id": "test.other-review", "role": "work", "worker_name": "review"},
+    )
+    assert duplicate_name.status_code == 409
+    assert "worker name: review" in duplicate_name.text
+
+
+def test_broker_next_requires_matching_session_lease_when_active_session_exists():
+    client = make_client()
+    acquired = client.post(
+        "/v1/sessions/acquire",
+        headers=auth_headers(),
+        json={"project_id": "test", "agent_id": "test.review", "role": "work", "worker_name": "review"},
+    )
+    lease_id = acquired.json()["session"]["lease_id"]
+    message = {
+        "protocol": "orch-a2a-v1",
+        "message_id": "msg-review",
+        "correlation_id": "req-review",
+        "project_id": "test",
+        "conversation_id": "test-tasks",
+        "task_id": "R001",
+        "from_agent": "test.lead",
+        "to_agent": "test.review",
+        "type": "TASK",
+        "status": "PENDING",
+        "turn": 1,
+        "max_turns": 6,
+        "requires_reply": True,
+        "timeout_seconds": 30,
+        "delivery": "async",
+        "payload": {"mode": "REVIEW", "intent": "review"},
+    }
+    queued = client.post("/v1/messages/send", headers=auth_headers(), json=message)
+    assert queued.status_code == 200
+
+    no_lease = client.get("/v1/agents/test.review/next?wait_seconds=0&project_id=test", headers=auth_headers())
+    assert no_lease.status_code == 409
+    stale = client.get("/v1/agents/test.review/next?wait_seconds=0&project_id=test&lease_id=lease-stale", headers=auth_headers())
+    assert stale.status_code == 409
+
+    delivered = client.get(
+        f"/v1/agents/test.review/next?wait_seconds=1&project_id=test&lease_id={lease_id}",
+        headers=auth_headers(),
+    )
+    assert delivered.status_code == 200
+    assert delivered.json()["status"] == "message"
+    assert delivered.json()["message"]["task_id"] == "R001"

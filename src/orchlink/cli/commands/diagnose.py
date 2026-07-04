@@ -13,6 +13,7 @@ import typer
 from rich.console import Console
 
 from orchlink.broker.checkpoint import (
+    Checkpoint,
     checkpoint_path,
     load_checkpoint,
     reconcile_checkpoint,
@@ -103,6 +104,16 @@ def _resume_current_leases_from_status(body: dict[str, Any]) -> dict[str, tuple[
         if task_id and lease:
             leases[str(task_id)] = (int(lease.get("epoch") or 0), str(lease.get("holder") or ""))
     return leases
+
+
+def _checkpoint_for_project(checkpoint: Checkpoint, project_id: str) -> Checkpoint:
+    """Return only checkpoint leases owned by the current project's agents."""
+    holder_prefix = f"{project_id}."
+    return Checkpoint(
+        version=checkpoint.version,
+        last_checkpoint_at=checkpoint.last_checkpoint_at,
+        leases=[lease for lease in checkpoint.leases if not lease.holder or lease.holder.startswith(holder_prefix)],
+    )
 
 
 def register_diagnose(app: typer.Typer) -> None:
@@ -244,6 +255,8 @@ def register_diagnose(app: typer.Typer) -> None:
 
         checkpoint_file = checkpoint_path(project_root(config))
         checkpoint = load_checkpoint(checkpoint_file) if checkpoint_file.is_file() else None
+        if checkpoint is not None:
+            checkpoint = _checkpoint_for_project(checkpoint, current_project_id(config))
         active = _resume_active_from_status(config, body)
         sessions_state = _resume_sessions_from_status(body)
         if checkpoint is None:

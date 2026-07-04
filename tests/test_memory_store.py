@@ -4,7 +4,7 @@ import json
 import pytest
 
 from orchlink.broker.state_machine import TaskJobStateMachine
-from orchlink.broker.storage import MessageStoreBusy
+from orchlink.broker.storage import LeaseConflictError, MessageStoreBusy
 from orchlink.broker.storage.jsonl import JsonlMessageStore
 from orchlink.broker.storage.memory import MemoryMessageStore
 from orchlink.core.models import Job, JobEventType
@@ -310,7 +310,7 @@ def test_project_scoped_jobs_allow_same_task_id_in_different_projects():
     asyncio.run(run())
 
 
-def test_worker_lane_rejects_second_task_until_reply():
+def test_worker_target_rejects_second_task_until_reply():
     async def run():
         store = MemoryMessageStore()
         await store.enqueue_message(task_message())
@@ -325,7 +325,7 @@ def test_worker_lane_rejects_second_task_until_reply():
     asyncio.run(run())
 
 
-def test_worker_lane_accepts_next_task_after_reply():
+def test_worker_target_accepts_next_task_after_reply():
     async def run():
         store = MemoryMessageStore()
         await store.enqueue_message(task_message())
@@ -610,7 +610,7 @@ def test_wait_for_task_timeout_does_not_mutate_task_status():
     asyncio.run(run())
 
 
-def test_hard_timeout_expires_active_work_and_frees_worker_lane():
+def test_hard_timeout_expires_active_work_and_frees_worker_target():
     async def run():
         store = MemoryMessageStore()
         stale = task_message(timeout_seconds=1, created_at="2000-01-01T00:00:00+00:00")
@@ -645,7 +645,7 @@ def test_cancel_completed_work_reports_terminal_status():
     asyncio.run(run())
 
 
-def test_cancel_work_skips_queued_message_and_frees_worker_lane():
+def test_cancel_work_skips_queued_message_and_frees_worker_target():
     async def run():
         store = MemoryMessageStore()
         await store.enqueue_message(task_message())
@@ -705,6 +705,38 @@ def test_peer_session_required_rejects_offline_worker():
     asyncio.run(run())
 
 
+def test_session_heartbeat_preserves_readiness_metadata():
+    async def run():
+        store = MemoryMessageStore()
+        session = await store.acquire_session(
+            {
+                "project_id": "demo",
+                "agent_id": "demo.work",
+                "role": "work",
+                "pid": 123,
+                "backend": "rpc-supervisor",
+                "runtime_mode": "rpc",
+                "supervisor_pid": 123,
+            }
+        )
+
+        updated = await store.heartbeat_session(
+            session["lease_id"],
+            project_id="demo",
+            heartbeat={"ready": True, "runtime_mode": "rpc", "backend": "rpc-supervisor", "pi_pid": 456},
+        )
+
+        assert updated["ready"] is True
+        assert updated["runtime_mode"] == "rpc"
+        assert updated["backend"] == "rpc-supervisor"
+        assert updated["supervisor_pid"] == 123
+        assert updated["pi_pid"] == 456
+        assert updated["ready_at"]
+        assert updated["last_ready_heartbeat_at"]
+
+    asyncio.run(run())
+
+
 def test_releasing_worker_session_cancels_active_task_and_frees_autostop():
     async def run():
         store = MemoryMessageStore(require_peer_sessions=True)
@@ -712,7 +744,7 @@ def test_releasing_worker_session_cancels_active_task_and_frees_autostop():
         message = task_message(project_id="demo")
 
         await store.enqueue_message(message)
-        received = await store.get_next_message("demo.work", wait_seconds=1)
+        received = await store.get_next_message("demo.work", wait_seconds=1, lease_id=session["lease_id"], project_id="demo")
         assert received is not None
 
         released = await store.release_session(session["lease_id"], "worker exited", project_id="demo")
@@ -723,5 +755,78 @@ def test_releasing_worker_session_cancels_active_task_and_frees_autostop():
         assert result["status"] == "CANCELLED"
         assert result["error"] == "worker exited"
         assert await store.can_auto_stop(project_id="demo") is True
+
+    asyncio.run(run())
+
+
+def test_active_session_uniqueness_rejects_same_named_worker():
+    async def run():
+        store = MemoryMessageStore()
+        first = await store.acquire_session({"project_id": "demo", "agent_id": "demo.review", "role": "work", "worker_name": "review"})
+
+        with pytest.raises(LeaseConflictError):
+            await store.acquire_session({"project_id": "demo", "agent_id": "demo.review", "role": "work", "worker_name": "review"})
+        with pytest.raises(LeaseConflictError):
+            await store.acquire_session({"project_id": "demo", "agent_id": "demo.other-review", "role": "work", "worker_name": "review"})
+
+        await store.release_session(first["lease_id"], "done", project_id="demo")
+        second = await store.acquire_session({"project_id": "demo", "agent_id": "demo.review", "role": "work", "worker_name": "review"})
+        assert second["worker_name"] == "review"
+
+    asyncio.run(run())
+
+
+def test_get_next_requires_active_session_lease_when_session_exists():
+    async def run():
+        store = MemoryMessageStore(require_peer_sessions=True)
+        session = await store.acquire_session({"project_id": "demo", "agent_id": "demo.review", "role": "work", "worker_name": "review"})
+        await store.enqueue_message(task_message(project_id="demo", to_agent="demo.review"))
+
+        with pytest.raises(LeaseConflictError):
+            await store.get_next_message("demo.review", wait_seconds=0, project_id="demo")
+        with pytest.raises(LeaseConflictError):
+            await store.get_next_message("demo.review", wait_seconds=0, lease_id="lease-stale", project_id="demo")
+
+        delivered = await store.get_next_message("demo.review", wait_seconds=1, lease_id=session["lease_id"], project_id="demo")
+        assert delivered is not None
+        assert delivered["to_agent"] == "demo.review"
+
+    asyncio.run(run())
+
+
+def test_different_named_workers_receive_independent_tasks():
+    async def run():
+        store = MemoryMessageStore(require_peer_sessions=True)
+        work = await store.acquire_session({"project_id": "demo", "agent_id": "demo.work", "role": "work", "worker_name": "work"})
+        review = await store.acquire_session({"project_id": "demo", "agent_id": "demo.review", "role": "work", "worker_name": "review"})
+
+        await store.enqueue_message(task_message(project_id="demo", task_id="WORK-001", message_id="msg-work", to_agent="demo.work"))
+        await store.enqueue_message(task_message(project_id="demo", task_id="REVIEW-001", message_id="msg-review", to_agent="demo.review"))
+
+        work_message = await store.get_next_message("demo.work", wait_seconds=1, lease_id=work["lease_id"], project_id="demo")
+        review_message = await store.get_next_message("demo.review", wait_seconds=1, lease_id=review["lease_id"], project_id="demo")
+
+        assert work_message["task_id"] == "WORK-001"
+        assert review_message["task_id"] == "REVIEW-001"
+
+    asyncio.run(run())
+
+
+def test_stale_session_lease_reply_and_activity_are_rejected():
+    async def run():
+        store = MemoryMessageStore(require_peer_sessions=True)
+        session = await store.acquire_session({"project_id": "demo", "agent_id": "demo.work", "role": "work", "worker_name": "work"})
+        await store.enqueue_message(task_message(project_id="demo"))
+        await store.get_next_message("demo.work", wait_seconds=1, lease_id=session["lease_id"], project_id="demo")
+
+        with pytest.raises(LeaseConflictError):
+            await store.update_message_status("msg-0001", "RUNNING", session_lease_id="lease-stale")
+        with pytest.raises(LeaseConflictError):
+            await store.record_activity({"project_id": "demo", "agent_id": "demo.work", "task_id": "TEST-001", "session_lease_id": "lease-stale"})
+        with pytest.raises(LeaseConflictError):
+            await store.save_reply("msg-0001", {**reply_message(), "project_id": "demo"}, session_lease_id="lease-stale")
+
+        result = await store.update_message_status("msg-0001", "RUNNING", session_lease_id=session["lease_id"])
+        assert result["status"] == "RUNNING"
 
     asyncio.run(run())

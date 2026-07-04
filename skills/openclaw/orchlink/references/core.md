@@ -8,18 +8,18 @@ Human daily commands:
 
 - `orch init` creates `.orch/project.yaml` and generated lead/work skills for a project.
 - `orch lead` starts or reopens the visible Pi lead session. OpenClaw usually does not need this.
-- `orch work` starts or reopens the visible Pi worker session. OpenClaw usually needs this running. If no worker is active, ask whether to use a visible worker terminal or a human-approved background worker.
+- `orch work` starts or reopens the default visible Pi worker named `work`. Use `orch work --name review` for another configless named worker, `orch work --background --name bg-test --new` for an isolated headless test worker, or `orch work --background --test` as the shortcut.
 - `orch doctor` checks project config, broker compatibility, Pi command, and generated skills.
-- `orch sessions` shows registered lead/work Pi sessions. Use `orch sessions --all` for released history and `--json` only when machine-readable output helps.
+- `orch sessions` shows registered lead and named worker Pi sessions with worker name, runtime, backend, ready state, and lease heartbeat. Use `orch sessions --name review`, `--all`, or `--json` when useful.
 - `orch jobs` browses recent and active work in the current project.
 - `orch goal ...` runs PRD/plan-driven Goal Mode from source to verified completion. Read `goal-mode.md` before using it.
-- `orch stop` stops the project broker when stale or when restarting sessions.
+- `orch stop` stops this project's tracked default background worker and leaves the shared broker running. Use `orch stop --name bg-test` for a named worker, or `orch stop --broker`/`--all` only when no other project needs that broker.
 - `orch update` updates Orchlink. Treat it as a human/operator command unless the human asks you to update.
 
 Lead coordination commands:
 
-- `orch ask work --wait -t T001 -m "..."` sends a blocking task. Use it for reviews, decisions, discussions, and any answer that changes your next action. `orch ask --no-wait` exists, but prefer `orch send` for async work so intent is obvious.
-- `orch send work -t T002 -m "..."` sends async work only when you can safely work on a different scope while Pi works.
+- `orch ask work --wait -t T001 -m "..."` sends a blocking task to the named worker `work`. Replace `work` with another active worker name such as `review` or `bg-test` when intentionally targeting that worker.
+- `orch send work -t T002 -m "..."` sends async work to one named worker only when you can safely work on a different scope while Pi works. Different names can run independent tasks; the same name remains single-flight.
 - `orch wait T002` waits for one exact task result. A wait timeout does not cancel the task.
 - `orch get T002` rereads a completed task result. Use `wait` or `get` routinely, not both.
 - `orch idle` is the safety gate. Run it before dependent tests, final conclusions, or assigning more worker work.
@@ -29,22 +29,19 @@ Lead coordination commands:
 
 ## Starting worker sessions
 
-If `orch sessions` shows no active `work` session, offer two options and wait for the human's preference unless they already asked for one:
+If `orch sessions` shows no active `work` session, this is a mandatory branch before any Orchlink task:
 
-1. Visible worker terminal, recommended: ask the human to run `orch work --new` in a separate terminal.
-2. Background worker, only with human approval and shell access:
+1. Background worker, recommended for external agents: run `orch work --background`. It starts the headless Pi RPC worker named `work`, waits for readiness, and returns.
+2. Visible worker terminal, if background start fails or the human prefers it: ask the human to run `orch work --new` in a separate terminal. Visible terminals are more reliable for long sessions.
 
-```bash
-mkdir -p .orch/run && nohup orch work --new > .orch/run/orch-work.log 2>&1 & echo $!
-orch sessions
-```
+For background smoke while a visible `work` terminal is already open, do not replace it. Use `orch work --background --name bg-test --new` or `orch work --background --test`, then target that worker explicitly with `orch ask bg-test ...` and stop it with `orch stop --name bg-test`.
 
-If the background worker does not register, inspect `.orch/run/orch-work.log` and fall back to the visible-terminal option. Do not hide a failed background start.
+If `orch work --background` fails, inspect `.orch/run/orch-work.log` (or `.orch/run/workers/<name>/orch-work.log` for named workers) and fall back to the visible-terminal option. If neither option is available, stop and tell the human Orchlink cannot proceed yet. Do not hide a failed background start, and do not silently substitute native subagents for named Pi workers.
 
 ## Choosing the right command
 
-1. Need a review, decision, critique, plan, or blocker answer before you continue? Use `orch ask work --wait`.
-2. Need worker implementation while you can work on a separate scope? Use `orch send`, then `orch wait` later.
+1. Need a review, decision, critique, plan, or blocker answer before you continue? Use `orch ask work --wait` or target a specific named worker, e.g. `orch ask review --wait`.
+2. Need worker implementation while you can work on a separate scope? Use `orch send <name>` like spawn: start it, stay responsive, and retrieve the result later with `orch get` or `orch wait` only when needed.
 3. Need short peer discussion in a visible lead/work chat? Use Talk Mode: `orch talk`, `orch say`, `orch close`.
 4. Need to know whether it is safe to continue? Use `orch idle`.
 5. Need to inspect what is active? Use `orch jobs --active`.
@@ -63,11 +60,14 @@ Do not proceed past a review gate until the exact task result returns.
 
 ## Async work with `send`
 
-Use `send` only when the worker has an independent scope and you can work elsewhere.
+Use `send` like spawn: start independent worker work, keep helping the human, and retrieve the result later. Do not immediately run `orch wait` unless the result blocks your next action.
 
 Rules:
 
-- Do not stack tasks. The worker lane is single-flight.
+- After sending, record the task ID and stay responsive to unrelated human questions.
+- Use `orch get T002` when the human asks about the result or before dependent work; use `orch wait T002` only when you intentionally want to block.
+- Run `orch idle` before final claims or dependent full tests.
+- Do not stack tasks on the same worker name. Each named worker is single-flight, while different names can run independent scoped work.
 - Do not send a dependent task while another task or Talk conversation is active.
 - If you no longer need active work, cancel it before assigning new work.
 - Do not use async REVIEW as a gate. If a review is unrelated and truly non-blocking, use `orch send --allow-async-review`, then verify the exact result with `orch wait TREV001` before using it.
@@ -120,6 +120,8 @@ Trust only the exact task ID in the current project. Orchlink refuses cross-proj
 Use `orch idle` as the gate. Exit code `0` means no active/blocking worker work. Exit code `1` means do not run dependent tests, final conclusions, or new worker assignments yet.
 
 Use `orch jobs --active` to inspect active work. Use `orch peek T002` or `orch task T002` for long-running work. These do not replace `wait`, `get`, or `idle`.
+
+Do not inspect `ps`, PID lists, broker URLs, raw HTTP endpoints, or `curl` output for normal coordination. Use raw broker checks only when `orch doctor`, `orch sessions`, `orch jobs`, or `orch idle` are stale or confusing, then read `recovery.md` first.
 
 ## Talk Mode
 

@@ -1,6 +1,6 @@
 ---
 name: orchlink
-description: Use when OpenClaw is the Orchlink lead for a local Pi worker: coordinate ask/send/talk/goal tasks, review gates, wait/get results, cancellation, and stale-state recovery.
+description: "Use when OpenClaw is the Orchlink lead for local named Pi workers (`work`, `review`, `bg-test`): coordinate ask/send/talk/goal tasks, review gates, wait/get results, cancellation, and stale-state recovery."
 version: 1.1.1
 platforms: [linux, macos, windows]
 metadata:
@@ -12,9 +12,13 @@ metadata:
 
 # Orchlink Lead for OpenClaw
 
-OpenClaw is the lead agent. Pi `work` is the visible worker agent. Use Orchlink when a second local coding agent should inspect, review, test, implement, or challenge a scoped slice of work.
+OpenClaw is the lead agent. Named Pi workers such as `work`, `review`, or `bg-test` are worker agents, either visible terminals or headless background workers. Use Orchlink when a second local coding agent should inspect, review, test, implement, or challenge a scoped slice of work.
 
 Treat Orchlink as one local lead/work loop, not as a workflow engine or agent platform. Use terminal commands when available. If OpenClaw has no terminal access, tell the human the exact `orch ...` command to run and what output to return.
+
+Do not substitute OpenClaw subagents, `sessions_spawn`, or other OpenClaw delegation for named Pi workers. Orchlink's own `orch work --background` and `orch work --background --name ...` are the approved background workers; OpenClaw-native background sessions are not. If the human asks for Orchlink, work must flow through `orch work` plus `orch ask`/`orch send`; otherwise stop and ask whether a non-Orchlink substitute is acceptable.
+
+As an external agent, do not run plain `orch work` yourself; it opens an interactive Pi chat and blocks until the session ends. Use `orch work --background` for the default worker, or `orch work --background --name bg-test --new`/`--test` for isolated background testing while a visible worker is already open.
 
 ## Reference files
 
@@ -27,7 +31,7 @@ Load bundled references only when the task needs that detail:
 
 ## Startup checklist
 
-From the target project directory:
+From the target project directory, use Orchlink commands as the source of truth. Do not inspect `ps`, PID lists, raw broker URLs, or ad hoc HTTP checks for normal coordination.
 
 ```bash
 command -v orch
@@ -43,15 +47,18 @@ cd /home/debian/projects/orchlink
 ./install.sh
 ```
 
-If the project is not initialized, ask the human to run `orch init`. If no worker session is active, offer exactly two choices instead of assuming:
+If the project is not initialized, ask the human to run `orch init`. If no worker session is active, this is a mandatory branch before any Orchlink task:
 
-1. Start a visible worker terminal, recommended for reliability: ask the human to run `orch work --new` in a separate terminal.
-2. Run the worker in the background, only with human approval and shell access: `mkdir -p .orch/run && nohup orch work --new > .orch/run/orch-work.log 2>&1 & echo $!`, then run `orch sessions` to confirm it registered. If it fails, read `.orch/run/orch-work.log` and fall back to the visible-terminal option.
+1. Start the worker in the background, recommended for external agents: run `orch work --background`. It returns only after the headless RPC worker becomes ready or fails with `.orch/run/orch-work.log` diagnostics.
+2. If a visible `work` terminal is already active and you only need to test background mode, use `orch work --background --name bg-test --new` or `orch work --background --test` and target `bg-test` explicitly.
+3. If the background worker fails or the human wants a visible worker terminal instead, ask them to run `orch work --new` in a separate terminal. Visible terminals are more reliable for long sessions.
+
+If neither option is available, stop and tell the human Orchlink cannot proceed yet. Do not silently use OpenClaw subagents as a substitute.
 
 ## Quick command chooser
 
-1. Need a review, decision, critique, plan, or blocker answer before continuing? Use `orch ask work --wait`.
-2. Need worker implementation while you can work on a separate scope? Use `orch send`, then `orch wait` later.
+1. Need a review, decision, critique, plan, or blocker answer before continuing? Use `orch ask work --wait` or target a specific active worker name such as `review`.
+2. Need worker implementation while you can work on a separate scope? Use `orch send <name>`, then `orch wait` later.
 3. Need PRD/plan-driven completion with acceptance criteria? Read `references/goal-mode.md`, then use `orch goal ...`.
 4. Need short peer discussion in a visible lead/work chat? Use Talk Mode.
 5. Need to know whether it is safe to continue? Use `orch idle`.

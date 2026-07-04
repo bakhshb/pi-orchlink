@@ -138,6 +138,6 @@ def register_update(app: typer.Typer) -> None:
             console.print("[Orch] Update complete.")
         console.print("[Orch] In each Orchlink project, refresh .orch files and restart sessions:")
         console.print("[Orch]   orch init --refresh-skills")
-        console.print("[Orch]   orch stop")
+        console.print("[Orch]   orch stop --all")
         console.print("[Orch]   orch lead --new")
         console.print("[Orch]   orch work --new")

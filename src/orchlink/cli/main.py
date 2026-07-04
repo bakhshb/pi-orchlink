@@ -102,7 +102,7 @@ def discover_project_root() -> Path:
 
 
 PROJECT_ROOT = discover_project_root()
-app = typer.Typer(help="Local broker and connector for two Pi coding-agent sessions.")
+app = typer.Typer(help="Local broker and connector for Pi lead and named worker sessions.")
 
 
 def load_goal_app() -> typer.Typer:

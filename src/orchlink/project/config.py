@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,9 @@ import yaml
 
 ORCH_DIR_NAME = ".orch"
 PROJECT_CONFIG_NAME = "project.yaml"
+DEFAULT_WORKER_NAME = "work"
+_WORKER_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
+_RESERVED_WORKER_NAMES = {"all", "broker", "lead"}
 
 
 class ProjectConfigError(RuntimeError):
@@ -117,15 +121,68 @@ def skill_path(config: dict[str, Any], role: str) -> Path:
     return orch_dir(config) / "skills" / f"{role}.md"
 
 
+def normalize_worker_name(name: str | None = None) -> str:
+    """Return a validated configless worker name.
+
+    Worker names are user-facing context handles, not YAML registry keys.
+    Keep them path-safe because runtime state may live under .orch/run/workers/.
+    """
+    value = str(name or DEFAULT_WORKER_NAME).strip()
+    if value in _RESERVED_WORKER_NAMES or not _WORKER_NAME_PATTERN.fullmatch(value):
+        raise ValueError(
+            "Worker name must start with a lowercase letter and contain only lowercase letters, digits, or hyphens."
+        )
+    return value
+
+
+def worker_agent_id(config: dict[str, Any], name: str | None = None) -> str:
+    project_id = str(config.get("project_id") or project_root(config).name)
+    return f"{project_id}.{normalize_worker_name(name)}"
+
+
+def worker_name_from_agent(config: dict[str, Any], agent_id: str | None) -> str:
+    """Return the configless worker name represented by an agent id."""
+    value = str(agent_id or "")
+    project_id = str(config.get("project_id") or project_root(config).name)
+    prefix = f"{project_id}."
+    if value.startswith(prefix):
+        candidate = value[len(prefix) :]
+        try:
+            return normalize_worker_name(candidate)
+        except ValueError:
+            return candidate or value
+    return value or DEFAULT_WORKER_NAME
+
+
+def with_worker_name(config: dict[str, Any], name: str | None = None, session_id: str | None = None) -> dict[str, Any]:
+    """Return a config overlay for a named worker without mutating project YAML."""
+    worker_name = normalize_worker_name(name)
+    updated = dict(config)
+    work_config = dict(config.get("work") or {})
+    if session_id is None:
+        session_id = str(work_config.get("session_id") or DEFAULT_WORKER_NAME) if worker_name == DEFAULT_WORKER_NAME else worker_name
+    if worker_name == DEFAULT_WORKER_NAME and work_config.get("agent_id"):
+        work_config["agent_id"] = str(work_config["agent_id"])
+    else:
+        work_config["agent_id"] = worker_agent_id(config, worker_name)
+    work_config["session_id"] = session_id
+    work_config["name"] = worker_name
+    updated["work"] = work_config
+    return updated
+
+
 def resolve_agent_id(config: dict[str, Any], alias_or_id: str) -> str:
     if "." in alias_or_id:
         return alias_or_id
-    if alias_or_id in {"lead", "work"}:
+    if alias_or_id == "lead":
         role_config = config.get(alias_or_id) or {}
         if role_config.get("agent_id"):
             return str(role_config["agent_id"])
-    project_id = str(config.get("project_id") or project_root(config).name)
-    return f"{project_id}.{alias_or_id}"
+    if alias_or_id == DEFAULT_WORKER_NAME:
+        role_config = config.get("work") or {}
+        if role_config.get("agent_id"):
+            return str(role_config["agent_id"])
+    return worker_agent_id(config, alias_or_id)
 
 
 def role_agent_id(config: dict[str, Any], role: str) -> str:

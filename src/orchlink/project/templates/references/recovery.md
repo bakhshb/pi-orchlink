@@ -53,12 +53,14 @@ task_activity_endpoint
 scoped_task_results
 status_filters
 session_leases
+session_readiness
+session_lease_fencing
 ```
 
 If Orchlink reports stale broker, missing capabilities, cross-project results, or confusing state, restart cleanly:
 
 ```bash
-orch stop
+orch stop --all
 orch lead --new
 orch work --new
 ```

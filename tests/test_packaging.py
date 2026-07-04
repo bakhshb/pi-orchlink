@@ -96,9 +96,9 @@ def test_readme_documents_windows_install_and_worker_background_option():
     assert "-NoSkills" in text
     assert "%USERPROFILE%\\.agents\\skills\\orchlink" in text
     assert "%LOCALAPPDATA%\\orchlink" in text
-    assert "open a fresh terminal where `orch` is on PATH" in text
-    assert "Start-Process orch" in text
-    assert ".orch\\run\\orch-work.log" in text
+    assert "without blocking the current terminal" in text
+    assert "orch work --background" in text
+    assert ".orch/run/orch-work.log" in text
 
 
 def test_readme_documents_windows_beta_status_for_g006_ac1():
@@ -161,8 +161,12 @@ def test_project_skill_templates_are_packaged_markdown_files():
     from orchlink.project.init import load_skill_reference_template, load_skill_template
 
     assert "# Lead Role" in load_skill_template("lead")
+    assert "headless background worker" in load_skill_template("lead")
     assert "# Worker Role" in load_skill_template("work")
     assert "# Orchlink Goal Mode reference" in load_skill_reference_template("goal-mode.md")
+    assert "orch work --background" in load_skill_reference_template("lead-commands.md")
+    assert "session_readiness" in load_skill_reference_template("recovery.md")
+    assert "session_lease_fencing" in load_skill_reference_template("recovery.md")
     assert "LEAD_SKILL" not in (ROOT / "src" / "orchlink" / "project" / "init.py").read_text(encoding="utf-8")
 
 
@@ -202,7 +206,7 @@ def test_adapter_skills_share_prompt_policy_text():
         assert "references/review-gates.md" in text
         assert "Pi's native `/compact` command" in text
         assert "visible worker terminal" in text
-        assert "nohup orch work --new" in text
+        assert "orch work --background" in text
         assert ".orch/run/orch-work.log" in text
 
 
@@ -274,6 +278,7 @@ def test_pi_extension_uses_valid_record_type():
     assert "Orchlink ${role} polling resumed after compaction." in ORCHLINK_PI_EXTENSION
     assert "pi.on(\"session_compact\"" in ORCHLINK_PI_EXTENSION
     assert "ORCHLINK_AUTO_COMPACT_PHASES" in ORCHLINK_PI_EXTENSION
+    assert 'env("ORCHLINK_AUTO_COMPACT_PHASES", "off")' in ORCHLINK_PI_EXTENSION
     assert "pendingReviewCompaction" in ORCHLINK_PI_EXTENSION
     assert "looksLikeReviewReconciliation" in ORCHLINK_PI_EXTENSION
     assert "Orchlink auto phase compaction started." in ORCHLINK_PI_EXTENSION
@@ -307,7 +312,7 @@ def test_pi_extension_has_session_before_compact_hook_with_state_pointer_summary
     from orchlink.connector.pi_extension import ORCHLINK_PI_EXTENSION
 
     # The hook is registered and produces a custom Orchlink state-pointer summary
-    # for normal Pi compaction and auto review-phase compaction.
+    # for normal Pi compaction and explicitly opted-in auto review compaction.
     assert 'pi.on("session_before_compact"' in ORCHLINK_PI_EXTENSION
     assert "orchlinkCompactionSummary" in ORCHLINK_PI_EXTENSION
     assert "normalizeCompactionInstructions" in ORCHLINK_PI_EXTENSION

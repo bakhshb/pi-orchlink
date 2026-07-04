@@ -32,6 +32,8 @@ BROKER_CAPABILITIES = [
     "scoped_task_results",
     "status_filters",
     "session_leases",
+    "session_readiness",
+    "session_lease_fencing",
 ]
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
@@ -241,7 +243,10 @@ def create_app(
         body: dict[str, Any] = Body(default_factory=dict),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
-        return {"status": "active", "session": await message_store.acquire_session(body)}
+        try:
+            return {"status": "active", "session": await message_store.acquire_session(body)}
+        except LeaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @secure_router.post("/sessions/{lease_id}/heartbeat")
     async def heartbeat_session(
@@ -252,7 +257,10 @@ def create_app(
     ) -> dict[str, Any]:
         try:
             project_id = request_project_id(request, str(body.get("project_id") or "") or None)
-            return {"status": "ok", "session": await message_store.heartbeat_session(lease_id, project_id=project_id)}
+            return {
+                "status": "ok",
+                "session": await message_store.heartbeat_session(lease_id, project_id=project_id, heartbeat=body),
+            }
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -312,10 +320,22 @@ def create_app(
     @secure_router.get("/agents/{agent_id}/next")
     async def get_next_message(
         agent_id: str,
+        request: Request,
         wait_seconds: int = Query(default=30, ge=0),
+        lease_id: str | None = Query(default=None),
+        project_id: str | None = Query(default=None),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
-        message = await message_store.get_next_message(agent_id, wait_seconds)
+        scoped_project_id = request_project_id(request, project_id)
+        try:
+            message = await message_store.get_next_message(
+                agent_id,
+                wait_seconds,
+                lease_id=lease_id,
+                project_id=scoped_project_id,
+            )
+        except LeaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         if message is None:
             return {"status": "empty"}
         _record_checkpoint_from_wire(settings_obj, message, "in_flight")
@@ -332,6 +352,7 @@ def create_app(
         # compatible -- current Pi replies omit these headers and are accepted.
         lease_epoch_header = request.headers.get("x-orchlink-lease-epoch")
         lease_holder = request.headers.get("x-orchlink-lease-holder")
+        session_lease_id = request.headers.get("x-orchlink-session-lease-id")
         try:
             lease_epoch = int(lease_epoch_header) if lease_epoch_header is not None else None
         except ValueError as exc:
@@ -343,6 +364,7 @@ def create_app(
                 reply_dict,
                 lease_epoch=lease_epoch,
                 lease_holder=lease_holder,
+                session_lease_id=session_lease_id,
             )
         except LeaseConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -361,7 +383,13 @@ def create_app(
         if status not in {"RUNNING", "IN_PROGRESS"}:
             raise HTTPException(status_code=400, detail="Only RUNNING or IN_PROGRESS status updates are allowed.")
         try:
-            return await message_store.update_message_status(message_id, status)
+            return await message_store.update_message_status(
+                message_id,
+                status,
+                session_lease_id=str(body.get("session_lease_id") or "") or None,
+            )
+        except LeaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -457,7 +485,10 @@ def create_app(
         body: dict[str, Any] = Body(default_factory=dict),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
-        return await message_store.record_activity(body)
+        try:
+            return await message_store.record_activity(body)
+        except LeaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @secure_router.get("/activity")
     async def activity(

@@ -114,6 +114,7 @@ class Session:
     project_id: str
     agent_id: str
     role: SessionRole
+    worker_name: str | None = None
     status: str = SessionStatus.ACTIVE.value
     pid: int | None = None
     session_id: str | None = None
@@ -123,6 +124,13 @@ class Session:
     ended_at: str | None = None
     ended_reason: str | None = None
     lease_grace_seconds: int = 25
+    ready: bool = False
+    ready_at: str | None = None
+    last_ready_heartbeat_at: str | None = None
+    runtime_mode: str | None = None
+    backend: str | None = None
+    supervisor_pid: int | None = None
+    pi_pid: int | None = None
     settled_work: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:

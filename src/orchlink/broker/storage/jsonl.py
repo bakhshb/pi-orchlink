@@ -143,14 +143,37 @@ class JsonlMessageStore(MemoryMessageStore):
             lambda: MemoryMessageStore.enqueue_message(self, message, create_waiter=create_waiter),
         )
 
-    async def save_reply(self, message_id: str, reply: dict[str, Any], lease_epoch: int | None = None, lease_holder: str | None = None) -> dict[str, Any]:
-        return await self._recorded("save_reply", {"message_id": message_id, "reply": reply}, lambda: MemoryMessageStore.save_reply(self, message_id, reply, lease_epoch=lease_epoch, lease_holder=lease_holder))
+    async def save_reply(
+        self,
+        message_id: str,
+        reply: dict[str, Any],
+        lease_epoch: int | None = None,
+        lease_holder: str | None = None,
+        session_lease_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._recorded(
+            "save_reply",
+            {"message_id": message_id, "reply": reply, "session_lease_id": session_lease_id},
+            lambda: MemoryMessageStore.save_reply(
+                self,
+                message_id,
+                reply,
+                lease_epoch=lease_epoch,
+                lease_holder=lease_holder,
+                session_lease_id=session_lease_id,
+            ),
+        )
 
-    async def update_message_status(self, message_id: str, status: str) -> dict[str, Any]:
+    async def update_message_status(
+        self,
+        message_id: str,
+        status: str,
+        session_lease_id: str | None = None,
+    ) -> dict[str, Any]:
         return await self._recorded(
             "update_message_status",
-            {"message_id": message_id, "status": status},
-            lambda: MemoryMessageStore.update_message_status(self, message_id, status),
+            {"message_id": message_id, "status": status, "session_lease_id": session_lease_id},
+            lambda: MemoryMessageStore.update_message_status(self, message_id, status, session_lease_id=session_lease_id),
         )
 
     async def record_activity(self, activity: dict[str, Any]) -> dict[str, Any]:
@@ -159,11 +182,16 @@ class JsonlMessageStore(MemoryMessageStore):
     async def acquire_session(self, session: dict[str, Any]) -> dict[str, Any]:
         return await self._recorded("acquire_session", {"session": session}, lambda: MemoryMessageStore.acquire_session(self, session))
 
-    async def heartbeat_session(self, lease_id: str, project_id: str | None = None) -> dict[str, Any]:
+    async def heartbeat_session(
+        self,
+        lease_id: str,
+        project_id: str | None = None,
+        heartbeat: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         return await self._recorded(
             "heartbeat_session",
-            {"lease_id": lease_id, "project_id": project_id},
-            lambda: MemoryMessageStore.heartbeat_session(self, lease_id, project_id=project_id),
+            {"lease_id": lease_id, "project_id": project_id, "heartbeat": heartbeat},
+            lambda: MemoryMessageStore.heartbeat_session(self, lease_id, project_id=project_id, heartbeat=heartbeat),
         )
 
     async def release_session(self, lease_id: str, reason: str = "", project_id: str | None = None) -> dict[str, Any]:

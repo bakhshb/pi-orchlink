@@ -27,7 +27,13 @@ class MessageStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_next_message(self, agent_id: str, wait_seconds: int) -> dict[str, Any] | None:
+    async def get_next_message(
+        self,
+        agent_id: str,
+        wait_seconds: int,
+        lease_id: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any] | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -37,11 +43,17 @@ class MessageStore(ABC):
         reply: dict[str, Any],
         lease_epoch: int | None = None,
         lease_holder: str | None = None,
+        session_lease_id: str | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
-    async def update_message_status(self, message_id: str, status: str) -> dict[str, Any]:
+    async def update_message_status(
+        self,
+        message_id: str,
+        status: str,
+        session_lease_id: str | None = None,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
@@ -62,7 +74,12 @@ class MessageStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def heartbeat_session(self, lease_id: str, project_id: str | None = None) -> dict[str, Any]:
+    async def heartbeat_session(
+        self,
+        lease_id: str,
+        project_id: str | None = None,
+        heartbeat: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod

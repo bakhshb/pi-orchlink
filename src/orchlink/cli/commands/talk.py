@@ -68,7 +68,7 @@ def register_talk(app: typer.Typer) -> None:
                 timeout_seconds=timeout,
                 wait=False,
             )
-        except (RuntimeError, httpx.HTTPError) as exc:
+        except (RuntimeError, httpx.HTTPError, ValueError) as exc:
             print_orch_exception(exc)
             raise typer.Exit(1) from exc
         console.print(f"[Orch] Started conversation {conversation_id} with {worker_id}.")
@@ -105,19 +105,20 @@ def register_talk(app: typer.Typer) -> None:
             if turn > max_turns:
                 console.print(f"[Orch] Conversation {conversation_id} reached max turns ({max_turns}).")
                 raise typer.Exit(1)
+            worker = str(state.get("to_agent") or "work")
             _cli_main.say_talk_sync(
                 config=config,
-                worker="work",
+                worker=worker,
                 conversation_id=conversation_id,
                 message=message,
                 turn=turn,
                 max_turns=max_turns,
                 timeout_seconds=timeout,
             )
-        except (RuntimeError, _httpx.HTTPError) as exc:
+        except (RuntimeError, _httpx.HTTPError, ValueError) as exc:
             print_orch_exception(exc)
             raise typer.Exit(1) from exc
-        console.print(f"[Orch] Sent turn {turn}/{max_turns} to work for {conversation_id}.")
+        console.print(f"[Orch] Sent turn {turn}/{max_turns} to {worker} for {conversation_id}.")
         console.print("[Orch] Reply will arrive as a [Orchlink] message in the lead Pi chat — no polling needed.")
         console.print("[Orch] Continue with another orch say if the discussion is not resolved; close when there is a decision.")
 
@@ -145,16 +146,17 @@ def register_talk(app: typer.Typer) -> None:
                 raise typer.Exit(1)
             turn = min(int(state.get("turn") or 1) + 1, int(state.get("max_turns") or 6))
             max_turns = int(state.get("max_turns") or 6)
+            worker = str(state.get("to_agent") or "work")
             _cli_main.close_talk_sync(
                 config=config,
-                worker="work",
+                worker=worker,
                 conversation_id=conversation_id,
                 message=message,
                 turn=turn,
                 max_turns=max_turns,
                 timeout_seconds=timeout,
             )
-        except (RuntimeError, _httpx.HTTPError) as exc:
+        except (RuntimeError, _httpx.HTTPError, ValueError) as exc:
             print_orch_exception(exc)
             raise typer.Exit(1) from exc
         console.print(f"[Orch] Closed conversation {conversation_id}.")

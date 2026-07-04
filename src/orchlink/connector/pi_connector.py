@@ -4,6 +4,7 @@ import signal
 import subprocess
 import sys
 import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,7 @@ class PiConnectorError(RuntimeError):
 
 @dataclass
 class PiSessionLease:
-    """Broker lease and heartbeat for one visible Pi process."""
+    """Broker lease and heartbeat for one Pi process."""
 
     connector: "PiConnector"
     role: str
@@ -41,7 +42,7 @@ class PiSessionLease:
     heartbeat_thread: threading.Thread | None = None
 
     def acquire(self) -> "PiSessionLease":
-        self.lease_id = self.connector._acquire_session(self.role, self.pid)
+        self.lease_id = self.connector._acquire_session(self.role, self.pid, lease_id=self.lease_id or None)
         self.stop_event = threading.Event()
         self.heartbeat_thread = threading.Thread(
             target=self.connector._heartbeat_loop,
@@ -67,7 +68,7 @@ class PiSessionLease:
 
 
 class PiConnector:
-    """Small adapter around visible local Pi lead/work sessions."""
+    """Small adapter around local Pi lead and named worker sessions."""
 
     def __init__(self, config: dict[str, Any]) -> None:
         self.config = config
@@ -120,7 +121,7 @@ class PiConnector:
     def _extension_args(self) -> list[str]:
         return ["--extension", str(ensure_pi_extension(self.config))]
 
-    def _env(self, role: str) -> dict[str, str]:
+    def _env(self, role: str, extra: dict[str, str] | None = None) -> dict[str, str]:
         env = os.environ.copy()
         role_key = "work" if role == "work" else "lead"
         role_config = self.config.get(role_key) or {}
@@ -133,11 +134,14 @@ class PiConnector:
                 "ORCHLINK_PI_ROLE": role,
                 "ORCHLINK_PROJECT_ID": str(self.config.get("project_id", "default")),
                 "ORCHLINK_AGENT_ID": role_agent_id(self.config, role_key),
+                "ORCHLINK_WORKER_NAME": str(role_config.get("name") or role_key),
                 "ORCHLINK_BROKER_URL": broker_url(self.config),
                 "ORCHLINK_API_KEY": broker_api_key(self.config),
                 "ORCHLINK_POLL_WAIT_SECONDS": str(role_config.get("poll_wait_seconds", 5)),
             }
         )
+        if extra:
+            env.update(extra)
         return env
 
     def _broker_headers(self) -> dict[str, str]:
@@ -152,19 +156,47 @@ class PiConnector:
             response.raise_for_status()
             return response.json()
 
-    def _acquire_session(self, role: str, pid: int) -> str:
+    def _acquire_session(
+        self,
+        role: str,
+        pid: int,
+        lease_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
         role_key = "work" if role == "work" else "lead"
         role_config = self.config.get(role_key) or {}
-        body = {
-            "project_id": str(self.config.get("project_id") or "default"),
-            "agent_id": role_agent_id(self.config, role_key),
-            "role": role_key,
-            "pid": pid,
-            "session_id": str(role_config.get("session_id") or role_key),
-            "lease_grace_seconds": broker_session_grace_seconds(self.config),
-        }
+        body = dict(metadata or {})
+        body.update(
+            {
+                "project_id": str(self.config.get("project_id") or "default"),
+                "agent_id": role_agent_id(self.config, role_key),
+                "role": role_key,
+                "pid": pid,
+                "session_id": str(role_config.get("session_id") or role_key),
+                "lease_grace_seconds": broker_session_grace_seconds(self.config),
+            }
+        )
+        if role_key == "work":
+            body["worker_name"] = str(role_config.get("name") or role_key)
+        if lease_id:
+            body["lease_id"] = lease_id
         response = self._post_broker("/v1/sessions/acquire", body)
         return str(response["session"]["lease_id"])
+
+    def acquire_session(
+        self,
+        role: str,
+        pid: int,
+        lease_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        return self._acquire_session(role, pid, lease_id=lease_id, metadata=metadata)
+
+    def heartbeat_session(self, lease_id: str, metadata: dict[str, Any] | None = None) -> None:
+        body = {"project_id": str(self.config.get("project_id") or "default")}
+        if metadata:
+            body.update(metadata)
+        self._post_broker(f"/v1/sessions/{lease_id}/heartbeat", body)
 
     def _release_session(self, lease_id: str, reason: str) -> None:
         try:
@@ -179,20 +211,22 @@ class PiConnector:
         interval = max(1, broker_session_heartbeat_interval_seconds(self.config))
         while not stop_event.wait(interval):
             try:
-                self._post_broker(
-                    f"/v1/sessions/{lease_id}/heartbeat",
-                    {"project_id": str(self.config.get("project_id") or "default")},
-                )
+                self.heartbeat_session(lease_id)
             except Exception:
                 continue
 
     def _run_pi_process(self, role: str, argv: list[str]) -> int:
         if not self.check_available():
             raise PiConnectorError(f"Pi command not found: {self.pi_command()}")
-        process = subprocess.Popen(argv, cwd=self._role_project_dir(role), env=self._env(role))
+        lease_id = f"lease-{uuid.uuid4()}"
+        process = subprocess.Popen(
+            argv,
+            cwd=self._role_project_dir(role),
+            env=self._env(role, {"ORCHLINK_SESSION_LEASE_ID": lease_id}),
+        )
         try:
             try:
-                lease = PiSessionLease(self, role, process.pid).acquire()
+                lease = PiSessionLease(self, role, process.pid, lease_id=lease_id).acquire()
             except Exception:
                 process.terminate()
                 raise
@@ -225,6 +259,20 @@ class PiConnector:
             "--name",
             "Orchlink Lead",
             *self._system_prompt_args("lead"),
+            *self._extension_args(),
+        ]
+
+    def work_rpc_argv(self) -> list[str]:
+        return [
+            self.resolved_pi_command(),
+            "--mode",
+            "rpc",
+            *self._session_args("work"),
+            "--name",
+            "Orchlink Worker",
+            "--approve",
+            "--no-extensions",
+            *self._system_prompt_args("work"),
             *self._extension_args(),
         ]
 

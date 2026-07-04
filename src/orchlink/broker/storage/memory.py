@@ -151,6 +151,7 @@ class MemoryEventLog:
             "conversation_id": activity.get("conversation_id"),
             "message_id": activity.get("message_id"),
             "agent_id": activity.get("agent_id"),
+            "session_lease_id": activity.get("session_lease_id"),
             "activity_type": str(activity.get("activity_type") or "activity"),
             "phase": activity.get("phase"),
             "tool_name": activity.get("tool_name"),
@@ -221,15 +222,49 @@ class MemorySessionRegistry:
         self._append_event = append_event
         self._session_grace_seconds = session_grace_seconds
 
+    def active_sessions_for_agent_locked(self, agent_id: str, project_id: str | None = None) -> list[dict[str, Any]]:
+        return [
+            session
+            for session in self._state.sessions.values()
+            if self._same_project(session, project_id)
+            and session.get("agent_id") == agent_id
+            and is_active_session_status(session.get("status"))
+        ]
+
     def active_session_locked(self, agent_id: str, project_id: str | None = None) -> dict[str, Any] | None:
-        for session in self._state.sessions.values():
-            if not self._same_project(session, project_id):
-                continue
-            if session.get("agent_id") != agent_id:
-                continue
-            if is_active_session_status(session.get("status")):
-                return session
-        return None
+        sessions = self.active_sessions_for_agent_locked(agent_id, project_id=project_id)
+        return sessions[0] if sessions else None
+
+    def assert_poll_lease_locked(
+        self,
+        agent_id: str,
+        project_id: str | None = None,
+        lease_id: str | None = None,
+    ) -> None:
+        """Require a current session lease before polling when a session exists."""
+        sessions = self.active_sessions_for_agent_locked(agent_id, project_id=project_id)
+        if not sessions:
+            return
+        if not lease_id:
+            raise LeaseConflictError(f"Session lease required for active agent: {agent_id}")
+        for session in sessions:
+            if session.get("lease_id") == lease_id:
+                return
+        raise LeaseConflictError(f"Stale or inactive session lease for agent: {agent_id}")
+
+    def assert_active_session_lease_locked(
+        self,
+        agent_id: str,
+        project_id: str | None = None,
+        lease_id: str | None = None,
+    ) -> None:
+        """Validate an asserted session lease; empty lease stays backward-compatible."""
+        if not lease_id:
+            return
+        for session in self.active_sessions_for_agent_locked(agent_id, project_id=project_id):
+            if session.get("lease_id") == lease_id:
+                return
+        raise LeaseConflictError(f"Stale or inactive session lease for agent: {agent_id}")
 
     def active_session_count_locked(self, project_id: str | None = None) -> int:
         return sum(1 for session in self._state.sessions.values() if self._same_project(session, project_id) and is_active_session_status(session.get("status")))
@@ -269,12 +304,29 @@ class MemorySessionRegistry:
     def acquire_session_locked(self, session: dict[str, Any]) -> dict[str, Any]:
         now = self._now()
         lease_id = str(session.get("lease_id") or f"lease-{uuid.uuid4()}")
+        project_id = str(session.get("project_id") or "default")
+        agent_id = str(session.get("agent_id") or "")
+        worker_name = str(session.get("worker_name") or session.get("name") or "")
+        for active in self._state.sessions.values():
+            if not self._same_project(active, project_id):
+                continue
+            if not is_active_session_status(active.get("status")):
+                continue
+            if active.get("lease_id") == lease_id:
+                continue
+            active_worker_name = str(active.get("worker_name") or active.get("name") or "")
+            if active.get("agent_id") == agent_id:
+                raise LeaseConflictError(f"Active session already exists for agent: {agent_id}")
+            if worker_name and active_worker_name == worker_name:
+                raise LeaseConflictError(f"Active session already exists for worker name: {worker_name}")
+        ready = bool(session.get("ready"))
         stored = asdict(
             Session(
                 lease_id=lease_id,
-                project_id=str(session.get("project_id") or "default"),
-                agent_id=str(session.get("agent_id") or ""),
+                project_id=project_id,
+                agent_id=agent_id,
                 role=str(session.get("role") or "work"),
+                worker_name=session.get("worker_name") or session.get("name"),
                 pid=session.get("pid"),
                 session_id=session.get("session_id"),
                 status="ACTIVE",
@@ -282,6 +334,13 @@ class MemorySessionRegistry:
                 updated_at=now,
                 last_heartbeat_at=now,
                 lease_grace_seconds=int(session.get("lease_grace_seconds") or self._session_grace_seconds),
+                ready=ready,
+                ready_at=now if ready else None,
+                last_ready_heartbeat_at=now if ready else None,
+                runtime_mode=session.get("runtime_mode"),
+                backend=session.get("backend"),
+                supervisor_pid=session.get("supervisor_pid"),
+                pi_pid=session.get("pi_pid"),
             )
         )
         self._state.sessions[lease_id] = stored
@@ -297,7 +356,12 @@ class MemorySessionRegistry:
         )
         return dict(stored)
 
-    def heartbeat_session_locked(self, lease_id: str, project_id: str | None = None) -> dict[str, Any]:
+    def heartbeat_session_locked(
+        self,
+        lease_id: str,
+        project_id: str | None = None,
+        heartbeat: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         session = self._state.sessions.get(lease_id)
         if session is None or not self._same_project(session, project_id):
             raise ValueError(f"Session not found: {lease_id}")
@@ -306,6 +370,16 @@ class MemorySessionRegistry:
         now = self._now()
         session["last_heartbeat_at"] = now
         session["updated_at"] = now
+        body = heartbeat or {}
+        if "ready" in body:
+            ready = bool(body.get("ready"))
+            session["ready"] = ready
+            if ready:
+                session["ready_at"] = session.get("ready_at") or now
+                session["last_ready_heartbeat_at"] = now
+        for key in ("runtime_mode", "backend", "supervisor_pid", "pi_pid", "worker_name"):
+            if key in body and body.get(key) not in {None, ""}:
+                session[key] = body.get(key)
         return dict(session)
 
     def release_session_locked(
@@ -435,6 +509,7 @@ class MemoryJobProjector:
             "delivery": (existing_payload.get("delivery") or existing.get("delivery")) if is_reply else message.get("delivery", "async"),
             "from_agent": (existing_payload.get("from_agent") or existing.get("from_agent")) if is_reply else message.get("from_agent"),
             "to_agent": (existing_payload.get("to_agent") or existing.get("to_agent")) if is_reply else message.get("to_agent"),
+            "worker_name": (existing_payload.get("worker_name") or existing.get("worker_name")) if is_reply else str(message.get("to_agent") or "").rsplit(".", 1)[-1],
             "created_at": existing_payload.get("created_at") or existing.get("created_at") or now,
             "updated_at": now,
             "preview": self._message_preview(message)[:300],
@@ -487,6 +562,7 @@ class MemoryJobProjector:
             "wire_status": next_status,
             "from_agent": existing.get("from_agent") or (job.payload or {}).get("from_agent") or message.get("from_agent"),
             "to_agent": existing.get("to_agent") or (job.payload or {}).get("to_agent") or message.get("to_agent"),
+            "worker_name": existing.get("worker_name") or (job.payload or {}).get("worker_name") or str(message.get("to_agent") or "").rsplit(".", 1)[-1],
             "created_at": existing.get("created_at") or (job.payload or {}).get("created_at") or now,
             "updated_at": now,
             "last_message_preview": self._message_preview(message)[:300],
@@ -607,7 +683,7 @@ class MemoryWorkQueue:
             "requested_conversation_id": message.get("conversation_id"),
         }
 
-    def assert_worker_lane_free_locked(self, message: dict[str, Any]) -> None:
+    def assert_worker_target_free_locked(self, message: dict[str, Any]) -> None:
         message_type = str(message.get("type") or "")
         if message_type not in WORKER_BOUND_TYPES:
             return
@@ -664,7 +740,7 @@ class MemoryWorkQueue:
         to_agent = message["to_agent"]
         correlation_id = message["correlation_id"]
         self.assert_conversation_can_receive_locked(message)
-        self.assert_worker_lane_free_locked(message)
+        self.assert_worker_target_free_locked(message)
         stored_message = dict(message)
         now = self._now()
         stored_message["status"] = "CLOSED" if message.get("type") == "CHAT_CLOSE" else "QUEUED"
@@ -1043,6 +1119,22 @@ class MemoryMessageStore(MessageStore):
     def _active_session_locked(self, agent_id: str, project_id: str | None = None) -> dict[str, Any] | None:
         return self._session_registry.active_session_locked(agent_id, project_id=project_id)
 
+    def _assert_poll_lease_locked(
+        self,
+        agent_id: str,
+        project_id: str | None = None,
+        lease_id: str | None = None,
+    ) -> None:
+        self._session_registry.assert_poll_lease_locked(agent_id, project_id=project_id, lease_id=lease_id)
+
+    def _assert_active_session_lease_locked(
+        self,
+        agent_id: str,
+        project_id: str | None = None,
+        lease_id: str | None = None,
+    ) -> None:
+        self._session_registry.assert_active_session_lease_locked(agent_id, project_id=project_id, lease_id=lease_id)
+
     def _active_session_count_locked(self, project_id: str | None = None) -> int:
         return self._session_registry.active_session_count_locked(project_id=project_id)
 
@@ -1277,8 +1369,8 @@ class MemoryMessageStore(MessageStore):
     def _busy_detail(self, blocker: dict[str, Any], message: dict[str, Any]) -> dict[str, Any]:
         return self._work_queue.busy_detail(blocker, message)
 
-    def _assert_worker_lane_free_locked(self, message: dict[str, Any]) -> None:
-        self._work_queue.assert_worker_lane_free_locked(message)
+    def _assert_worker_target_free_locked(self, message: dict[str, Any]) -> None:
+        self._work_queue.assert_worker_target_free_locked(message)
 
     def _resolve_task_waiters_locked(self, task_key: str, result: dict[str, Any]) -> None:
         self._work_queue.resolve_task_waiters_locked(task_key, result)
@@ -1299,9 +1391,16 @@ class MemoryMessageStore(MessageStore):
         await inbox.put(stored_message)
         return result
 
-    async def get_next_message(self, agent_id: str, wait_seconds: int) -> dict[str, Any] | None:
+    async def get_next_message(
+        self,
+        agent_id: str,
+        wait_seconds: int,
+        lease_id: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any] | None:
         async with self._lock:
             self._expire_timed_out_messages_locked()
+            self._assert_poll_lease_locked(agent_id, project_id=project_id, lease_id=lease_id)
             inbox = self._work_queue.inbox_for_agent_locked(agent_id)
 
         loop = asyncio.get_running_loop()
@@ -1315,6 +1414,7 @@ class MemoryMessageStore(MessageStore):
 
             async with self._lock:
                 self._expire_timed_out_messages_locked()
+                self._assert_poll_lease_locked(agent_id, project_id=project_id, lease_id=lease_id)
                 delivered = self._work_queue.deliver_message_locked(message)
                 if delivered is None:
                     if wait_seconds <= 0 or loop.time() >= deadline:
@@ -1322,26 +1422,58 @@ class MemoryMessageStore(MessageStore):
                     continue
             return delivered
 
-    async def save_reply(self, message_id: str, reply: dict[str, Any], lease_epoch: int | None = None, lease_holder: str | None = None) -> dict[str, Any]:
+    async def save_reply(
+        self,
+        message_id: str,
+        reply: dict[str, Any],
+        lease_epoch: int | None = None,
+        lease_holder: str | None = None,
+        session_lease_id: str | None = None,
+    ) -> dict[str, Any]:
         async with self._lock:
             self._expire_timed_out_messages_locked()
+            if session_lease_id:
+                self._assert_active_session_lease_locked(
+                    str(reply.get("from_agent") or ""),
+                    project_id=str(reply.get("project_id") or "default"),
+                    lease_id=session_lease_id,
+                )
             result, reply_inbox, stored_reply = self._work_queue.save_reply_locked(message_id, reply, lease_epoch=lease_epoch, lease_holder=lease_holder)
 
         if reply_inbox is not None and stored_reply is not None:
             await reply_inbox.put(stored_reply)
         return result
 
-    async def update_message_status(self, message_id: str, status: str) -> dict[str, Any]:
+    async def update_message_status(
+        self,
+        message_id: str,
+        status: str,
+        session_lease_id: str | None = None,
+    ) -> dict[str, Any]:
         normalized_status = status.upper()
         if normalized_status not in BUSY_MESSAGE_STATUSES | TERMINAL_MESSAGE_STATUSES:
             raise ValueError(f"Unsupported status: {status}")
         async with self._lock:
             self._expire_timed_out_messages_locked()
+            if session_lease_id:
+                message = self._state.active_messages.get(message_id) or {}
+                self._assert_active_session_lease_locked(
+                    str(message.get("to_agent") or ""),
+                    project_id=str(message.get("project_id") or "default"),
+                    lease_id=session_lease_id,
+                )
             return self._work_queue.update_message_status_locked(message_id, normalized_status)
 
     async def record_activity(self, activity: dict[str, Any]) -> dict[str, Any]:
         async with self._lock:
             self._expire_timed_out_messages_locked()
+            session_lease_id = str(activity.get("session_lease_id") or "")
+            if session_lease_id:
+                self._assert_active_session_lease_locked(
+                    str(activity.get("agent_id") or ""),
+                    project_id=str(activity.get("project_id") or "default"),
+                    lease_id=session_lease_id,
+                )
             return self._event_log.record_activity_locked(activity, self._apply_activity_to_work_locked)
 
     async def list_activity(
@@ -1358,10 +1490,15 @@ class MemoryMessageStore(MessageStore):
             self._expire_timed_out_messages_locked()
             return self._session_registry.acquire_session_locked(session)
 
-    async def heartbeat_session(self, lease_id: str, project_id: str | None = None) -> dict[str, Any]:
+    async def heartbeat_session(
+        self,
+        lease_id: str,
+        project_id: str | None = None,
+        heartbeat: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         async with self._lock:
             self._expire_timed_out_messages_locked()
-            return self._session_registry.heartbeat_session_locked(lease_id, project_id=project_id)
+            return self._session_registry.heartbeat_session_locked(lease_id, project_id=project_id, heartbeat=heartbeat)
 
     async def release_session(self, lease_id: str, reason: str = "", project_id: str | None = None) -> dict[str, Any]:
         async with self._lock:

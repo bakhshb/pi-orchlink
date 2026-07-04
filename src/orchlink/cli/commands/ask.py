@@ -112,7 +112,7 @@ def register_ask(app: typer.Typer) -> None:
                 timeout_seconds=timeout,
                 wait=wait,
             )
-        except (RuntimeError, httpx.HTTPError) as exc:
+        except (RuntimeError, httpx.HTTPError, ValueError) as exc:
             print_orch_exception(exc)
             raise typer.Exit(1) from exc
         if not wait:
@@ -161,7 +161,7 @@ def register_ask(app: typer.Typer) -> None:
                 message=message,
                 timeout_seconds=timeout,
             )
-        except (RuntimeError, httpx.HTTPError) as exc:
+        except (RuntimeError, httpx.HTTPError, ValueError) as exc:
             print_orch_exception(exc)
             raise typer.Exit(1) from exc
         print_async_guidance(config, worker_id, task_id)

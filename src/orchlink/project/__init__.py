@@ -9,8 +9,12 @@ from orchlink.project.config import (
     broker_url,
     find_project_root,
     load_project_config,
+    normalize_worker_name,
     resolve_agent_id,
     save_project_config,
+    with_worker_name,
+    worker_agent_id,
+    worker_name_from_agent,
 )
 from orchlink.project.init import init_project, load_skill_reference_template, load_skill_template, project_skill_statuses, refresh_project_skills_if_needed
 
@@ -26,10 +30,14 @@ __all__ = [
     "find_project_root",
     "init_project",
     "load_project_config",
+    "normalize_worker_name",
     "load_skill_reference_template",
     "load_skill_template",
     "project_skill_statuses",
     "refresh_project_skills_if_needed",
     "resolve_agent_id",
     "save_project_config",
+    "with_worker_name",
+    "worker_agent_id",
+    "worker_name_from_agent",
 ]

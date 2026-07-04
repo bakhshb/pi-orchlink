@@ -62,7 +62,7 @@ def stale_broker_message(url: str, info: dict[str, Any] | None) -> str:
     return (
         f"Broker at {url} is running an older incompatible Orchlink broker "
         f"(broker {version}, CLI expects {BROKER_VERSION}).{missing_text} "
-        "Stop the old broker, then restart fresh Pi sessions: orch stop; orch lead --new; orch work --new"
+        "Stop the old broker, then restart fresh Pi sessions: orch stop --all; orch lead --new; orch work --new"
     )
 
 

@@ -6,6 +6,7 @@ from typer.testing import CliRunner
 
 from orchlink.broker.checkpoint import Checkpoint, CheckpointLease, DriftedLease, record_lease
 from orchlink.cli import main as cli_main
+from orchlink.cli.commands.diagnose import _checkpoint_for_project
 from orchlink.cli.resume import ActiveTaskSummary, ResumeState, render_resume_report
 from orchlink.project.init import init_project
 
@@ -48,6 +49,58 @@ def test_resume_cli_reports_status_checkpoint_drift_and_recommendation(monkeypat
     assert "T900: missing_after_restart" in result.output
     assert "Recommended next: orch cancel T900" in result.output
     assert "Needs intervention." in result.output
+
+
+def test_resume_cli_ignores_checkpoint_leases_from_other_projects(monkeypatch, tmp_path: Path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    record_lease(tmp_path, "T-OTHER", epoch=1, holder="other.work", status="in_flight")
+
+    def fake_broker_get_sync(config, path):
+        assert path.startswith("/v1/status")
+        return {"jobs": [], "sessions": []}
+
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+
+    result = runner.invoke(cli_main.app, ["resume"])
+
+    assert result.exit_code == 0, result.output
+    assert "T-OTHER" not in result.output
+    assert "Drifted leases since checkpoint:" not in result.output
+    assert "Safe to continue." in result.output
+
+
+def test_checkpoint_for_project_keeps_legacy_empty_holder_and_filters_other_projects():
+    checkpoint = Checkpoint(
+        leases=[
+            CheckpointLease(
+                task_id="T-DEMO",
+                epoch=1,
+                holder="demo.work",
+                status="in_flight",
+                updated_at="2026-07-01T00:00:00+00:00",
+            ),
+            CheckpointLease(
+                task_id="T-LEGACY",
+                epoch=1,
+                holder="",
+                status="in_flight",
+                updated_at="2026-07-01T00:00:00+00:00",
+            ),
+            CheckpointLease(
+                task_id="T-OTHER",
+                epoch=1,
+                holder="other.work",
+                status="in_flight",
+                updated_at="2026-07-01T00:00:00+00:00",
+            ),
+        ]
+    )
+
+    filtered = _checkpoint_for_project(checkpoint, "demo")
+
+    assert [lease.task_id for lease in filtered.leases] == ["T-DEMO", "T-LEGACY"]
 
 
 def test_resume_states():

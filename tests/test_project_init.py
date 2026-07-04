@@ -144,6 +144,46 @@ def test_pi_connector_adds_current_scripts_dir_to_pi_environment(monkeypatch, tm
     assert env["Path"] == env["PATH"]
 
 
+def test_pi_connector_acquire_metadata_cannot_override_session_identity(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    config = load_project_config(tmp_path)
+    connector = PiConnector(config)
+    captured = {}
+
+    def fake_post_broker(path, body):
+        assert path == "/v1/sessions/acquire"
+        captured.update(body)
+        return {"session": {"lease_id": "lease-good"}}
+
+    monkeypatch.setattr(connector, "_post_broker", fake_post_broker)
+
+    lease_id = connector.acquire_session(
+        "work",
+        123,
+        lease_id="lease-real",
+        metadata={
+            "project_id": "evil",
+            "agent_id": "evil.worker",
+            "role": "lead",
+            "pid": 999,
+            "session_id": "evil-session",
+            "worker_name": "evil-worker",
+            "lease_id": "lease-evil",
+            "backend": "rpc-supervisor",
+        },
+    )
+
+    assert lease_id == "lease-good"
+    assert captured["project_id"] == "demo"
+    assert captured["agent_id"] == "demo.work"
+    assert captured["role"] == "work"
+    assert captured["pid"] == 123
+    assert captured["session_id"] == "work"
+    assert captured["worker_name"] == "work"
+    assert captured["lease_id"] == "lease-real"
+    assert captured["backend"] == "rpc-supervisor"
+
+
 def test_chat_envelope_summarizes_topic_without_duplicating_full_message(tmp_path):
     init_project(tmp_path, project_id="demo")
     config = load_project_config(tmp_path)
@@ -158,6 +198,19 @@ def test_chat_envelope_summarizes_topic_without_duplicating_full_message(tmp_pat
     assert "Reply conversationally." in envelope["payload"]["constraints"]
     assert envelope["payload"]["expected_reply"] == []
     assert any("Do not read every file" in item for item in envelope["payload"]["constraints"])
+
+
+def test_project_ask_envelope_resolves_named_worker_alias_without_yaml_registry(tmp_path):
+    paths = init_project(tmp_path, project_id="demo")
+    config = load_project_config(tmp_path)
+    data = yaml.safe_load(paths["config"].read_text(encoding="utf-8"))
+
+    envelope = build_task_envelope(config, "review", "R001", "Return PLAN only.", timeout_seconds=30)
+
+    assert envelope["project_id"] == "demo"
+    assert envelope["from_agent"] == "demo.lead"
+    assert envelope["to_agent"] == "demo.review"
+    assert "workers" not in data
 
 
 def test_project_ask_envelope_resolves_work_alias(tmp_path):
