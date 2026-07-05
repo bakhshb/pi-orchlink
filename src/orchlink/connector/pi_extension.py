@@ -652,7 +652,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 
 type JsonObject = Record<string, any>;
-type PanelResult = { action: "stop"; workerName: string } | null;
+type PanelResult = { action: "stop"; workerName: string } | { action: "visible"; workerName: string } | null;
 
 type WorkerRow = {
   workerName: string;
@@ -852,7 +852,11 @@ class OrchlinkWorkersPanel {
   handleInput(data: string) {
     const rows = this.getRows();
     if (data === "q" || data === "\u001b") this.done(null);
-    else if (data === "s" && rows[this.selected]) this.done({ action: "stop", workerName: rows[this.selected].workerName });
+    else if (data === "s" && rows[this.selected]) {
+      const row = rows[this.selected];
+      const isBackground = row.backend === "rpc-supervisor" || row.runtime === "rpc";
+      this.done({ action: isBackground ? "stop" : "visible", workerName: row.workerName });
+    }
     else if (data === "\u001b[A") this.selected = Math.max(0, this.selected - 1);
     else if (data === "\u001b[B") this.selected = Math.min(Math.max(0, rows.length - 1), this.selected + 1);
     else if (data === "\u001b[5~") this.offset = Math.max(0, this.offset - 8);
@@ -992,8 +996,12 @@ export default function (pi: ExtensionAPI) {
         },
       );
       overlayHandle = undefined;
+      if (result?.action === "visible") {
+        ctx.ui.notify(`Worker ${result.workerName} is visible; stop it from its own terminal with Ctrl-C.`, "info");
+        return;
+      }
       if (result?.action === "stop") {
-        const confirmed = await ctx.ui.confirm(`Stop worker ${result.workerName}?`, "This releases the worker session and stops its background supervisor when tracked.");
+        const confirmed = await ctx.ui.confirm(`Stop background worker ${result.workerName}?`, "This stops the tracked background supervisor. Visible worker terminals are not stopped from this panel.");
         if (!confirmed) return;
         try {
           const output = await runOrchStop(result.workerName);

@@ -26,7 +26,10 @@ def test_generated_ui_extension_is_read_only_tui_monitor():
     assert "overlayHandle?.requestRender?.()" in ORCHLINK_PI_UI_EXTENSION
     assert "onHandle: (handle: any)" in ORCHLINK_PI_UI_EXTENSION
     assert "spawn(\"orch\", [\"stop\", \"--name\", workerName]" in ORCHLINK_PI_UI_EXTENSION
-    assert "ctx.ui.confirm(`Stop worker ${result.workerName}?`" in ORCHLINK_PI_UI_EXTENSION
+    assert "Stop background worker ${result.workerName}?" in ORCHLINK_PI_UI_EXTENSION
+    assert "Visible worker terminals are not stopped from this panel." in ORCHLINK_PI_UI_EXTENSION
+    assert "stop it from its own terminal with Ctrl-C" in ORCHLINK_PI_UI_EXTENSION
+    assert "isBackground ? \"stop\" : \"visible\"" in ORCHLINK_PI_UI_EXTENSION
     assert "s stop worker" in ORCHLINK_PI_UI_EXTENSION
     assert "q/Esc close" in ORCHLINK_PI_UI_EXTENSION
     assert "workers none" in ORCHLINK_PI_UI_EXTENSION

@@ -107,6 +107,7 @@ Rules:
 - Named workers preserve their own Pi context. Use `--new` only when a fresh context is intended.
 - Do not send a dependent task while another task or Talk conversation is active.
 - If you no longer need active work, cancel it before assigning new work.
+- Do not stop visible worker terminals from the lead. Stop only tracked background workers; a visible worker should be stopped by the human in its own terminal with Ctrl-C.
 - Do not use async REVIEW as a gate. If a review is unrelated and truly non-blocking, use `orch send --allow-async-review`, then verify the exact result with `orch wait TREV001` before using it.
 
 ## Reading results safely

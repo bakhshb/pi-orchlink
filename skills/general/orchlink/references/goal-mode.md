@@ -100,6 +100,21 @@ Rules:
 - Non-core blockers may be deferred; core blockers stop the goal.
 - Do not claim completion until `orch goal show G001` gives evidence or the goal is gated/blocked with a specific reason.
 
+## Worker orchestration inside goals
+
+Goal Mode is not permission for the lead to implement everything alone. For every non-trivial AC or plan step, decide whether a named Pi worker should own a bounded implementation, verification, review, audit, or challenge slice. Prefer worker use when it reduces risk or safely parallelizes work, especially for architecture changes, broad refactors, installer/broker/goal-mode changes, release-impacting work, or independent test verification. Keep work lead-owned only when it is tiny, tightly coupled to the lead's current edit, or unclear enough to need a human answer first.
+
+When dispatching goal-related worker work:
+
+- Split scopes clearly: lead owns one slice, worker owns another.
+- Include the goal ID, relevant AC IDs, allowed files, forbidden files, and checks the worker may run.
+- Use `orch ask --wait` for review gates, architecture decisions, blockers, or anything that can change the next step.
+- Use `orch send` only for independent implementation or verification slices while the lead can work elsewhere.
+- After async dispatch, use `orch jobs --active` and `orch peek <task_id>`/`orch task <task_id>` for progress; do not blind-wait with timeout loops.
+- Reconcile worker evidence before marking an AC verified. Do not accept worker output blindly.
+
+Before marking a risky or subjective AC complete, consider whether independent worker evidence is needed. For release-impacting, architectural, or broad cleanup ACs, worker review or audit should be treated as mandatory unless there is a clear reason it would add no value.
+
 ## Signoff
 
 Subjective core ACs need human signoff:
