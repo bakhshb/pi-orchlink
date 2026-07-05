@@ -69,11 +69,17 @@ Do not proceed past a review gate until the exact task result returns.
 
 Use `send` like spawn: start independent worker work, keep helping the human, and retrieve the result later. Do not immediately run `orch wait` unless the result blocks your next action.
 
+Progress discipline:
+
+- After every async `orch send`, run `orch jobs --active` unless you are immediately doing independent lead-owned work.
+- Do not use shell sleep, repeated timeout waits, or blind `orch wait --timeout ...` as the primary progress check.
+- If the task remains active or may be slow, run `orch peek <task_id>` or `orch task <task_id>` before deciding it is stuck, blocked, or done.
+- Use `orch wait <task_id>` only when you intentionally want to block for the final result; use `orch get <task_id>` when `jobs` shows the task is already terminal.
+- Run `orch idle` before final claims or dependent full tests.
+
 Rules:
 
 - After sending, record the task ID and stay responsive to unrelated human questions.
-- Use `orch get T002` when the human asks about the result or before dependent work; use `orch wait T002` only when you intentionally want to block.
-- Run `orch idle` before final claims or dependent full tests.
 - Do not stack tasks on the same worker name. Each named worker is single-flight, while different names can run independent scoped work.
 - Do not send a dependent task while another task or Talk conversation is active.
 - If you no longer need active work, cancel it before assigning new work.
@@ -126,7 +132,7 @@ Trust only the exact task ID in the current project. Orchlink refuses cross-proj
 
 Use `orch idle` as the gate. Exit code `0` means no active/blocking worker work. Exit code `1` means do not run dependent tests, final conclusions, or new worker assignments yet.
 
-Use `orch jobs --active` to inspect active work. Use `orch peek T002` or `orch task T002` for long-running work. These do not replace `wait`, `get`, or `idle`.
+Use `orch jobs --active` to inspect active work, especially immediately after async dispatch and before dependent decisions. Use `orch peek T002` or `orch task T002` for long-running work before judging it stuck, blocked, or done. These do not replace `wait`, `get`, or `idle`.
 
 Do not inspect `ps`, PID lists, broker URLs, raw HTTP endpoints, or `curl` output for normal coordination. Use raw broker checks only when `orch doctor`, `orch sessions`, `orch jobs`, or `orch idle` are stale or confusing, then read `recovery.md` first.
 

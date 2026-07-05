@@ -89,8 +89,17 @@ Use `send` only when the worker has an independent scope and you can work elsewh
 ```bash
 orch send work -t TDO001 -m "Add one parser edge case. Edit parser.py and tests/test_parser.py only; do not touch docs or unrelated files. Implementation is allowed. Run python3 -m pytest tests/test_parser.py -v and reply with files changed, tests run, and remaining risks."
 orch jobs --active
-orch wait TDO001
+orch peek TDO001
+# Later, when you intentionally need the final answer:
+orch get TDO001  # or: orch wait TDO001
 ```
+
+Progress discipline:
+
+- After every async `orch send`, run `orch jobs --active` unless you are immediately doing independent lead-owned work.
+- Do not use shell sleep, repeated timeout waits, or blind `orch wait --timeout ...` as the primary progress check.
+- If the task remains active or may be slow, run `orch peek <task_id>` or `orch task <task_id>` before deciding it is stuck, blocked, or done.
+- Use `orch wait <task_id>` only when you intentionally want to block for the final result; use `orch get <task_id>` when `jobs` shows the task is already terminal.
 
 Rules:
 
@@ -140,7 +149,7 @@ orch jobs --json
 orch jobs --name review
 ```
 
-`orch jobs --active` is not the same as `orch idle`: it shows details; it is not the safety gate. Use `--name` for one worker and `--limit` when long sessions make the default recent list noisy.
+`orch jobs --active` is not the same as `orch idle`: it shows details; it is not the safety gate. Use it immediately after async dispatch to confirm route/status, and again before any dependent decision. Use `--name` for one worker and `--limit` when long sessions make the default recent list noisy.
 
 Use activity tools for long-running work:
 
