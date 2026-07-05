@@ -12,6 +12,7 @@ from orchlink.core.models import (
     StoredMessage,
     advance_job,
 )
+from orchlink.core.session_lifecycle import SessionLifecycleError, is_active_session_status, normalize_session_status
 from orchlink.core.states import JobStatus
 
 __all__ = [
@@ -23,7 +24,10 @@ __all__ = [
     "JobRoute",
     "JobStatus",
     "Session",
+    "SessionLifecycleError",
     "SessionStatus",
     "StoredMessage",
     "advance_job",
-]  
+    "is_active_session_status",
+    "normalize_session_status",
+]

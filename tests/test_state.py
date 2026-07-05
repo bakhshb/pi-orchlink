@@ -16,6 +16,16 @@ from orchlink.broker.state import (
 from orchlink.core.models import Job, JobRoute, TalkJobPayload
 
 
+def test_session_lifecycle_helpers_live_in_core_and_broker_reexports():
+    from orchlink.broker.state import is_active_session_status as broker_is_active_session_status
+    from orchlink.core.session_lifecycle import SessionStatus, is_active_session_status, normalize_session_status
+
+    assert normalize_session_status("active") is SessionStatus.ACTIVE
+    assert is_active_session_status("ACTIVE") is True
+    assert is_active_session_status(None) is False
+    assert broker_is_active_session_status("RELEASED") is False
+
+
 def test_status_helpers_normalize_and_classify_broker_states():
     assert normalize_status("done") == "DONE"
     assert is_busy_status("queued") is True

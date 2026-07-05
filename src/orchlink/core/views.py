@@ -14,10 +14,52 @@ from orchlink.core.envelope import AgentRegistration, MessageEnvelope, envelope_
 from orchlink.core.models import ActivityRecord, Agent, BrokerEvent, Conversation, Job, JobLease, ReplyResult, Session, SessionAcquire, SessionHeartbeat, SessionRelease, StoredMessage, TalkJobPayload, TaskJobPayload, TaskProjection, TaskResult, WaitBlocker, WorkerActivityInput
 
 
+def task_job_payload_to_wire(payload: TaskJobPayload) -> dict[str, Any]:
+    return {
+        "conversation_id": payload.conversation_id,
+        "mode": payload.mode,
+        "delivery": payload.delivery,
+        "from_agent": payload.from_agent,
+        "to_agent": payload.to_agent,
+        "worker_name": payload.worker_name,
+        "created_at": payload.created_at,
+        "updated_at": payload.updated_at,
+        "preview": payload.preview,
+        "message_id": payload.message_id,
+        "correlation_id": payload.correlation_id,
+        "message_type": payload.message_type,
+        "last_activity_at": payload.last_activity_at,
+        "last_activity_type": payload.last_activity_type,
+        "last_activity_tool": payload.last_activity_tool,
+        "last_activity_preview": payload.last_activity_preview,
+    }
+
+
+def talk_job_payload_to_wire(payload: TalkJobPayload) -> dict[str, Any]:
+    return {
+        "participants": list(payload.participants),
+        "wire_status": payload.wire_status,
+        "from_agent": payload.from_agent,
+        "to_agent": payload.to_agent,
+        "worker_name": payload.worker_name,
+        "created_at": payload.created_at,
+        "updated_at": payload.updated_at,
+        "last_message_preview": payload.last_message_preview,
+        "preview": payload.preview,
+        "message_type": payload.message_type,
+        "last_activity_at": payload.last_activity_at,
+        "last_activity_type": payload.last_activity_type,
+        "last_activity_tool": payload.last_activity_tool,
+        "last_activity_preview": payload.last_activity_preview,
+    }
+
+
 def job_payload(job: Job) -> dict[str, Any]:
     payload = job.payload
-    if hasattr(payload, "to_wire_dict"):
-        return payload.to_wire_dict()
+    if isinstance(payload, TaskJobPayload):
+        return task_job_payload_to_wire(payload)
+    if isinstance(payload, TalkJobPayload):
+        return talk_job_payload_to_wire(payload)
     return dict(payload or {})
 
 

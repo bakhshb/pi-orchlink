@@ -2,7 +2,6 @@ import asyncio
 import os
 import signal
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +9,6 @@ from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Req
 from fastapi.security import APIKeyHeader
 
 from orchlink.broker.checkpoint import (
-    DriftedLease,
     checkpoint_path,
     load_checkpoint,
     reconcile_checkpoint,
@@ -28,12 +26,30 @@ from orchlink.broker.dto import (
     SessionReleaseBody,
 )
 from orchlink.broker.journal import Journal
+from orchlink.broker.route_adapter import BrokerRouteAdapter
+from orchlink.broker.response_models import (
+    ActivityListResponse,
+    ActivityRecordResponse,
+    BrokerResponse,
+    BrokerStatusResponse,
+    EventsResponse,
+    HealthResponse,
+    JobsResponse,
+    JournalAppendResponse,
+    JournalResponse,
+    MessageSendResponse,
+    NextMessageResponse,
+    RegisterAgentResponse,
+    SessionResponse,
+    SessionsResponse,
+    TaskActivityResponse,
+    TaskResultResponse,
+    WaitReplyResponse,
+)
 from orchlink.core.envelope import ENVELOPE_VERSION, ENVELOPE_VERSION_HEADER, AgentRegistration, MessageEnvelope
-from orchlink.core.models import BrokerEvent
 from orchlink.broker.settings import Settings, get_settings
 from orchlink.version import get_version
-from orchlink.broker.storage import JsonlMessageStore, MemoryMessageStore, MessageStore, MessageStoreBusy
-from orchlink.broker.storage.base import LeaseConflictError
+from orchlink.broker.storage import JsonlMessageStore, MemoryMessageStore, MessageStore
 
 
 VERSION = get_version()
@@ -61,6 +77,10 @@ async def require_api_key(
 
 def get_store(request: Request) -> MessageStore:
     return request.app.state.store
+
+
+def get_adapter(request: Request) -> BrokerRouteAdapter:
+    return BrokerRouteAdapter(request.app.state.store)
 
 
 def request_project_id(request: Request, explicit: str | None = None) -> str | None:
@@ -105,49 +125,6 @@ def _checkpoint_project_root(settings: Settings) -> Path:
         return store_path.parent.parent.parent
     except IndexError:
         return Path.cwd()
-
-
-def _current_job_leases(store: MessageStore) -> dict[str, tuple[int, str]]:
-    """Snapshot current task leases without coupling checkpoint.py to storage."""
-    state = getattr(store, "_state", None)
-    task_jobs = getattr(state, "task_jobs", {}) if state is not None else {}
-    current: dict[str, tuple[int, str]] = {}
-    for job in task_jobs.values():
-        lease = getattr(job, "lease", None)
-        task_id = getattr(job, "id", None)
-        if lease and task_id:
-            current[str(task_id)] = (int(lease.epoch), str(lease.holder))
-    return current
-
-
-def _emit_checkpoint_drifts(store: MessageStore, drifts: list[DriftedLease]) -> None:
-    """Expose startup drift through /events without polluting the audit journal."""
-    state = getattr(store, "_state", None)
-    events = getattr(state, "events", None) if state is not None else None
-    if not isinstance(events, list):
-        return
-    next_event_id = int(getattr(state, "next_event_id", 1) or 1)
-    for drift in drifts:
-        preview = (
-            f"lease drift {drift.task_id}: {drift.reason} "
-            f"previous_epoch={drift.previous_epoch} current_epoch={drift.current_epoch}"
-        )
-        events.append(
-            BrokerEvent(
-                id=next_event_id,
-                time=datetime.now(timezone.utc).isoformat(),
-                type="lease_expired_during_downtime",
-                preview=preview,
-                fields={
-                    "task_id": drift.task_id,
-                    "message_type": "LEASE",
-                    "status": "DRIFTED",
-                    "payload": drift.to_dict(),
-                },
-            )
-        )
-        next_event_id += 1
-    state.next_event_id = next_event_id
 
 
 def _record_checkpoint_from_wire(settings: Settings, item: dict[str, Any], status: str) -> None:
@@ -235,137 +212,115 @@ def create_app(
         attach_journal(journal)
 
     checkpoint = load_checkpoint(checkpoint_path(_checkpoint_project_root(settings_obj)))
-    app.state.drifted_leases = reconcile_checkpoint(checkpoint, _current_job_leases(store_obj))
-    _emit_checkpoint_drifts(store_obj, app.state.drifted_leases)
+    app.state.drifted_leases = reconcile_checkpoint(checkpoint, store_obj.current_job_leases())
+    store_obj.append_checkpoint_drifts(app.state.drifted_leases)
 
     secure_router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
 
-    @app.get("/health")
+    @app.get("/health", response_model=HealthResponse)
     async def health() -> dict[str, Any]:
         return {"status": "ok", "service": "orchlink", "version": VERSION, "capabilities": BROKER_CAPABILITIES}
 
-    @secure_router.post("/agents/register")
+    @secure_router.post("/agents/register", response_model=RegisterAgentResponse)
     async def register_agent(
         agent: AgentRegistration,
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, str]:
-        stored_agent = await message_store.register_agent(agent)
+        stored_agent = await broker.register_agent(agent)
         return {"status": "registered", "agent_id": stored_agent["agent_id"]}
 
-    @secure_router.post("/sessions/acquire")
+    @secure_router.post("/sessions/acquire", response_model=SessionResponse)
     async def acquire_session(
         body: SessionAcquireBody = Body(default_factory=SessionAcquireBody),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
-        try:
-            return {"status": "active", "session": await message_store.acquire_session(body.to_command())}
-        except LeaseConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {"status": "active", "session": await broker.acquire_session(body.to_command())}
 
-    @secure_router.post("/sessions/{lease_id}/heartbeat")
+    @secure_router.post("/sessions/{lease_id}/heartbeat", response_model=SessionResponse)
     async def heartbeat_session(
         lease_id: str,
         request: Request,
         body: SessionHeartbeatBody = Body(default_factory=SessionHeartbeatBody),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
-        try:
-            project_id = request_project_id(request, str(body.project_id or "") or None)
-            return {
-                "status": "ok",
-                "session": await message_store.heartbeat_session(
-                    lease_id,
-                    project_id=project_id,
-                    heartbeat=body.to_command(lease_id, project_id=project_id),
-                ),
-            }
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        project_id = request_project_id(request, str(body.project_id or "") or None)
+        return {
+            "status": "ok",
+            "session": await broker.heartbeat_session(
+                lease_id,
+                project_id=project_id,
+                heartbeat=body.to_command(lease_id, project_id=project_id),
+            ),
+        }
 
-    @secure_router.post("/sessions/{lease_id}/release")
+    @secure_router.post("/sessions/{lease_id}/release", response_model=SessionResponse)
     async def release_session(
         lease_id: str,
         request: Request,
         body: SessionReleaseBody = Body(default_factory=SessionReleaseBody),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
-        try:
-            project_id = request_project_id(request, str(body.project_id or "") or None)
-            command = body.to_command(lease_id, project_id=project_id)
-            session = await message_store.release_session(command.lease_id, command.reason, project_id=command.project_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        project_id = request_project_id(request, str(body.project_id or "") or None)
+        command = body.to_command(lease_id, project_id=project_id)
+        session = await broker.release_session(command.lease_id, command.reason, project_id=command.project_id)
         await maybe_schedule_auto_stop()
         return {"status": "released", "session": session}
 
-    @secure_router.get("/sessions")
+    @secure_router.get("/sessions", response_model=SessionsResponse)
     async def sessions(
         request: Request,
         project_id: str | None = Query(default=None),
         active: bool = Query(default=False),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
         project_id = request_project_id(request, project_id)
-        return {"project_id": project_id, "sessions": await message_store.list_sessions(project_id=project_id, active=active)}
+        return {"project_id": project_id, "sessions": await broker.list_sessions(project_id=project_id, active=active)}
 
-    @secure_router.post("/messages/send")
+    @secure_router.post("/messages/send", response_model=MessageSendResponse)
     async def send_message(
         message: MessageEnvelope,
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, str]:
-        try:
-            return await message_store.enqueue_message(message)
-        except MessageStoreBusy as exc:
-            raise HTTPException(status_code=409, detail=exc.detail) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return await broker.enqueue_message(message)
 
-    @secure_router.post("/messages/send-and-wait")
+    @secure_router.post("/messages/send-and-wait", response_model=WaitReplyResponse)
     async def send_and_wait(
         message: MessageEnvelope,
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
-        try:
-            await message_store.enqueue_message(message, create_waiter=True)
-        except MessageStoreBusy as exc:
-            raise HTTPException(status_code=409, detail=exc.detail) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return await message_store.wait_for_reply(
+        await broker.enqueue_message(message, create_waiter=True)
+        return await broker.wait_for_reply(
             message.correlation_id,
             message.timeout_seconds,
         )
 
-    @secure_router.get("/agents/{agent_id}/next")
+    @secure_router.get("/agents/{agent_id}/next", response_model=NextMessageResponse, response_model_exclude_none=True)
     async def get_next_message(
         agent_id: str,
         request: Request,
         wait_seconds: int = Query(default=30, ge=0),
         lease_id: str | None = Query(default=None),
         project_id: str | None = Query(default=None),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
         scoped_project_id = request_project_id(request, project_id)
-        try:
-            message = await message_store.get_next_message(
-                agent_id,
-                wait_seconds,
-                lease_id=lease_id,
-                project_id=scoped_project_id,
-            )
-        except LeaseConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        message = await broker.get_next_message(
+            agent_id,
+            wait_seconds,
+            lease_id=lease_id,
+            project_id=scoped_project_id,
+        )
         if message is None:
             return {"status": "empty"}
         _record_checkpoint_from_wire(settings_obj, message, "in_flight")
         return {"status": "message", "message": message}
 
-    @secure_router.post("/messages/{message_id}/reply")
+    @secure_router.post("/messages/{message_id}/reply", response_model=BrokerResponse)
     async def reply_to_message(
         message_id: str,
         request: Request,
         reply: MessageEnvelope,
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, str]:
         # Enforce holder/epoch only when the caller asserts a job lease.
         lease_epoch_header = request.headers.get("x-orchlink-lease-epoch")
@@ -375,68 +330,57 @@ def create_app(
             lease_epoch = int(lease_epoch_header) if lease_epoch_header is not None else None
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="x-orchlink-lease-epoch must be an integer") from exc
-        try:
-            result = await message_store.save_reply(
-                message_id,
-                reply,
-                lease_epoch=lease_epoch,
-                lease_holder=lease_holder,
-                session_lease_id=session_lease_id,
-            )
-        except LeaseConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        result = await broker.save_reply(
+            message_id,
+            reply,
+            lease_epoch=lease_epoch,
+            lease_holder=lease_holder,
+            session_lease_id=session_lease_id,
+        )
         task_id = reply.task_id
         if task_id and str(result.get("status") or "") == "reply_received":
             _record_recently_settled(settings_obj, str(task_id), lease_epoch, lease_holder)
         return result
 
-    @secure_router.post("/messages/{message_id}/status")
+    @secure_router.post("/messages/{message_id}/status", response_model=BrokerResponse)
     async def update_message_status(
         message_id: str,
         body: MessageStatusBody = Body(default_factory=MessageStatusBody),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
         status = str(body.status or "").upper()
         if status not in {"RUNNING", "IN_PROGRESS"}:
             raise HTTPException(status_code=400, detail="Only RUNNING or IN_PROGRESS status updates are allowed.")
-        try:
-            return await message_store.update_message_status(
-                message_id,
-                status,
-                session_lease_id=str(body.session_lease_id or "") or None,
-            )
-        except LeaseConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return await broker.update_message_status(
+            message_id,
+            status,
+            session_lease_id=str(body.session_lease_id or "") or None,
+        )
 
-    @secure_router.post("/jobs/{item_id}/cancel")
+    @secure_router.post("/jobs/{item_id}/cancel", response_model=BrokerResponse)
     async def cancel_work(
         item_id: str,
         request: Request,
         body: CancelWorkBody = Body(default_factory=CancelWorkBody),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
-        try:
-            project_id = request_project_id(request, str(body.project_id or "") or None)
-            result = await message_store.cancel_work(
-                item_id,
-                str(body.reason or ""),
-                project_id=project_id,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        project_id = request_project_id(request, str(body.project_id or "") or None)
+        result = await broker.cancel_work(
+            item_id,
+            str(body.reason or ""),
+            project_id=project_id,
+        )
         if str(result.get("status") or "") == "cancelled":
             _record_recently_settled(settings_obj, item_id, None, None)
         await maybe_schedule_auto_stop()
         return result
 
-    @secure_router.post("/jobs/{item_id}/heartbeat")
+    @secure_router.post("/jobs/{item_id}/heartbeat", response_model=BrokerResponse)
     async def heartbeat_job(
         item_id: str,
         request: Request,
         body: JobHeartbeatBody = Body(default_factory=JobHeartbeatBody),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
         project_id = request_project_id(request, str(body.project_id or "") or None)
         holder = str(body.holder or "")
@@ -444,92 +388,75 @@ def create_app(
             epoch = int(body.epoch or 0)
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="epoch must be an integer") from exc
-        try:
-            result = await message_store.heartbeat_job(
-                item_id, holder, epoch, project_id=project_id, heartbeat_ms=body.heartbeat_ms
-            )
-        except LeaseConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        result = await broker.heartbeat_job(
+            item_id, holder, epoch, project_id=project_id, heartbeat_ms=body.heartbeat_ms
+        )
         _record_checkpoint_from_wire(settings_obj, {"task_id": item_id, "lease": result.get("lease")}, "in_flight")
         return result
 
-    @secure_router.post("/jobs/{item_id}/reclaim")
+    @secure_router.post("/jobs/{item_id}/reclaim", response_model=BrokerResponse)
     async def reclaim_job(
         item_id: str,
         request: Request,
         body: JobReclaimBody = Body(default_factory=JobReclaimBody),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
         project_id = request_project_id(request, str(body.project_id or "") or None)
         holder = str(body.holder or "")
-        try:
-            result = await message_store.reclaim_job(item_id, holder, project_id=project_id)
-        except LeaseConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        result = await broker.reclaim_job(item_id, holder, project_id=project_id)
         _record_checkpoint_from_wire(settings_obj, {"task_id": item_id, "lease": result.get("lease")}, "in_flight")
         return result
 
-    @secure_router.post("/conversations/{conversation_id}/close")
+    @secure_router.post("/conversations/{conversation_id}/close", response_model=BrokerResponse)
     async def close_conversation(
         conversation_id: str,
         message: MessageEnvelope,
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, str]:
-        try:
-            result = await message_store.close_conversation(conversation_id, message)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return result
+        return await broker.close_conversation(conversation_id, message)
 
-    @secure_router.get("/events")
+    @secure_router.get("/events", response_model=EventsResponse)
     async def events(
         request: Request,
         since: int = Query(default=0, ge=0),
         limit: int = Query(default=50, ge=1, le=500),
         project_id: str | None = Query(default=None),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
         project_id = request_project_id(request, project_id)
-        recent_events = await message_store.list_events(since=since, limit=limit, project_id=project_id)
+        recent_events = await broker.list_events(since=since, limit=limit, project_id=project_id)
         return {"events": recent_events, "last_event_id": recent_events[-1]["id"] if recent_events else since}
 
-    @secure_router.post("/activity")
+    @secure_router.post("/activity", response_model=ActivityRecordResponse)
     async def record_activity(
         body: ActivityBody = Body(default_factory=ActivityBody),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
-        try:
-            return await message_store.record_activity(body.to_command())
-        except LeaseConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return await broker.record_activity(body.to_command())
 
-    @secure_router.get("/activity")
+    @secure_router.get("/activity", response_model=ActivityListResponse)
     async def activity(
         request: Request,
         item_id: str | None = Query(default=None),
         limit: int = Query(default=20, ge=1, le=100),
         project_id: str | None = Query(default=None),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
         project_id = request_project_id(request, project_id)
-        return {"activity": await message_store.list_activity(item_id=item_id, limit=limit, project_id=project_id)}
+        return {"activity": await broker.list_activity(item_id=item_id, limit=limit, project_id=project_id)}
 
-    @secure_router.get("/tasks/{task_id}/activity")
+    @secure_router.get("/tasks/{task_id}/activity", response_model=TaskActivityResponse)
     async def task_activity(
         task_id: str,
         request: Request,
         limit: int = Query(default=20, ge=1, le=100),
         project_id: str | None = Query(default=None),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
         project_id = request_project_id(request, project_id)
-        return {"project_id": project_id, "task_id": task_id, "activity": await message_store.list_activity(item_id=task_id, limit=limit, project_id=project_id)}
+        return {"project_id": project_id, "task_id": task_id, "activity": await broker.list_activity(item_id=task_id, limit=limit, project_id=project_id)}
 
-    @secure_router.get("/jobs")
+    @secure_router.get("/jobs", response_model=JobsResponse)
     async def jobs(
         request: Request,
         limit: int = Query(default=50, ge=1, le=500),
@@ -538,12 +465,12 @@ def create_app(
         status: str | None = Query(default=None),
         kind: str | None = Query(default=None, pattern="^(task|talk)$"),
         item_id: str | None = Query(default=None, alias="id"),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
         project_id = request_project_id(request, project_id)
         return {
             "project_id": project_id,
-            "jobs": await message_store.list_jobs(
+            "jobs": await broker.list_jobs(
                 limit=limit,
                 project_id=project_id,
                 active=active,
@@ -553,51 +480,48 @@ def create_app(
             ),
         }
 
-    @secure_router.get("/tasks/{task_id}")
+    @secure_router.get("/tasks/{task_id}", response_model=TaskResultResponse)
     async def get_task(
         task_id: str,
         request: Request,
         project_id: str | None = Query(default=None),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
-        return await message_store.get_task_result(task_id, project_id=request_project_id(request, project_id))
+        return await broker.get_task_result(task_id, project_id=request_project_id(request, project_id))
 
-    @secure_router.get("/tasks/{task_id}/wait")
+    @secure_router.get("/tasks/{task_id}/wait", response_model=TaskResultResponse)
     async def wait_task(
         task_id: str,
         request: Request,
         timeout_seconds: int = Query(default=1800, ge=1),
         project_id: str | None = Query(default=None),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
-        return await message_store.wait_for_task(task_id, timeout_seconds, project_id=request_project_id(request, project_id))
+        return await broker.wait_for_task(task_id, timeout_seconds, project_id=request_project_id(request, project_id))
 
-    @secure_router.get("/status")
+    @secure_router.get("/status", response_model=BrokerStatusResponse)
     async def status(
         request: Request,
         project_id: str | None = Query(default=None),
         task_id: str | None = Query(default=None),
         since: int = Query(default=0, ge=0),
         limit: int = Query(default=20, ge=1, le=500),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
         project_id = request_project_id(request, project_id)
-        agents = await message_store.list_agents()
+        agents = await broker.list_agents()
         if project_id is not None:
             agents = [agent for agent in agents if str(agent.get("project_id") or "default") == project_id]
-        sessions = await message_store.list_sessions(project_id=project_id)
-        active_messages = await message_store.list_active_messages(project_id=project_id)
-        conversations = await message_store.list_conversations(project_id=project_id)
-        jobs = await message_store.list_jobs(limit=500 if task_id is not None else limit, project_id=project_id)
-        events = await message_store.list_events(since=since, limit=500 if task_id is not None else limit, project_id=project_id)
+        sessions = await broker.list_sessions(project_id=project_id)
+        active_messages = await broker.list_active_messages(project_id=project_id)
+        conversations = await broker.list_conversations(project_id=project_id)
+        jobs = await broker.list_jobs(limit=500 if task_id is not None else limit, project_id=project_id)
+        events = await broker.list_events(since=since, limit=500 if task_id is not None else limit, project_id=project_id)
         if task_id is not None:
             active_messages = [item for item in active_messages if str(item.get("task_id") or "") == task_id]
             jobs = [item for item in jobs if str(item.get("task_id") or "") == task_id][-limit:]
             events = [item for item in events if str(item.get("task_id") or "") == task_id][-limit:]
-        pending_reply_count = 0
-        count_pending = getattr(message_store, "pending_reply_count", None)
-        if count_pending is not None:
-            pending_reply_count = await count_pending()
+        pending_reply_count = await broker.pending_reply_count()
         return {
             "broker": "ok",
             "agent_count": len(agents),
@@ -614,16 +538,16 @@ def create_app(
             "recent_events": events,
         }
 
-    @secure_router.get("/journal")
+    @secure_router.get("/journal", response_model=JournalResponse)
     async def get_journal(
         request: Request,
         project_id: str | None = Query(default=None),
         since: int = Query(default=0, ge=0),
         limit: int = Query(default=100, ge=1, le=1000),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
         project_id = request_project_id(request, project_id)
-        journal = getattr(message_store, "journal", None)
+        journal = broker.journal
         if journal is None:
             return {"project_id": project_id, "entries": [], "last_seq": since}
         entries = journal.query(project_id=project_id, since=since, limit=limit)
@@ -633,11 +557,11 @@ def create_app(
             "last_seq": entries[-1].seq if entries else since,
         }
 
-    @secure_router.post("/journal")
+    @secure_router.post("/journal", response_model=JournalAppendResponse)
     async def post_journal(
         request: Request,
         body: JournalAppendBody = Body(default_factory=JournalAppendBody),
-        message_store: MessageStore = Depends(get_store),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
         """Append an external transition entry (e.g. a Goal Mode transition).
 
@@ -645,7 +569,7 @@ def create_app(
         in the same audit journal from v1, without making the journal a source
         of truth.
         """
-        journal = getattr(message_store, "journal", None)
+        journal = broker.journal
         if journal is None:
             return {"status": "ignored", "seq": None}
         body_data = body.to_store_dict()

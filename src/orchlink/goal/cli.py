@@ -120,15 +120,17 @@ def show(goal_id: str) -> None:
     if goal.evidence:
         console.print("Evidence:")
         for item in goal.evidence[-10:]:
-            criterion = item.get("criterion_id") or "-"
-            command = item.get("command") or item.get("type") or "evidence"
-            passed = item.get("passed")
+            evidence = item.to_dict()
+            criterion = evidence.get("criterion_id") or "-"
+            command = evidence.get("command") or evidence.get("type") or "evidence"
+            passed = evidence.get("passed")
             suffix = f" passed={passed}" if passed is not None else ""
             console.print(f"- {criterion}: {command}{suffix}")
     if goal.deferred:
         console.print("Deferred:")
         for item in goal.deferred:
-            console.print(f"- {item.get('id', '-')}: {item.get('reason', '')}")
+            deferred = item.to_dict()
+            console.print(f"- {deferred.get('id', '-')}: {deferred.get('reason', '')}")
 
 
 @goal_app.command(help="Show the combined source, acceptance, plan, coverage, and warning view before approval.")

@@ -50,6 +50,15 @@ def test_checkpoint_module_does_not_import_storage_backends():
         assert forbidden not in text, f"checkpoint.py must not reference {forbidden!r}"
 
 
+def test_broker_checkpoint_startup_uses_store_boundary_not_private_state():
+    src_path = ROOT / "src" / "orchlink" / "broker" / "main.py"
+    text = src_path.read_text(encoding="utf-8")
+    assert "store._state" not in text
+    assert "getattr(store, \"_state\"" not in text
+    assert "store_obj.current_job_leases()" in text
+    assert "store_obj.append_checkpoint_drifts(" in text
+
+
 def test_checkpoint_file_contains_required_fields(tmp_path: Path):
     """Persisted JSON contains task_id, epoch, holder, status, updated_at."""
     from orchlink.broker.checkpoint import record_lease

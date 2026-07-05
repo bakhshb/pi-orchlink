@@ -1068,9 +1068,9 @@ def test_session_lifecycle_methods_are_called_by_registry():
     """Storage registry mutates state via Session.heartbeat/mark_ready/release/expire."""
     import inspect
 
-    from orchlink.broker.storage import memory as memory_module
+    from orchlink.broker.storage.memory_session_store import MemorySessionStore
 
-    source = inspect.getsource(memory_module)
+    source = inspect.getsource(MemorySessionStore)
     assert "session.heartbeat(" in source, "heartbeat_session_locked should call Session.heartbeat"
     assert ".mark_ready(" in source, "heartbeat_session_locked should call Session.mark_ready"
     assert "session.release(" in source, "release_session_locked should call Session.release"

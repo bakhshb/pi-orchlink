@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any, Literal
 
-from orchlink.core.envelope import AgentRegistration, MessageEnvelope, envelope_to_dict
+from orchlink.core.envelope import AgentRegistration, MessageEnvelope
 from orchlink.core.states import JOB_STATUS_LIFECYCLE, CANONICAL_TERMINAL_STATUSES, JobStatus, normalize_status, require_transition
 
 
@@ -106,12 +106,9 @@ class JobLease:
         return self.holder == str(holder) and self.epoch == int(epoch)
 
     def to_wire_dict(self) -> dict[str, Any]:
-        return {
-            "holder": self.holder,
-            "expires_at": self.expires_at,
-            "epoch": self.epoch,
-            "heartbeat_ms": self.heartbeat_ms,
-        }
+        from orchlink.core.views import lease_to_wire
+
+        return lease_to_wire(self) or {}
 
     def expires_at_datetime(self) -> datetime | None:
         try:
@@ -148,24 +145,9 @@ class TaskJobPayload:
     last_activity_preview: str | None = None
 
     def to_wire_dict(self) -> dict[str, Any]:
-        return {
-            "conversation_id": self.conversation_id,
-            "mode": self.mode,
-            "delivery": self.delivery,
-            "from_agent": self.from_agent,
-            "to_agent": self.to_agent,
-            "worker_name": self.worker_name,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "preview": self.preview,
-            "message_id": self.message_id,
-            "correlation_id": self.correlation_id,
-            "message_type": self.message_type,
-            "last_activity_at": self.last_activity_at,
-            "last_activity_type": self.last_activity_type,
-            "last_activity_tool": self.last_activity_tool,
-            "last_activity_preview": self.last_activity_preview,
-        }
+        from orchlink.core.views import task_job_payload_to_wire
+
+        return task_job_payload_to_wire(self)
 
 
 @dataclass(frozen=True)
@@ -188,22 +170,9 @@ class TalkJobPayload:
     last_activity_preview: str | None = None
 
     def to_wire_dict(self) -> dict[str, Any]:
-        return {
-            "participants": list(self.participants),
-            "wire_status": self.wire_status,
-            "from_agent": self.from_agent,
-            "to_agent": self.to_agent,
-            "worker_name": self.worker_name,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "last_message_preview": self.last_message_preview,
-            "preview": self.preview,
-            "message_type": self.message_type,
-            "last_activity_at": self.last_activity_at,
-            "last_activity_type": self.last_activity_type,
-            "last_activity_tool": self.last_activity_tool,
-            "last_activity_preview": self.last_activity_preview,
-        }
+        from orchlink.core.views import talk_job_payload_to_wire
+
+        return talk_job_payload_to_wire(self)
 
 
 @dataclass(frozen=True)
@@ -488,28 +457,9 @@ class TaskProjection:
         return replace(self, **{key: value for key, value in updates.items() if key in allowed})
 
     def to_wire_dict(self) -> dict[str, Any]:
-        return {
-            "kind": self.kind,
-            "project_id": self.project_id,
-            "task_id": self.task_id,
-            "conversation_id": self.conversation_id,
-            "mode": self.mode,
-            "delivery": self.delivery,
-            "status": self.status,
-            "from_agent": self.from_agent,
-            "to_agent": self.to_agent,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "preview": self.preview,
-            "message_id": self.message_id,
-            "correlation_id": self.correlation_id,
-            "message_type": self.message_type,
-            "last_activity_at": self.last_activity_at,
-            "last_activity_type": self.last_activity_type,
-            "last_activity_tool": self.last_activity_tool,
-            "last_activity_preview": self.last_activity_preview,
-            "lease": self.lease.to_wire_dict() if self.lease is not None else None,
-        }
+        from orchlink.core.views import task_projection_to_wire
+
+        return task_projection_to_wire(self)
 
 
 @dataclass(frozen=True)
@@ -528,18 +478,9 @@ class TaskResult:
     error: str | None = None
 
     def to_wire_dict(self) -> dict[str, Any]:
-        wire: dict[str, Any] = {
-            "status": self.status,
-            "project_id": self.project_id,
-            "task_id": self.task_id,
-        }
-        if self.reply is not None:
-            wire["reply"] = self.reply.envelope.model_dump(mode="json", exclude_unset=True)
-        if self.job is not None:
-            wire["job"] = self.job.to_wire_dict()
-        if self.error is not None:
-            wire["error"] = self.error
-        return wire
+        from orchlink.core.views import task_result_to_wire
+
+        return task_result_to_wire(self)
 
 
 @dataclass(frozen=True)
@@ -632,13 +573,9 @@ class BrokerEvent:
     fields: dict[str, Any] = field(default_factory=dict)
 
     def to_wire_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "time": self.time,
-            "type": self.type,
-            "preview": self.preview,
-            **dict(self.fields or {}),
-        }
+        from orchlink.core.views import broker_event_to_wire
+
+        return broker_event_to_wire(self)
 
 
 @dataclass(frozen=True)
@@ -661,22 +598,9 @@ class ActivityRecord:
     mode: str | None = None
 
     def to_wire_dict(self) -> dict[str, Any]:
-        return {
-            "id": self.id,
-            "time": self.time,
-            "project_id": self.project_id,
-            "task_id": self.task_id,
-            "conversation_id": self.conversation_id,
-            "message_id": self.message_id,
-            "agent_id": self.agent_id,
-            "session_lease_id": self.session_lease_id,
-            "activity_type": self.activity_type,
-            "phase": self.phase,
-            "tool_name": self.tool_name,
-            "detail": self.detail,
-            "status": self.status,
-            "mode": self.mode,
-        }
+        from orchlink.core.views import activity_record_to_wire
+
+        return activity_record_to_wire(self)
 
 
 def advance_job(job: Job, event: JobEvent) -> Job:
@@ -726,15 +650,9 @@ class StoredMessage:
         )
 
     def to_wire_dict(self) -> dict[str, Any]:
-        wire = envelope_to_dict(self.envelope)
-        wire["status"] = self.status
-        if self.created_at is not None:
-            wire.setdefault("created_at", self.created_at)
-        if self.queued_at is not None:
-            wire["queued_at"] = self.queued_at
-        if self.updated_at is not None:
-            wire["updated_at"] = self.updated_at
-        return wire
+        from orchlink.core.views import stored_message_to_wire
+
+        return stored_message_to_wire(self)
 
     def with_status(self, status: str, now: str) -> "StoredMessage":
         """Return a new StoredMessage with the given broker status and updated_at."""
@@ -826,28 +744,9 @@ class Conversation:
     # --- Wire view ---
 
     def to_wire_dict(self) -> dict[str, Any]:
-        return {
-            "kind": "talk",
-            "conversation_id": self.conversation_id,
-            "project_id": self.project_id,
-            "participants": list(self.participants),
-            "mode": "TALK",
-            "status": self.status,
-            "turn": self.turn,
-            "max_turns": self.max_turns,
-            "from_agent": self.from_agent,
-            "to_agent": self.to_agent,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "last_message_preview": self.last_message_preview,
-            "preview": self.preview,
-            "message_type": self.message_type,
-            "last_activity_at": self.last_activity_at,
-            "last_activity_type": self.last_activity_type,
-            "last_activity_tool": self.last_activity_tool,
-            "last_activity_preview": self.last_activity_preview,
-            "worker_name": self.worker_name,
-        }
+        from orchlink.core.views import conversation_to_wire
+
+        return conversation_to_wire(self)
 
 
 __all__ = [

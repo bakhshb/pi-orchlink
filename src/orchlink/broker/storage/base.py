@@ -26,6 +26,14 @@ class LeaseConflictError(RuntimeError):
 
 
 class MessageStore(ABC):
+    def current_job_leases(self) -> dict[str, tuple[int, str]]:
+        """Snapshot active task leases for checkpoint reconciliation."""
+        return {}
+
+    def append_checkpoint_drifts(self, drifts: list[Any]) -> None:
+        """Expose startup checkpoint drift records through the store event stream."""
+        return None
+
     @abstractmethod
     async def register_agent(self, agent: AgentInput) -> dict[str, Any]:
         raise NotImplementedError
