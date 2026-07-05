@@ -1,9 +1,0 @@
-fastapi
-uvicorn[standard]
-pydantic
-pydantic-settings
-httpx
-typer
-rich
-pyyaml
-pytest

@@ -1,7 +1,7 @@
 """Canonical job lifecycle helpers.
 
 This module is intentionally independent from FastAPI, Typer, and storage. The
-broker still accepts a few legacy protocol statuses, but new domain code should
+broker accepts protocol-level aliases at its boundaries, but domain code should
 reason in terms of the canonical JobStatus lifecycle below.
 """
 
@@ -23,8 +23,7 @@ class JobStatus(StrEnum):
 
 JOB_STATUS_LIFECYCLE = tuple(status.value for status in JobStatus)
 
-# Current wire/storage compatibility. PENDING, IN_PROGRESS, COMPLETED, and OPEN
-# are protocol/job-view statuses that should eventually collapse into the
+# Protocol/job-view aliases accepted at the boundary and projected into the
 # canonical lifecycle above.
 BUSY_MESSAGE_STATUSES = {"PENDING", "QUEUED", "DELIVERED", "RUNNING", "IN_PROGRESS"}
 ACTIVE_ACTIVITY_STATUSES = {"DELIVERED", "RUNNING", "IN_PROGRESS"}

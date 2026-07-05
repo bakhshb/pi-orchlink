@@ -10,7 +10,7 @@ Use the small rules here by default. Load `.orch/skills/references/*.md` only wh
 
 - Read `.orch/skills/references/lead-commands.md` before choosing among `ask`, `send`, `wait/get`, `jobs`, `idle`, or Talk Mode for non-trivial coordination.
 - Read `.orch/skills/references/goal-mode.md` before using `orch goal ...` or advising on PRD/plan-driven work.
-- Read `.orch/skills/references/review-gates.md` before review gates, expensive test/release steps, or phase compaction.
+- Read `.orch/skills/references/review-gates.md` before review gates or expensive test/release steps.
 - Read `.orch/skills/references/recovery.md` when sessions, broker state, cancellation, stale results, or debug output are involved.
 
 ## Daily startup checks

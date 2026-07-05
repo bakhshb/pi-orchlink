@@ -707,3 +707,87 @@ def test_broker_next_requires_matching_session_lease_when_active_session_exists(
     assert delivered.status_code == 200
     assert delivered.json()["status"] == "message"
     assert delivered.json()["message"]["task_id"] == "R001"
+
+
+# --- G009 AC-9: FastAPI DTOs live outside broker/main.py and map to typed
+#     domain commands while HTTP request/response shapes stay unchanged.
+
+
+def test_g009_route_dtos_are_extracted_and_map_to_domain_commands():
+    from pathlib import Path
+
+    from orchlink.broker.dto import ActivityBody, SessionAcquireBody, SessionHeartbeatBody, SessionReleaseBody
+    from orchlink.core.models import SessionAcquire, SessionHeartbeat, SessionRelease, WorkerActivityInput
+
+    main_source = (Path(__file__).resolve().parent.parent / "src" / "orchlink" / "broker" / "main.py").read_text(encoding="utf-8")
+    assert "class SessionAcquireBody" not in main_source
+    assert "class ActivityBody" not in main_source
+    assert "from orchlink.broker.dto import" in main_source
+
+    acquire = SessionAcquireBody(project_id="demo", agent_id="demo.work", role="work", worker_name="work")
+    acquire_command = acquire.to_command()
+    assert isinstance(acquire_command, SessionAcquire)
+    assert acquire_command.project_id == "demo"
+    assert acquire_command.worker_name == "work"
+
+    heartbeat_command = SessionHeartbeatBody(ready=True, thinking="high").to_command("lease-1", project_id="demo")
+    assert isinstance(heartbeat_command, SessionHeartbeat)
+    assert heartbeat_command.lease_id == "lease-1"
+    assert heartbeat_command.project_id == "demo"
+    assert heartbeat_command.ready is True
+    assert heartbeat_command.thinking == "high"
+
+    release_command = SessionReleaseBody(reason="done").to_command("lease-1", project_id="demo")
+    assert isinstance(release_command, SessionRelease)
+    assert release_command.reason == "done"
+
+    activity_command = ActivityBody(project_id="demo", agent_id="demo.work", detail="alive").to_command()
+    assert isinstance(activity_command, WorkerActivityInput)
+    assert activity_command.detail == "alive"
+
+
+def test_g009_session_and_activity_routes_preserve_http_shapes_with_dto_commands():
+    import asyncio
+
+    import httpx
+
+    from orchlink.broker.main import create_app
+    from orchlink.broker.settings import Settings
+    from orchlink.broker.storage.memory import MemoryMessageStore
+    from orchlink.core.models import Session
+
+    async def run():
+        store = MemoryMessageStore()
+        app = create_app(store=store, settings=Settings(api_key="test-key", store_backend="memory"))
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            headers = {"X-API-Key": "test-key"}
+            acquired = await client.post(
+                "/v1/sessions/acquire",
+                headers=headers,
+                json={"project_id": "demo", "agent_id": "demo.work", "role": "work", "worker_name": "work"},
+            )
+            assert acquired.status_code == 200
+            acquired_body = acquired.json()
+            assert acquired_body["status"] == "active"
+            lease_id = acquired_body["session"]["lease_id"]
+            assert isinstance(store._state.sessions[lease_id], Session)
+
+            heartbeat = await client.post(
+                f"/v1/sessions/{lease_id}/heartbeat",
+                headers=headers,
+                json={"project_id": "demo", "ready": True, "thinking": "high"},
+            )
+            assert heartbeat.status_code == 200
+            assert heartbeat.json()["session"]["thinking"] == "high"
+
+            activity = await client.post(
+                "/v1/activity",
+                headers=headers,
+                json={"project_id": "demo", "agent_id": "demo.work", "detail": "alive"},
+            )
+            assert activity.status_code == 200
+            assert activity.json() == {"status": "recorded", "activity_id": 1}
+            assert store._state.activity[0].detail == "alive"
+
+    asyncio.run(run())

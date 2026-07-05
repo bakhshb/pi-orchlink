@@ -61,11 +61,3 @@ Source:
 {source_text}
 """.strip()
 
-
-def phase_compaction_note(goal: Goal, phase_note: str) -> str:
-    return f"""Orchlink phase boundary for goal {goal.id}: {goal.title}.
-
-Preserve current goal ID, task ID if any, gates, scope guardrails, completed phase, review verdict, files changed, tests run, unresolved blockers, next exact step, and pointers under .orch/goals/{goal.id}/.
-
-Phase note: {phase_note}
-""".strip()

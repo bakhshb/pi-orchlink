@@ -1,6 +1,6 @@
-# Orchlink review gates and phase compaction
+# Orchlink review gates
 
-Use this reference when a worker review can change the lead's next action, or when a phase is ready to compact.
+Use this reference when a worker review can change the lead's next action.
 
 ## Review gates
 
@@ -24,13 +24,9 @@ After review returns:
 
 If the answer is risky, blocked, or unclear, ask a follow-up or use Talk Mode.
 
-## Compaction after review
+## Compaction
 
-Do not compact automatically after review gates. The human should see the worker result and the lead's reconciliation in the live conversation.
-
-If a long session truly needs compaction, use Pi's native `/compact` command manually after the conclusion. Orchlink's `session_before_compact` hook makes normal Pi compaction preserve Orchlink state pointers, current task/goal context, and durable `.orch/` paths. After compaction, start with `orch resume` before making claims about state.
-
-Automatic review compaction is opt-in only. If an operator explicitly starts the lead with `ORCHLINK_AUTO_COMPACT_PHASES=review`, a reconciliation line beginning with `Review reconciled:`, `Decision:`, or `Blocked:` may trigger compaction when no project work is active. Do not rely on this path by default.
+Orchlink does not trigger, customize, or hook Pi compaction. Use Pi's native `/compact` command or Pi's own auto-compaction behavior when you need context cleanup.
 
 Do not compact:
 
@@ -39,4 +35,9 @@ Do not compact:
 - before important state is written to files
 - before the exact review result has been reconciled
 
-The compaction summary should be short and operational: decision, tests/evidence, and next step.
+After any Pi compaction, reload durable Orchlink state before making claims about project status:
+
+```bash
+orch resume
+orch goal show <id>  # when a goal is active
+```

@@ -19,16 +19,6 @@ from orchlink.cli import main as _cli_main
 console = Console()
 
 
-def _old_alias_paths() -> tuple[Path, ...]:
-    return (Path(sys.executable).parent / "orchlink", Path.home() / ".local" / "bin" / "orchlink")
-
-
-def _remove_old_aliases() -> None:
-    for old_alias in _old_alias_paths():
-        if old_alias.is_file() or old_alias.is_symlink():
-            old_alias.unlink()
-
-
 def _write_windows_reinstall_helper(root: Path) -> Path:
     log_path = Path(tempfile.gettempdir()) / "orch-update.log"
     script_path = Path(tempfile.gettempdir()) / "orch-update-reinstall.py"
@@ -36,25 +26,15 @@ def _write_windows_reinstall_helper(root: Path) -> Path:
 import subprocess
 import sys
 import time
-from pathlib import Path
-
 python = {str(sys.executable)!r}
 root = {str(root)!r}
 log_path = {str(log_path)!r}
-aliases = {[str(path) for path in _old_alias_paths()]!r}
 
 time.sleep(2)
 with open(log_path, "a", encoding="utf-8") as log:
     log.write("\\n[Orch] Running deferred Windows reinstall...\\n")
     result = subprocess.run([python, "-m", "pip", "install", "-e", root], stdout=log, stderr=subprocess.STDOUT)
     if result.returncode == 0:
-        for alias in aliases:
-            path = Path(alias)
-            if path.is_file() or path.is_symlink():
-                try:
-                    path.unlink()
-                except OSError as exc:
-                    log.write(f"[Orch] Could not remove old alias {{path}}: {{exc}}\\n")
         log.write("[Orch] Deferred reinstall complete.\\n")
     else:
         log.write(f"[Orch] Deferred reinstall failed with exit code {{result.returncode}}.\\n")
@@ -100,7 +80,6 @@ def run_update(ref: str, reinstall_only: bool = False) -> str:
         return f"scheduled:{log_path}"
 
     subprocess.run([sys.executable, "-m", "pip", "install", "-e", str(root)], check=True)
-    _remove_old_aliases()
     return "completed"
 
 

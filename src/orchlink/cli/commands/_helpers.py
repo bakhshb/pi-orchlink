@@ -17,12 +17,7 @@ import typer
 from rich.console import Console
 
 from orchlink.broker.state import ACTIVE_ACTIVITY_STATUSES, is_active_job_status, job_id_for, job_kind_for, job_matches_id
-from orchlink.client.sync import (
-    broker_get_sync,
-    ensure_broker_running,
-    fetch_status_sync,
-    fetch_events_sync,
-)
+from orchlink.client.sync import broker_get_sync
 from orchlink.project.config import (
     ProjectConfigError,
     broker_api_key,
@@ -288,8 +283,5 @@ __all__ = [
     "conversation_state",
     "load_project_or_exit",
     "auto_refresh_project_skills",
-    "ensure_broker_running",
-    "fetch_status_sync",
-    "fetch_events_sync",
     "broker_get_sync",
 ]

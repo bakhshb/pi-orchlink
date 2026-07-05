@@ -267,23 +267,24 @@ def test_pi_extension_uses_valid_record_type():
     assert "waiting for Pi recovery" in ORCHLINK_PI_EXTENSION
     assert "ORCHLINK_ACTIVITY_HEARTBEAT_MS" in ORCHLINK_PI_EXTENSION
     assert "postCurrentActivity" in ORCHLINK_PI_EXTENSION
+    assert "ORCHLINK_WORKER_MODEL" in ORCHLINK_PI_EXTENSION
+    assert "ORCHLINK_WORKER_THINKING" in ORCHLINK_PI_EXTENSION
+    assert "setThinkingLevel" in ORCHLINK_PI_EXTENSION
     assert "x-orchlink-lease-epoch" in ORCHLINK_PI_EXTENSION
     assert "x-orchlink-lease-holder" in ORCHLINK_PI_EXTENSION
     assert "renewJobLease" in ORCHLINK_PI_EXTENSION
     assert "pi.registerCommand(\"orch\"" not in ORCHLINK_PI_EXTENSION
     assert "compact-phase" not in ORCHLINK_PI_EXTENSION
-    assert "phaseCompactionInstructions" in ORCHLINK_PI_EXTENSION
-    assert "ctx.compact" in ORCHLINK_PI_EXTENSION
-    assert "setTimeout(() =>" in ORCHLINK_PI_EXTENSION
-    assert "Orchlink ${role} polling resumed after compaction." in ORCHLINK_PI_EXTENSION
-    assert "pi.on(\"session_compact\"" in ORCHLINK_PI_EXTENSION
-    assert "ORCHLINK_AUTO_COMPACT_PHASES" in ORCHLINK_PI_EXTENSION
-    assert 'env("ORCHLINK_AUTO_COMPACT_PHASES", "off")' in ORCHLINK_PI_EXTENSION
-    assert "pendingReviewCompaction" in ORCHLINK_PI_EXTENSION
-    assert "looksLikeReviewReconciliation" in ORCHLINK_PI_EXTENSION
-    assert "Orchlink auto phase compaction started." in ORCHLINK_PI_EXTENSION
-    assert "current goal ID" in ORCHLINK_PI_EXTENSION
-    assert "pointers to durable .orch/ state files" in ORCHLINK_PI_EXTENSION
+    assert "phaseCompactionInstructions" not in ORCHLINK_PI_EXTENSION
+    assert "ctx.compact" not in ORCHLINK_PI_EXTENSION
+    assert "Orchlink ${role} polling resumed after compaction." not in ORCHLINK_PI_EXTENSION
+    assert "pi.on(\"session_before_compact\"" not in ORCHLINK_PI_EXTENSION
+    assert "pi.on(\"session_compact\"" not in ORCHLINK_PI_EXTENSION
+    assert "ORCHLINK_AUTO_COMPACT_PHASES" not in ORCHLINK_PI_EXTENSION
+    assert "pendingReviewCompaction" not in ORCHLINK_PI_EXTENSION
+    assert "looksLikeReviewReconciliation" not in ORCHLINK_PI_EXTENSION
+    assert "Orchlink auto phase compaction started." not in ORCHLINK_PI_EXTENSION
+    assert "pointers to durable .orch/ state files" not in ORCHLINK_PI_EXTENSION
     assert "pi.on(\"tool_call\"" in ORCHLINK_PI_EXTENSION
     assert "pi.on(\"tool_result\"" in ORCHLINK_PI_EXTENSION
     assert "[Orchlink] ${message.from_agent" in ORCHLINK_PI_EXTENSION
@@ -293,7 +294,7 @@ def test_pi_extension_uses_valid_record_type():
     assert "-m \"<your answer>\"" not in ORCHLINK_PI_EXTENSION
     assert "Talk Mode should stop only when" not in ORCHLINK_PI_EXTENSION
     assert "renderLeadPrompt(message), { deliverAs: \"steer\" }" in ORCHLINK_PI_EXTENSION
-    assert "sendLeadResumeSteer" in ORCHLINK_PI_EXTENSION
+    assert "sendLeadResumeSteer" not in ORCHLINK_PI_EXTENSION
     assert "customType: \"orchlink\"" not in ORCHLINK_PI_EXTENSION
     assert "deliverAs: \"nextTurn\"" not in ORCHLINK_PI_EXTENSION
     assert "Recommended next step:" not in ORCHLINK_PI_EXTENSION
@@ -308,56 +309,21 @@ def test_pi_extension_uses_valid_record_type():
     assert "for (const line of output.split" not in ORCHLINK_PI_EXTENSION
 
 
-def test_pi_extension_has_session_before_compact_hook_with_state_pointer_summary():
+def test_pi_extension_does_not_hook_or_trigger_pi_compaction():
     from orchlink.connector.pi_extension import ORCHLINK_PI_EXTENSION
 
-    # The hook is registered and produces a custom Orchlink state-pointer summary
-    # for normal Pi compaction and explicitly opted-in auto review compaction.
-    assert 'pi.on("session_before_compact"' in ORCHLINK_PI_EXTENSION
-    assert "orchlinkCompactionSummary" in ORCHLINK_PI_EXTENSION
-    assert "normalizeCompactionInstructions" in ORCHLINK_PI_EXTENSION
-    assert "source: autoPhase ? \"auto-review\" : \"pi-compact\"" in ORCHLINK_PI_EXTENSION
-    assert "compaction: {" in ORCHLINK_PI_EXTENSION
-    assert "firstKeptEntryId" in ORCHLINK_PI_EXTENSION
-    assert "## Orchlink state" in ORCHLINK_PI_EXTENSION
-    assert "orchlinkPostCompactionResumeSteer" in ORCHLINK_PI_EXTENSION
-    assert "postCompactionResumeSteer" in ORCHLINK_PI_EXTENSION
-    assert "sendLeadResumeSteer" in ORCHLINK_PI_EXTENSION
-    assert "ctx.isIdle()" in ORCHLINK_PI_EXTENSION
-    assert "pi.sendUserMessage(resumeSteer);" in ORCHLINK_PI_EXTENSION
-    assert "pi.on(\"session_compact\"" in ORCHLINK_PI_EXTENSION
-    assert "schedule(0);" in ORCHLINK_PI_EXTENSION
-
-
-def test_pi_extension_rekicks_polling_after_compaction_callbacks():
-    from orchlink.connector.pi_extension import ORCHLINK_PI_EXTENSION
-
-    assert "const customInstructions = phaseCompactionInstructions(note);" in ORCHLINK_PI_EXTENSION
-    assert "customInstructions," in ORCHLINK_PI_EXTENSION
-    assert "ORCHLINK_COMPACTION_WATCHDOG_MS" in ORCHLINK_PI_EXTENSION
-    assert "Orchlink phase compaction did not report completion; polling resumed." in ORCHLINK_PI_EXTENSION
-    assert """onComplete: () => {
-            ctx.ui.notify("Orchlink auto phase compaction completed.", "info");
-            finishCompaction();
-          }""" in ORCHLINK_PI_EXTENSION
-    assert """onError: (error: any) => {
-            ctx.ui.notify(`Orchlink phase compaction failed: ${error?.message || error}`, "error");
-            finishCompaction();
-          }""" in ORCHLINK_PI_EXTENSION
-    assert """pi.on("session_compact", async (_event: any, ctx: any) => {
-    phaseCompactionRequested = false;
-    phaseCompactionCustomInstructions = "";
-    clearRecoveryTimer();
-    const resumeSteer = postCompactionResumeSteer;
-    postCompactionResumeSteer = "";
-    if (role === "lead" && resumeSteer) {
-      sendLeadResumeSteer(resumeSteer, ctx);
-    }
-    if (["lead", "work"].includes(role)) {
-      ctx.ui.notify(`Orchlink ${role} polling resumed after compaction.`, "info");
-      schedule(0);
-    }
-  });""" in ORCHLINK_PI_EXTENSION
+    for needle in (
+        'pi.on("session_before_compact"',
+        'pi.on("session_compact"',
+        "ctx.compact",
+        "ORCHLINK_AUTO_COMPACT_PHASES",
+        "ORCHLINK_COMPACTION_WATCHDOG_MS",
+        "orchlinkCompactionSummary",
+        "orchlinkPostCompactionResumeSteer",
+        "phaseCompactionInstructions",
+        "postCompactionResumeSteer",
+    ):
+        assert needle not in ORCHLINK_PI_EXTENSION
 
 
 def test_pi_extension_keeps_current_task_during_recoverable_transport_error():

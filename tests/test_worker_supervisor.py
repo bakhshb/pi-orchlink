@@ -43,12 +43,14 @@ def test_worker_supervisor_launches_pi_rpc_child_and_writes_status(monkeypatch, 
     monkeypatch.setattr(supervisor, "PiConnector", FakePiConnector)
     monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
 
-    result = supervisor.run_supervisor(tmp_path)
+    result = supervisor.run_supervisor(tmp_path, model="openai/codex-max", thinking="xhigh")
 
     status = (tmp_path / ".orch" / "run" / "orch-work-status.json").read_text(encoding="utf-8")
     assert result == 0
     assert calls["acquire"][0][0] == "work"
     assert calls["acquire"][0][3]["backend"] == "rpc-supervisor"
+    assert calls["acquire"][0][3]["model"] == "openai/codex-max"
+    assert calls["acquire"][0][3]["thinking"] == "xhigh"
     assert calls["popen"][0][0] == ["pi", "--mode", "rpc", "--no-extensions", "--extension", "orchlink-pi-extension.ts"]
     assert calls["popen"][0][1]["cwd"] == tmp_path
     assert calls["popen"][0][1]["stdin"] is supervisor.subprocess.PIPE
@@ -56,4 +58,6 @@ def test_worker_supervisor_launches_pi_rpc_child_and_writes_status(monkeypatch, 
     assert calls["popen"][0][1]["env"]["ORCHLINK_SESSION_LEASE_ID"] == "lease-worker"
     assert calls["release"] == [("lease-worker", "Background worker supervisor exited.")]
     assert '"status": "exited"' in status
+    assert '"model": "openai/codex-max"' in status
+    assert '"thinking": "xhigh"' in status
     assert '"pi_pid": 2468' in status

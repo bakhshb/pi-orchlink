@@ -148,6 +148,16 @@ orch stop --name bg-test
 
 `orch work --background --test` is the shortcut for that background test worker.
 
+Headless and visible workers can also be started with an explicit Pi model and default thinking level:
+
+```bash
+orch work --background --name review --model openai/codex-max --thinking xhigh
+```
+
+Before starting a model-pinned worker, Orchlink checks `pi --list-models <model>`. If the model is not registered or available, it stops before launching the worker and prints available models to choose from.
+
+Orchlink applies thinking per task automatically: review, planning, questioning, and Talk Mode default to `xhigh`; implementation work defaults to `medium`. Override one task with `orch ask --thinking <level>` or `orch send --thinking <level>`. `orch sessions` shows the worker model and reported thinking level when Pi reports them.
+
 Now talk to the lead Pi session. For example:
 
 ```text
@@ -460,9 +470,9 @@ Orchlink has one `orch` command, but the commands are meant for different audien
 | --- | --- |
 | `orch init` | Set up `.orch/` for the current project. |
 | `orch lead` | Start or reopen the visible lead Pi session. |
-| `orch work` | Start or reopen the visible worker named `work`; use `--name review` for another named worker or `--background --test` for isolated background smoke. |
+| `orch work` | Start or reopen the visible worker named `work`; use `--name review` for another named worker, `--background --test` for isolated background smoke, and `--model`/`--thinking` to pin worker runtime defaults. |
 | `orch doctor` | Check local setup, broker compatibility, Pi command, and generated skills. |
-| `orch sessions` | Show active lead and named worker Pi sessions, runtime/backend, ready state, and leases. Use `--name` or `--all` as needed. |
+| `orch sessions` | Show active lead and named worker Pi sessions, model, reported thinking, runtime/backend, ready state, and leases. Use `--name` or `--all` as needed. |
 | `orch jobs` | Main browser for recent work in the current project ID. Status is authoritative. |
 | `orch goal ...` | Run PRD/plan-driven Goal Mode from source → ACs/plan/coverage → verified work. |
 | `orch stop` | Stop this project's tracked default background worker; use `--name bg-test` for a named worker. |
@@ -475,11 +485,11 @@ You normally do not type these yourself. The lead agent uses them when it coordi
 
 | Command | What it means |
 | --- | --- |
-| `orch ask work --wait -t T001 -m "..."` | Ask a named worker and wait. Replace `work` with `review`, `test`, etc. when targeting another worker. |
-| `orch send work -t T002 -m "..."` | Send one named worker an independent task only when lead can work on another scope. Different names can run in parallel; one name stays single-flight. |
-| `orch talk work -m "..." -r 6` | Start a visible lead/work discussion for up to 6 lead↔worker rounds. Do not use Talk as automation glue. |
-| `orch say C001 -m "..."` | Continue a Talk Mode conversation. |
-| `orch close C001 -m "..."` | Close Talk Mode with a decision. |
+| `orch ask work --wait -t T001 -m "..."` | Ask a named worker and wait. Replace `work` with `review`, `test`, etc. when targeting another worker. Use `--edit` or `--message-file` for long prompts; add `--thinking xhigh` to override one task. |
+| `orch send work -t T002 -m "..."` | Send one named worker an independent task only when lead can work on another scope. Different names can run in parallel; one name stays single-flight. Use `--edit` or `--message-file` for long prompts; add `--thinking medium` to override one task. |
+| `orch talk work -m "..." -r 6` | Start a visible lead/work discussion for up to 6 lead↔worker rounds. Use `--edit` or `--message-file` for long messages. Do not use Talk as automation glue. |
+| `orch say C001 -m "..."` | Continue a Talk Mode conversation. Use `--edit` or `--message-file` for long messages. |
+| `orch close C001 -m "..."` | Close Talk Mode with a decision. Use `--edit` or `--message-file` for long messages. |
 | `orch wait T002` | Wait for that exact task result and print worker activity while waiting. This does not cancel the task if the wait times out. |
 | `orch get T002` | Read or reread a completed task result. Use `wait` or `get`, not both routinely. |
 | `orch idle` | Script/check idle state across workers; add `--name review` for one named worker. |
@@ -497,10 +507,12 @@ Useful `jobs` filters:
 | `orch jobs --json` | Print machine-readable jobs output. |
 | `orch jobs --name review` | Filter jobs for one named worker. |
 
-For big tasks, give work more time when sending the task:
+For big tasks, give work more time when sending the task. For long prompts, use the editor or a prompt file so shell quoting stays clean:
 
 ```bash
 orch send work -t T010 --timeout 7200 -m "Implement chunk 1 only."
+orch send work -t T011 --edit
+orch send work -t T012 --message-file .orch/prompts/chunk-2.md
 ```
 
 ### Debug/reference commands

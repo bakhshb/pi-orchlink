@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Annotated, Any
 
 import httpx
@@ -12,6 +13,7 @@ from rich.console import Console
 
 from orchlink.cli import main as _cli_main
 from orchlink.cli.commands._helpers import load_project_or_exit
+from orchlink.cli.message_input import resolve_message_option
 from orchlink.client import infer_task_mode
 
 
@@ -85,8 +87,16 @@ def register_ask(app: typer.Typer) -> None:
         ],
         message: Annotated[
             str,
-            typer.Option("--msg", "--message", "-m", help="Task prompt for the worker."),
-        ],
+            typer.Option("--msg", "--message", "-m", help="Task prompt for the worker. Use - to read from stdin."),
+        ] = "",
+        message_file: Annotated[
+            Path | None,
+            typer.Option("--message-file", "-F", help="Read the task prompt from a UTF-8 file. Use - for stdin."),
+        ] = None,
+        edit: Annotated[
+            bool,
+            typer.Option("--edit", "-e", help="Open VISUAL/EDITOR to write the task prompt."),
+        ] = False,
         timeout: Annotated[
             int,
             typer.Option("--timeout", help="Seconds to wait for the worker reply."),
@@ -98,11 +108,16 @@ def register_ask(app: typer.Typer) -> None:
                 help="Wait in this shell for the reply. Use orch send for async tasks.",
             ),
         ] = True,
+        thinking: Annotated[
+            str | None,
+            typer.Option("--thinking", help="Override worker thinking for this task: off, minimal, low, medium, high, xhigh."),
+        ] = None,
     ) -> None:
         from orchlink.cli.main import print_orch_exception  # late import
 
         config = load_project_or_exit()
         try:
+            message = resolve_message_option(message, message_file, edit, config, task_id, worker_id, "task")
             _cli_main.ensure_broker_running(config)
             response = _cli_main.project_ask_worker_sync(
                 config=config,
@@ -111,6 +126,7 @@ def register_ask(app: typer.Typer) -> None:
                 message=message,
                 timeout_seconds=timeout,
                 wait=wait,
+                thinking=thinking,
             )
         except (RuntimeError, httpx.HTTPError, ValueError) as exc:
             print_orch_exception(exc)
@@ -128,8 +144,16 @@ def register_ask(app: typer.Typer) -> None:
         ],
         message: Annotated[
             str,
-            typer.Option("--msg", "--message", "-m", help="Task prompt for the worker."),
-        ],
+            typer.Option("--msg", "--message", "-m", help="Task prompt for the worker. Use - to read from stdin."),
+        ] = "",
+        message_file: Annotated[
+            Path | None,
+            typer.Option("--message-file", "-F", help="Read the task prompt from a UTF-8 file. Use - for stdin."),
+        ] = None,
+        edit: Annotated[
+            bool,
+            typer.Option("--edit", "-e", help="Open VISUAL/EDITOR to write the task prompt."),
+        ] = False,
         timeout: Annotated[
             int,
             typer.Option("--timeout", help="Task timeout in seconds."),
@@ -141,8 +165,19 @@ def register_ask(app: typer.Typer) -> None:
                 help="Allow REVIEW through async send. Use only when review is not a gate.",
             ),
         ] = False,
+        thinking: Annotated[
+            str | None,
+            typer.Option("--thinking", help="Override worker thinking for this task: off, minimal, low, medium, high, xhigh."),
+        ] = None,
     ) -> None:
         from orchlink.cli.main import print_orch_exception  # late import
+
+        config = load_project_or_exit()
+        try:
+            message = resolve_message_option(message, message_file, edit, config, task_id, worker_id, "task")
+        except (RuntimeError, httpx.HTTPError, ValueError) as exc:
+            print_orch_exception(exc)
+            raise typer.Exit(1) from exc
 
         mode = infer_task_mode(message)
         if mode == "REVIEW" and not allow_async_review:
@@ -151,7 +186,6 @@ def register_ask(app: typer.Typer) -> None:
             console.print("[Orch] Or pass --allow-async-review only if lead will not act on the review result.")
             raise typer.Exit(1)
 
-        config = load_project_or_exit()
         try:
             _cli_main.ensure_broker_running(config)
             _cli_main.send_worker_sync(
@@ -160,6 +194,7 @@ def register_ask(app: typer.Typer) -> None:
                 task_id=task_id,
                 message=message,
                 timeout_seconds=timeout,
+                thinking=thinking,
             )
         except (RuntimeError, httpx.HTTPError, ValueError) as exc:
             print_orch_exception(exc)

@@ -6,6 +6,7 @@ package without pulling CLI/Typer dependencies into their import graph.
 """
 
 from orchlink.client.ask import (
+    THINKING_LEVELS,
     WorkerBridge,
     ask_worker,
     ask_worker_sync,
@@ -14,6 +15,7 @@ from orchlink.client.ask import (
     close_talk,
     close_talk_sync,
     infer_task_mode,
+    normalize_thinking_level,
     post_envelope,
     say_talk,
     say_talk_sync,
@@ -35,6 +37,7 @@ from orchlink.client.sync import (
 
 __all__ = [
     "BrokerClient",
+    "THINKING_LEVELS",
     "WorkerBridge",
     "ask_worker",
     "ask_worker_sync",
@@ -51,6 +54,7 @@ __all__ = [
     "fetch_status_sync",
     "format_event",
     "infer_task_mode",
+    "normalize_thinking_level",
     "post_envelope",
     "say_talk",
     "say_talk_sync",

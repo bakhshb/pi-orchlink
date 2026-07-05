@@ -6,7 +6,7 @@ store can import the same constants without changing protocol strings.
 
 from typing import Any
 
-from orchlink.core.models import JobEvent, JobEventType
+from orchlink.core.models import JobEvent
 from orchlink.core.states import (
     ACTIVE_ACTIVITY_STATUSES,
     ACTIVE_JOB_STATUSES,
@@ -55,18 +55,9 @@ JOB_KIND_TALK = "talk"
 TALK_MESSAGE_TYPES = {"CHAT_START", "CHAT_TURN", "CHAT_REPLY", "CHAT_CLOSE"}
 WORKER_BOUND_TYPES = {"TASK", "CHAT_START", "CHAT_TURN", "CHAT_CLOSE"}
 SESSION_ACTIVE_STATUS = "ACTIVE"
-TASK_STATUS_JOB_EVENTS: dict[str, JobEventType] = {
-    "PENDING": JobEventType.QUEUED,
-    "QUEUED": JobEventType.QUEUED,
-    "DELIVERED": JobEventType.DELIVERED,
-    "RUNNING": JobEventType.STARTED,
-    "IN_PROGRESS": JobEventType.STARTED,
-    "DONE": JobEventType.REPLIED,
-    "COMPLETED": JobEventType.REPLIED,
-    "FAILED": JobEventType.FAILED,
-    "TIMEOUT": JobEventType.TIMED_OUT,
-    "CANCELLED": JobEventType.CANCELLED,
-}
+# Re-exported from `orchlink.core.job_lifecycle` so there's a single source of
+# truth for the task-status -> JobEventType mapping.
+from orchlink.core.job_lifecycle import TASK_STATUS_JOB_EVENTS  # noqa: E402,F401
 
 
 def normalize_message_type(value: object) -> str:

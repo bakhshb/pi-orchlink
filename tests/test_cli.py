@@ -1,13 +1,40 @@
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from typer.testing import CliRunner
 
 from orchlink.cli import main as cli_main
+from orchlink.cli.commands import jobs as jobs_commands
+from orchlink.cli.commands import talk as talk_commands
+from orchlink.cli.message_input import MessageInput, strip_editor_comments
 from orchlink.project.config import load_project_config
 from orchlink.project.init import init_project, load_skill_template
 
 
 runner = CliRunner()
+
+
+def test_message_input_reads_inline_file_and_strips_editor_comments(tmp_path):
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("File prompt\n", encoding="utf-8")
+
+    assert MessageInput(text="Inline prompt").resolve(required=True) == "Inline prompt"
+    assert MessageInput(file=prompt).resolve(required=True) == "File prompt\n"
+    assert strip_editor_comments("# ignored\nBody\n  # also ignored\n") == "Body"
+
+
+@pytest.mark.parametrize(
+    "message_input",
+    [
+        MessageInput(text="inline", file=Path("prompt.md")),
+        MessageInput(text="inline", edit=True),
+        MessageInput(file=Path("prompt.md"), edit=True),
+    ],
+)
+def test_message_input_rejects_multiple_sources(message_input):
+    with pytest.raises(ValueError, match="Use only one"):
+        message_input.resolve(required=False)
 
 
 def test_project_ask_defaults_to_wait(monkeypatch, tmp_path):
@@ -19,6 +46,7 @@ def test_project_ask_defaults_to_wait(monkeypatch, tmp_path):
         assert kwargs["worker"] == "work"
         assert kwargs["task_id"] == "T001"
         assert kwargs["wait"] is True
+        assert kwargs["thinking"] is None
         return {"status": "completed", "reply": {"type": "PLAN"}}
 
     monkeypatch.setattr(cli_main, "project_ask_worker_sync", fake_project_ask_worker_sync)
@@ -28,6 +56,27 @@ def test_project_ask_defaults_to_wait(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert '"status": "completed"' in result.output
     assert "Async mode" not in result.output
+
+
+def test_project_ask_reads_message_from_stdin(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    def fake_project_ask_worker_sync(**kwargs):
+        assert kwargs["message"] == "Use `backticks` and $HOME literally.\n"
+        return {"status": "completed", "reply": {"type": "PLAN"}}
+
+    monkeypatch.setattr(cli_main, "project_ask_worker_sync", fake_project_ask_worker_sync)
+
+    result = runner.invoke(
+        cli_main.app,
+        ["ask", "work", "-t", "TSTDIN", "-m", "-"],
+        input="Use `backticks` and $HOME literally.\n",
+    )
+
+    assert result.exit_code == 0
+    assert '"status": "completed"' in result.output
 
 
 def test_project_ask_wait_option_blocks(monkeypatch, tmp_path):
@@ -56,16 +105,96 @@ def test_send_queues_async_task(monkeypatch, tmp_path):
         assert kwargs["worker"] == "work"
         assert kwargs["task_id"] == "T002"
         assert kwargs["message"] == "Inspect tests."
+        assert kwargs["thinking"] == "medium"
         return {"status": "queued", "message_id": "msg-2"}
 
     monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
 
-    result = runner.invoke(cli_main.app, ["send", "work", "-t", "T002", "-m", "Inspect tests."])
+    result = runner.invoke(cli_main.app, ["send", "work", "-t", "T002", "-m", "Inspect tests.", "--thinking", "medium"])
 
     assert result.exit_code == 0
     assert "Sent T002" in result.output
     assert "Async mode" in result.output
     assert "orch wait T002" in result.output
+
+
+def test_send_reads_message_from_stdin(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    def fake_send_worker_sync(**kwargs):
+        assert kwargs["message"] == "Add one test with `quotes` and $PATH unchanged.\n"
+        return {"status": "queued", "message_id": "msg-stdin"}
+
+    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
+
+    result = runner.invoke(
+        cli_main.app,
+        ["send", "work", "-t", "TSTDIN2", "-m", "-"],
+        input="Add one test with `quotes` and $PATH unchanged.\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Sent TSTDIN2" in result.output
+
+
+def test_send_reads_message_from_file(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("File prompt with `literal` $VARS.\n", encoding="utf-8")
+
+    def fake_send_worker_sync(**kwargs):
+        assert kwargs["message"] == "File prompt with `literal` $VARS.\n"
+        return {"status": "queued", "message_id": "msg-file"}
+
+    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
+
+    result = runner.invoke(cli_main.app, ["send", "work", "-t", "TFILE", "--message-file", str(prompt)])
+
+    assert result.exit_code == 0
+    assert "Sent TFILE" in result.output
+
+
+def test_message_source_options_are_mutually_exclusive(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    prompt = tmp_path / "prompt.md"
+    prompt.write_text("file prompt\n", encoding="utf-8")
+
+    result = runner.invoke(cli_main.app, ["ask", "work", "-t", "TCONFLICT", "-m", "inline", "-F", str(prompt)])
+
+    assert result.exit_code == 1
+    assert "Use only one of" in result.output
+
+
+def test_ask_edit_opens_editor_and_sends_body(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    editor = tmp_path / "fake_editor.py"
+    editor.write_text(
+        "import pathlib, sys\n"
+        "pathlib.Path(sys.argv[1]).write_text('# ignored scaffold\\nEdited prompt body.\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+    def fake_project_ask_worker_sync(**kwargs):
+        assert kwargs["message"] == "Edited prompt body."
+        return {"status": "completed", "reply": {"type": "PLAN"}}
+
+    monkeypatch.setattr(cli_main, "project_ask_worker_sync", fake_project_ask_worker_sync)
+
+    result = runner.invoke(
+        cli_main.app,
+        ["ask", "work", "-t", "TEDIT", "--edit"],
+        env={"VISUAL": f"python3 {editor}"},
+    )
+
+    assert result.exit_code == 0
+    assert '"status": "completed"' in result.output
 
 
 def test_send_rejects_review_gate_by_default(monkeypatch, tmp_path):
@@ -145,12 +274,34 @@ def test_say_rejects_empty_message():
     assert "Say message cannot be empty" in result.output
 
 
+def test_talk_reads_message_from_stdin(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "next_conversation_id", lambda config: "CSTDIN")
+
+    def fake_start_talk_sync(**kwargs):
+        assert kwargs["message"] == "Discuss `risk` with $VARS literal.\n"
+        return {"status": "queued", "conversation_id": "CSTDIN"}
+
+    monkeypatch.setattr(cli_main, "start_talk_sync", fake_start_talk_sync)
+
+    result = runner.invoke(
+        cli_main.app,
+        ["talk", "work", "-m", "-"],
+        input="Discuss `risk` with $VARS literal.\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Started conversation CSTDIN" in result.output
+
+
 def test_say_sends_chat_turn(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
     monkeypatch.setattr(
-        cli_main,
+        talk_commands,
         "conversation_state",
         lambda config, conversation_id: {"conversation_id": "C001", "status": "OPEN", "turn": 2, "max_turns": 6},
     )
@@ -170,12 +321,38 @@ def test_say_sends_chat_turn(monkeypatch, tmp_path):
     assert "discussion is not resolved" in result.output
 
 
+def test_say_reads_message_from_stdin(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(
+        talk_commands,
+        "conversation_state",
+        lambda config, conversation_id: {"conversation_id": "C001", "status": "OPEN", "turn": 1, "max_turns": 6},
+    )
+
+    def fake_say_talk_sync(**kwargs):
+        assert kwargs["message"] == "Answer with `literal` $HOME.\n"
+        return {"status": "queued"}
+
+    monkeypatch.setattr(cli_main, "say_talk_sync", fake_say_talk_sync)
+
+    result = runner.invoke(
+        cli_main.app,
+        ["say", "C001", "-m", "-"],
+        input="Answer with `literal` $HOME.\n",
+    )
+
+    assert result.exit_code == 0
+    assert "Sent turn 2/6" in result.output
+
+
 def test_close_sends_chat_close(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
     monkeypatch.setattr(
-        cli_main,
+        talk_commands,
         "conversation_state",
         lambda config, conversation_id: {"conversation_id": "C001", "status": "OPEN", "turn": 2, "max_turns": 6},
     )
@@ -188,6 +365,32 @@ def test_close_sends_chat_close(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_main, "close_talk_sync", fake_close_talk_sync)
 
     result = runner.invoke(cli_main.app, ["close", "C001", "-m", "Decision made."])
+
+    assert result.exit_code == 0
+    assert "Closed conversation C001" in result.output
+
+
+def test_close_reads_message_from_stdin(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(
+        talk_commands,
+        "conversation_state",
+        lambda config, conversation_id: {"conversation_id": "C001", "status": "OPEN", "turn": 2, "max_turns": 6},
+    )
+
+    def fake_close_talk_sync(**kwargs):
+        assert kwargs["message"] == "Decision: keep `$literal`.\n"
+        return {"status": "queued"}
+
+    monkeypatch.setattr(cli_main, "close_talk_sync", fake_close_talk_sync)
+
+    result = runner.invoke(
+        cli_main.app,
+        ["close", "C001", "-m", "-"],
+        input="Decision: keep `$literal`.\n",
+    )
 
     assert result.exit_code == 0
     assert "Closed conversation C001" in result.output
@@ -218,6 +421,11 @@ def test_get_conversation_id_prints_conversation_guidance(monkeypatch, tmp_path)
         raise AssertionError(path)
 
     monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(
+        jobs_commands,
+        "conversation_state",
+        lambda config, conversation_id: fake_broker_get_sync(config, "/v1/jobs")["jobs"][0],
+    )
     monkeypatch.setattr(
         cli_main,
         "fetch_events_sync",
@@ -1270,11 +1478,15 @@ def test_stop_all_stops_worker_and_broker(monkeypatch, tmp_path):
 
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
+    (tmp_path / ".orch" / "run" / "orch-work.pid").write_text("1111", encoding="utf-8")
+    named_dir = tmp_path / ".orch" / "run" / "workers" / "review"
+    named_dir.mkdir(parents=True)
+    (named_dir / "orch-work.pid").write_text("2222", encoding="utf-8")
     calls = []
 
     def fake_stop_pid_file(path, label):
         calls.append((path, label))
-        return label == "worker 'work'"
+        return label in {"worker 'work'", "worker 'review'"}
 
     monkeypatch.setattr(lead_command, "stop_pid_file", fake_stop_pid_file)
     monkeypatch.setattr(lead_command, "active_work_sessions", lambda config, worker_name=None: [])
@@ -1284,6 +1496,7 @@ def test_stop_all_stops_worker_and_broker(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert calls == [
         (tmp_path / ".orch" / "run" / "orch-work.pid", "worker 'work'"),
+        (tmp_path / ".orch" / "run" / "workers" / "review" / "orch-work.pid", "worker 'review'"),
         (tmp_path / ".orch" / "run" / "broker.pid", "broker"),
     ]
 
@@ -1331,6 +1544,9 @@ def test_work_background_starts_rpc_supervisor_and_waits_for_readiness(monkeypat
         def check_available(self):
             return True
 
+        def resolved_pi_command(self):
+            return "pi"
+
     class FakeProcess:
         pid = 4321
 
@@ -1358,17 +1574,82 @@ def test_work_background_starts_rpc_supervisor_and_waits_for_readiness(monkeypat
     monkeypatch.setattr(cli_main, "register_project_role_sync", lambda config, role: calls["registered"].append(role))
     monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
     monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(lead_command, "pi_list_models", lambda command, search=None: "provider model\nopenai-codex gpt-5.4")
     monkeypatch.setattr(lead_command.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(lead_command.time, "sleep", lambda seconds: None)
 
-    result = runner.invoke(cli_main.app, ["work", "--background", "--timeout", "1"])
+    result = runner.invoke(
+        cli_main.app,
+        ["work", "--background", "--timeout", "1", "--model", "openai/codex-max", "--thinking", "xhigh"],
+    )
 
     assert result.exit_code == 0
     assert "Headless worker ready: work" in result.output
     assert (tmp_path / ".orch" / "run" / "orch-work.pid").read_text(encoding="utf-8") == "4321"
     assert calls["registered"] == []
     assert calls["popen"][0][0][:3] == [lead_command.sys.executable, "-m", "orchlink.worker.supervisor"]
+    assert calls["popen"][0][0][calls["popen"][0][0].index("--model") + 1] == "openai/codex-max"
+    assert calls["popen"][0][0][calls["popen"][0][0].index("--thinking") + 1] == "xhigh"
     assert calls["popen"][0][1]["cwd"] == tmp_path
+
+
+def test_model_lookup_pattern_strips_only_thinking_suffixes():
+    from orchlink.cli.commands import lead as lead_command
+
+    assert lead_command.model_lookup_pattern("sonnet:high") == "sonnet"
+    assert lead_command.model_lookup_pattern("sonnet:HIGH") == "sonnet"
+    assert lead_command.model_lookup_pattern("ollama/gpt-oss:20b") == "ollama/gpt-oss:20b"
+    assert lead_command.model_lookup_pattern(":high") == ":high"
+
+
+def test_pi_list_models_nonzero_exit_is_not_treated_as_match(monkeypatch):
+    from orchlink.cli.commands import lead as lead_command
+    from orchlink.connector.pi_connector import PiConnectorError
+
+    def fake_run(*args, **kwargs):
+        return SimpleNamespace(returncode=2, stdout="unknown option: --list-models")
+
+    monkeypatch.setattr(lead_command.subprocess, "run", fake_run)
+
+    with pytest.raises(PiConnectorError, match="pi --list-models"):
+        lead_command.pi_list_models("pi", "sonnet")
+
+
+def test_work_model_guard_lists_available_models_before_start(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+        def resolved_pi_command(self):
+            return "pi"
+
+    def fake_pi_list_models(command, search=None):
+        if search:
+            return f'No models matching "{search}"\n'
+        return "provider      model\nminimax       MiniMax-M3\nopenai-codex  gpt-5.4\n"
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(lead_command, "pi_list_models", fake_pi_list_models)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not start")))
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--model", "sonnet"])
+    visible_result = runner.invoke(cli_main.app, ["work", "--model", "sonnet"])
+
+    assert result.exit_code == 1
+    assert visible_result.exit_code == 1
+    assert "Pi model is not registered or available: sonnet" in result.output
+    assert "Pi model is not registered or available: sonnet" in visible_result.output
+    assert "MiniMax-M3" in result.output
+    assert "gpt-5.4" in result.output
 
 
 def test_work_background_named_timeout_suggests_named_visible_fallback(monkeypatch, tmp_path):
@@ -1668,6 +1949,8 @@ def test_sessions_output_shows_worker_name_runtime_and_ready(monkeypatch, tmp_pa
                     "role": "work",
                     "runtime_mode": "rpc",
                     "backend": "rpc-supervisor",
+                    "model": "openai/codex-max",
+                    "thinking": "xhigh",
                     "status": "ACTIVE",
                     "pid": 123,
                     "session_id": "review-session",
@@ -1682,7 +1965,11 @@ def test_sessions_output_shows_worker_name_runtime_and_ready(monkeypatch, tmp_pa
 
     assert result.exit_code == 0
     assert "NAME" in result.output
+    assert "MODEL" in result.output
+    assert "THINKING" in result.output
     assert "review" in result.output
+    assert "openai/codex-max" in result.output
+    assert "xhigh" in result.output
     assert "rpc-supervisor" in result.output
     assert "True" in result.output
 
@@ -1710,3 +1997,32 @@ def test_jobs_active_name_filter_shows_worker_column(monkeypatch, tmp_path):
     assert "R001" in result.output
     assert "review" in result.output
     assert "W001" not in result.output
+
+
+# --- G004 AC-4: CLI-side wire parity for `send` and `wait` returning a dict ---
+
+
+def test_stored_message_wire_shape_cli_send_keeps_dict_return(monkeypatch, tmp_path):
+    """AC-4: the `orch send` CLI surface preserves the wire dict returned by
+    the broker. This pins the shape that callers depend on.
+    """
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    captured: dict[str, object] = {}
+
+    def fake_send_worker_sync(**kwargs):
+        captured["kwargs"] = kwargs
+        # Mirror the broker's `{status, message_id}` dict shape.
+        return {"status": "queued", "message_id": "msg-cli-ac4"}
+
+    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
+
+    result = runner.invoke(cli_main.app, ["send", "work", "-t", "T-CLI-AC4", "-m", "Wire-shape probe."])
+    assert result.exit_code == 0
+
+    # The CLI received the public wire-dict shape from the broker boundary.
+    assert isinstance(captured.get("kwargs"), dict)
+    # The handler invoked the underlying broker send with a dict-shaped message.
+    assert isinstance(captured["kwargs"].get("message"), str)

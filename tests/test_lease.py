@@ -1,7 +1,7 @@
 """M3 job lease + epoch reliability tests.
 
 Covers: lease acquired on dispatch, heartbeat renewal only for current
-holder+epoch, stale heartbeat -> 409, stale reply -> 409 (backward-compatible
+holder+epoch, stale heartbeat -> 409, stale reply -> 409 (lease-optional
 when lease headers absent), reclaim after expiry with epoch increment, reclaim
 idempotency, reclaim rejection when not expired by a different holder, and
 terminal transition clearing the lease.
@@ -99,7 +99,7 @@ def _expire_lease(client: ASGITestClient, task_id: str = "T001", project_id: str
     key = f"{project_id}:{task_id}"
     job = client.store._state.task_jobs[key]
     past = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
-    client.store._state.task_jobs[key] = replace(job, lease={**job.lease, "expires_at": past})
+    client.store._state.task_jobs[key] = replace(job, lease=replace(job.lease, expires_at=past))
 
 
 def test_lease_acquired_on_dispatch_with_epoch_one():
@@ -108,9 +108,9 @@ def test_lease_acquired_on_dispatch_with_epoch_one():
 
     job = _job(client)
     assert job.lease is not None
-    assert job.lease["holder"] == "test.work"
-    assert job.lease["epoch"] == 1
-    assert job.lease["heartbeat_ms"] >= 1000
+    assert job.lease.holder == "test.work"
+    assert job.lease.epoch == 1
+    assert job.lease.heartbeat_ms >= 1000
     # The delivered message carries the lease so the worker can learn its epoch.
     assert delivered["lease"]["epoch"] == 1
     assert delivered["lease"]["holder"] == "test.work"
@@ -119,7 +119,7 @@ def test_lease_acquired_on_dispatch_with_epoch_one():
 def test_heartbeat_renews_for_current_holder_and_epoch():
     client = ASGITestClient()
     _deliver(client)
-    before = _job(client).lease["expires_at"]
+    before = _job(client).lease.expires_at
 
     response = client.post(
         "/v1/jobs/T001/heartbeat",
@@ -144,7 +144,7 @@ def test_stale_heartbeat_with_wrong_epoch_is_409():
     )
     assert response.status_code == 409
     # No state change: epoch unchanged.
-    assert _job(client).lease["epoch"] == 1
+    assert _job(client).lease.epoch == 1
 
 
 def test_stale_heartbeat_with_wrong_holder_is_409():
@@ -212,7 +212,7 @@ def test_reply_with_invalid_lease_epoch_header_is_400():
     assert _job(client).status == "DELIVERED"
 
 
-def test_reply_without_lease_headers_is_backward_compatible():
+def test_reply_without_lease_headers_is_allowed_for_unleased_clients():
     client = ASGITestClient()
     message = _task_message()
     _deliver(client)
@@ -232,7 +232,7 @@ def test_reply_without_lease_headers_is_backward_compatible():
 def test_reclaim_after_expiry_increments_epoch_and_reassigns_holder():
     client = ASGITestClient()
     _deliver(client)
-    assert _job(client).lease["epoch"] == 1
+    assert _job(client).lease.epoch == 1
 
     _expire_lease(client)
     response = client.post(
@@ -266,7 +266,7 @@ def test_reclaim_after_expiry_increments_epoch_and_reassigns_holder():
 def test_reclaim_is_idempotent_for_same_holder_when_not_expired():
     client = ASGITestClient()
     _deliver(client)
-    before = _job(client).lease["epoch"]
+    before = _job(client).lease.epoch
 
     response = client.post(
         "/v1/jobs/T001/reclaim",
@@ -289,7 +289,7 @@ def test_reclaim_rejects_different_holder_when_not_expired():
         json={"holder": "someone-else", "project_id": "test"},
     )
     assert response.status_code == 409
-    assert _job(client).lease["epoch"] == 1
+    assert _job(client).lease.epoch == 1
 
 
 def test_reclaim_unknown_job_is_404():

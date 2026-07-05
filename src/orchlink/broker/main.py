@@ -16,9 +16,20 @@ from orchlink.broker.checkpoint import (
     reconcile_checkpoint,
     record_lease,
 )
+from orchlink.broker.dto import (
+    ActivityBody,
+    CancelWorkBody,
+    JobHeartbeatBody,
+    JobReclaimBody,
+    JournalAppendBody,
+    MessageStatusBody,
+    SessionAcquireBody,
+    SessionHeartbeatBody,
+    SessionReleaseBody,
+)
 from orchlink.broker.journal import Journal
-from orchlink.broker.protocol import AgentRegistration, MessageEnvelope, envelope_to_dict
-from orchlink.core.envelope import ENVELOPE_VERSION, ENVELOPE_VERSION_HEADER
+from orchlink.core.envelope import ENVELOPE_VERSION, ENVELOPE_VERSION_HEADER, AgentRegistration, MessageEnvelope
+from orchlink.core.models import BrokerEvent
 from orchlink.broker.settings import Settings, get_settings
 from orchlink.version import get_version
 from orchlink.broker.storage import JsonlMessageStore, MemoryMessageStore, MessageStore, MessageStoreBusy
@@ -105,7 +116,7 @@ def _current_job_leases(store: MessageStore) -> dict[str, tuple[int, str]]:
         lease = getattr(job, "lease", None)
         task_id = getattr(job, "id", None)
         if lease and task_id:
-            current[str(task_id)] = (int(lease.get("epoch") or 0), str(lease.get("holder") or ""))
+            current[str(task_id)] = (int(lease.epoch), str(lease.holder))
     return current
 
 
@@ -117,20 +128,23 @@ def _emit_checkpoint_drifts(store: MessageStore, drifts: list[DriftedLease]) -> 
         return
     next_event_id = int(getattr(state, "next_event_id", 1) or 1)
     for drift in drifts:
+        preview = (
+            f"lease drift {drift.task_id}: {drift.reason} "
+            f"previous_epoch={drift.previous_epoch} current_epoch={drift.current_epoch}"
+        )
         events.append(
-            {
-                "id": next_event_id,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "type": "lease_expired_during_downtime",
-                "task_id": drift.task_id,
-                "message_type": "LEASE",
-                "status": "DRIFTED",
-                "payload": drift.to_dict(),
-                "preview": (
-                    f"lease drift {drift.task_id}: {drift.reason} "
-                    f"previous_epoch={drift.previous_epoch} current_epoch={drift.current_epoch}"
-                ),
-            }
+            BrokerEvent(
+                id=next_event_id,
+                time=datetime.now(timezone.utc).isoformat(),
+                type="lease_expired_during_downtime",
+                preview=preview,
+                fields={
+                    "task_id": drift.task_id,
+                    "message_type": "LEASE",
+                    "status": "DRIFTED",
+                    "payload": drift.to_dict(),
+                },
+            )
         )
         next_event_id += 1
     state.next_event_id = next_event_id
@@ -235,16 +249,16 @@ def create_app(
         agent: AgentRegistration,
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, str]:
-        stored_agent = await message_store.register_agent(agent.model_dump(mode="json"))
+        stored_agent = await message_store.register_agent(agent)
         return {"status": "registered", "agent_id": stored_agent["agent_id"]}
 
     @secure_router.post("/sessions/acquire")
     async def acquire_session(
-        body: dict[str, Any] = Body(default_factory=dict),
+        body: SessionAcquireBody = Body(default_factory=SessionAcquireBody),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
         try:
-            return {"status": "active", "session": await message_store.acquire_session(body)}
+            return {"status": "active", "session": await message_store.acquire_session(body.to_command())}
         except LeaseConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -252,14 +266,18 @@ def create_app(
     async def heartbeat_session(
         lease_id: str,
         request: Request,
-        body: dict[str, Any] = Body(default_factory=dict),
+        body: SessionHeartbeatBody = Body(default_factory=SessionHeartbeatBody),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
         try:
-            project_id = request_project_id(request, str(body.get("project_id") or "") or None)
+            project_id = request_project_id(request, str(body.project_id or "") or None)
             return {
                 "status": "ok",
-                "session": await message_store.heartbeat_session(lease_id, project_id=project_id, heartbeat=body),
+                "session": await message_store.heartbeat_session(
+                    lease_id,
+                    project_id=project_id,
+                    heartbeat=body.to_command(lease_id, project_id=project_id),
+                ),
             }
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -268,12 +286,13 @@ def create_app(
     async def release_session(
         lease_id: str,
         request: Request,
-        body: dict[str, Any] = Body(default_factory=dict),
+        body: SessionReleaseBody = Body(default_factory=SessionReleaseBody),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
         try:
-            project_id = request_project_id(request, str(body.get("project_id") or "") or None)
-            session = await message_store.release_session(lease_id, str(body.get("reason") or ""), project_id=project_id)
+            project_id = request_project_id(request, str(body.project_id or "") or None)
+            command = body.to_command(lease_id, project_id=project_id)
+            session = await message_store.release_session(command.lease_id, command.reason, project_id=command.project_id)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         await maybe_schedule_auto_stop()
@@ -295,7 +314,7 @@ def create_app(
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, str]:
         try:
-            return await message_store.enqueue_message(envelope_to_dict(message))
+            return await message_store.enqueue_message(message)
         except MessageStoreBusy as exc:
             raise HTTPException(status_code=409, detail=exc.detail) from exc
         except ValueError as exc:
@@ -307,7 +326,7 @@ def create_app(
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
         try:
-            await message_store.enqueue_message(envelope_to_dict(message), create_waiter=True)
+            await message_store.enqueue_message(message, create_waiter=True)
         except MessageStoreBusy as exc:
             raise HTTPException(status_code=409, detail=exc.detail) from exc
         except ValueError as exc:
@@ -348,8 +367,7 @@ def create_app(
         reply: MessageEnvelope,
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, str]:
-        # M3: enforce holder/epoch when the caller asserts a lease. Backward
-        # compatible -- current Pi replies omit these headers and are accepted.
+        # Enforce holder/epoch only when the caller asserts a job lease.
         lease_epoch_header = request.headers.get("x-orchlink-lease-epoch")
         lease_holder = request.headers.get("x-orchlink-lease-holder")
         session_lease_id = request.headers.get("x-orchlink-session-lease-id")
@@ -357,18 +375,17 @@ def create_app(
             lease_epoch = int(lease_epoch_header) if lease_epoch_header is not None else None
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="x-orchlink-lease-epoch must be an integer") from exc
-        reply_dict = envelope_to_dict(reply)
         try:
             result = await message_store.save_reply(
                 message_id,
-                reply_dict,
+                reply,
                 lease_epoch=lease_epoch,
                 lease_holder=lease_holder,
                 session_lease_id=session_lease_id,
             )
         except LeaseConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        task_id = reply_dict.get("task_id")
+        task_id = reply.task_id
         if task_id and str(result.get("status") or "") == "reply_received":
             _record_recently_settled(settings_obj, str(task_id), lease_epoch, lease_holder)
         return result
@@ -376,17 +393,17 @@ def create_app(
     @secure_router.post("/messages/{message_id}/status")
     async def update_message_status(
         message_id: str,
-        body: dict[str, Any] = Body(default_factory=dict),
+        body: MessageStatusBody = Body(default_factory=MessageStatusBody),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
-        status = str(body.get("status") or "").upper()
+        status = str(body.status or "").upper()
         if status not in {"RUNNING", "IN_PROGRESS"}:
             raise HTTPException(status_code=400, detail="Only RUNNING or IN_PROGRESS status updates are allowed.")
         try:
             return await message_store.update_message_status(
                 message_id,
                 status,
-                session_lease_id=str(body.get("session_lease_id") or "") or None,
+                session_lease_id=str(body.session_lease_id or "") or None,
             )
         except LeaseConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -397,14 +414,14 @@ def create_app(
     async def cancel_work(
         item_id: str,
         request: Request,
-        body: dict[str, Any] = Body(default_factory=dict),
+        body: CancelWorkBody = Body(default_factory=CancelWorkBody),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
         try:
-            project_id = request_project_id(request, str(body.get("project_id") or "") or None)
+            project_id = request_project_id(request, str(body.project_id or "") or None)
             result = await message_store.cancel_work(
                 item_id,
-                str(body.get("reason") or ""),
+                str(body.reason or ""),
                 project_id=project_id,
             )
         except ValueError as exc:
@@ -418,18 +435,18 @@ def create_app(
     async def heartbeat_job(
         item_id: str,
         request: Request,
-        body: dict[str, Any] = Body(default_factory=dict),
+        body: JobHeartbeatBody = Body(default_factory=JobHeartbeatBody),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
-        project_id = request_project_id(request, str(body.get("project_id") or "") or None)
-        holder = str(body.get("holder") or "")
+        project_id = request_project_id(request, str(body.project_id or "") or None)
+        holder = str(body.holder or "")
         try:
-            epoch = int(body.get("epoch") or 0)
+            epoch = int(body.epoch or 0)
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="epoch must be an integer") from exc
         try:
             result = await message_store.heartbeat_job(
-                item_id, holder, epoch, project_id=project_id, heartbeat_ms=body.get("heartbeat_ms")
+                item_id, holder, epoch, project_id=project_id, heartbeat_ms=body.heartbeat_ms
             )
         except LeaseConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -442,11 +459,11 @@ def create_app(
     async def reclaim_job(
         item_id: str,
         request: Request,
-        body: dict[str, Any] = Body(default_factory=dict),
+        body: JobReclaimBody = Body(default_factory=JobReclaimBody),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
-        project_id = request_project_id(request, str(body.get("project_id") or "") or None)
-        holder = str(body.get("holder") or "")
+        project_id = request_project_id(request, str(body.project_id or "") or None)
+        holder = str(body.holder or "")
         try:
             result = await message_store.reclaim_job(item_id, holder, project_id=project_id)
         except LeaseConflictError as exc:
@@ -463,7 +480,7 @@ def create_app(
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, str]:
         try:
-            result = await message_store.close_conversation(conversation_id, envelope_to_dict(message))
+            result = await message_store.close_conversation(conversation_id, message)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return result
@@ -482,11 +499,11 @@ def create_app(
 
     @secure_router.post("/activity")
     async def record_activity(
-        body: dict[str, Any] = Body(default_factory=dict),
+        body: ActivityBody = Body(default_factory=ActivityBody),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
         try:
-            return await message_store.record_activity(body)
+            return await message_store.record_activity(body.to_command())
         except LeaseConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -619,7 +636,7 @@ def create_app(
     @secure_router.post("/journal")
     async def post_journal(
         request: Request,
-        body: dict[str, Any] = Body(default_factory=dict),
+        body: JournalAppendBody = Body(default_factory=JournalAppendBody),
         message_store: MessageStore = Depends(get_store),
     ) -> dict[str, Any]:
         """Append an external transition entry (e.g. a Goal Mode transition).
@@ -631,19 +648,20 @@ def create_app(
         journal = getattr(message_store, "journal", None)
         if journal is None:
             return {"status": "ignored", "seq": None}
-        action = str(body.get("action") or "").strip()
+        body_data = body.to_store_dict()
+        action = str(body.action or "").strip()
         if not action:
             raise HTTPException(status_code=400, detail="Journal action is required.")
-        project_id = request_project_id(request, str(body.get("project_id") or "") or None)
+        project_id = request_project_id(request, str(body.project_id or "") or None)
         entry = journal.append(
-            project_id=str(project_id or body.get("project_id") or "default"),
-            actor=body.get("actor"),
+            project_id=str(project_id or body.project_id or "default"),
+            actor=body.actor,
             action=action,
-            target_type=body.get("target_type"),
-            target_id=body.get("target_id"),
-            before=body.get("before"),
-            after=body.get("after"),
-            meta=body.get("meta") or {},
+            target_type=body.target_type,
+            target_id=body.target_id,
+            before=body.before,
+            after=body.after,
+            meta=body_data.get("meta") or {},
         )
         return {"status": "recorded", "seq": entry.seq}
 

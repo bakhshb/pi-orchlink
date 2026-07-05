@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orchlink"
-version = "0.5.2"
+version = "0.5.3"
 description = "Loop engineering for local Pi agents: set a goal and work until acceptance criteria prove it is done."
 readme = "README.md"
 requires-python = ">=3.11"

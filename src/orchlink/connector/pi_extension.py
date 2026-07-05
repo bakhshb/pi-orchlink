@@ -2,12 +2,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from orchlink.connector.pi_extension_pure import (
-    RECONCILIATION_PATTERN,
-    RECONCILIATION_PLACEHOLDER,
-    RECOVERABLE_ERROR_PATTERN,
-    RECOVERABLE_ERROR_PLACEHOLDER,
-)
+from orchlink.connector.pi_extension_pure import interpolation_replacements
 from orchlink.core.prompt_policy import TaskPromptPolicy
 from orchlink.project.config import run_dir
 
@@ -15,7 +10,7 @@ from orchlink.project.config import run_dir
 _TASK_PROMPT_POLICY = TaskPromptPolicy()
 
 
-ORCHLINK_PI_EXTENSION = r'''
+_EXTENSION_TEMPLATE = r'''
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type OrchMessage = Record<string, any>;
@@ -23,11 +18,18 @@ type OrchMessage = Record<string, any>;
 const ORCHLINK_WORKER_TASK_GUIDANCE = __ORCHLINK_WORKER_TASK_GUIDANCE__;
 
 // Pure detection rules (single source: orchlink.connector.pi_extension_pure).
-const RECONCILIATION_REGEX = new RegExp(__ORCH_RECONCILIATION_PATTERN__, "i");
 const RECOVERABLE_ERROR_REGEX = new RegExp(__ORCH_RECOVERABLE_ERROR_PATTERN__, "i");
 
 function env(name: string, fallback = ""): string {
   return process.env[name] || fallback;
+}
+
+const THINKING_LEVELS = new Set(__ORCH_THINKING_LEVELS__);
+const MODE_THINKING_DEFAULTS: Record<string, string> = __ORCH_MODE_THINKING_DEFAULTS__;
+
+function normalizeThinking(value: any): string {
+  const text = String(value || "").trim().toLowerCase();
+  return THINKING_LEVELS.has(text) ? text : "";
 }
 
 function asList(value: any): string[] {
@@ -244,84 +246,6 @@ function summarizeToolInput(toolName: string, input: any): string {
   return truncate(JSON.stringify(input), 220);
 }
 
-function phaseCompactionInstructions(note: string): string {
-  const phaseNote = note.trim() || "Pi compaction requested.";
-  return `This is an Orchlink-aware compaction. Compact old context while preserving the state needed for the next phase.
-
-Preserve:
-- completed phase summary
-- review verdict
-- files changed
-- tests run
-- current task ID
-- current goal ID, if any
-- scope guardrails and forbidden paths
-- unresolved blockers
-- next exact step
-- pointers to durable .orch/ state files
-- cumulative readFiles and modifiedFiles
-
-Phase note:
-${phaseNote}`;
-}
-
-function normalizeCompactionInstructions(value: string): string {
-  const text = String(value || "").trim();
-  if (text.includes("Orchlink-aware compaction") || text.includes("Orchlink phase boundary")) return text;
-  return phaseCompactionInstructions(text || "Pi compaction requested.");
-}
-
-function orchlinkCompactionSummary(instructions: string, role: string, projectId: string, currentTask: OrchMessage | undefined): string {
-  const taskId = currentTask?.task_id || "none";
-  const conversationId = currentTask?.conversation_id || "none";
-  return `## Orchlink state
-
-## Goal
-Continue the current Orchlink project with compact context and reload details from durable state instead of old chat.
-
-## Critical Context
-- Project ID: ${projectId}
-- Role: ${role || "unknown"}
-- Current task ID: ${taskId}
-- Current conversation ID: ${conversationId}
-- Durable state roots: .orch/goals/, .orch/run/, .orch/project.yaml
-- Preserve task/goal scope guardrails and forbidden paths from the latest Orchlink task prompt.
-
-## Phase compaction instructions
-${instructions}
-
-## Next Steps
-1. Reload relevant .orch goal artifacts before making claims about goal status.
-2. Continue only from verified task results, checks, and goal state files.
-3. If scope or blocker details are unclear, ask one specific unblock question.`;
-}
-
-function orchlinkPostCompactionResumeSteer(summary: string): string {
-  return `[Orchlink] Compaction complete. Resume from this state:\n\n${summary}\n\nAction: reload durable state before continuing. Start with \`orch resume\`; use \`orch goal show <id>\` when a goal is active.`;
-}
-
-function autoReviewCompactionEnabled(): boolean {
-  const value = env("ORCHLINK_AUTO_COMPACT_PHASES", "off").toLowerCase().trim();
-  return ["1", "true", "yes", "review", "reviews", "phase", "phases"].includes(value);
-}
-
-function isReviewResult(message: OrchMessage): boolean {
-  const payload = message.payload || {};
-  return String(payload.mode || "").toUpperCase() === "REVIEW" && !isChatRequest(message);
-}
-
-function looksLikeReviewReconciliation(output: string): boolean {
-  const text = String(output || "").trim();
-  if (!text) return false;
-  return RECONCILIATION_REGEX.test(text);
-}
-
-function autoCompactionNote(review: OrchMessage, output: string): string {
-  const taskId = review.task_id || "review";
-  const firstLine = String(output || "").split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0) || "Review reconciled.";
-  return truncate(`Auto review phase compacted after ${taskId}. ${firstLine}`, 600);
-}
-
 function hasActiveStatus(value: any): boolean {
   return ["PENDING", "QUEUED", "DELIVERED", "RUNNING", "IN_PROGRESS", "OPEN"].includes(String(value || "").toUpperCase());
 }
@@ -345,6 +269,8 @@ export default function (pi: ExtensionAPI) {
   const sessionLeaseId = env("ORCHLINK_SESSION_LEASE_ID");
   const runtimeMode = env("ORCHLINK_RUNTIME_MODE");
   const backgroundBackend = env("ORCHLINK_BACKGROUND_BACKEND");
+  const workerModel = env("ORCHLINK_WORKER_MODEL").trim();
+  const workerThinking = normalizeThinking(env("ORCHLINK_WORKER_THINKING"));
   const supervisorPid = Number(env("ORCHLINK_SUPERVISOR_PID", "0")) || undefined;
   const readyHeartbeatMs = Math.max(1000, Number(env("ORCHLINK_READY_HEARTBEAT_MS", "5000")) || 5000);
   // M3 job lease: the worker captures the lease epoch at pickup and renews it
@@ -352,103 +278,8 @@ export default function (pi: ExtensionAPI) {
   let currentLeaseEpoch: number = 0;
   let leaseLost = false;
   let workerCtx: any;
-  let phaseCompactionRequested = false;
-  let phaseCompactionCustomInstructions = "";
-  let postCompactionResumeSteer = "";
-  let pendingReviewCompaction: OrchMessage | undefined;
   const recoveryGraceMs = Math.max(1000, Number(env("ORCHLINK_RECOVERABLE_ERROR_GRACE_MS", "180000")) || 180000);
   const activityHeartbeatMs = Math.max(5000, Number(env("ORCHLINK_ACTIVITY_HEARTBEAT_MS", "15000")) || 15000);
-
-  function sendLeadResumeSteer(resumeSteer: string, ctx: any) {
-    if (typeof ctx?.isIdle === "function" && ctx.isIdle()) {
-      pi.sendUserMessage(resumeSteer);
-      return;
-    }
-    pi.sendUserMessage(resumeSteer, { deliverAs: "steer" });
-  }
-
-  function requestAutoPhaseCompaction(note: string, ctx: any) {
-    if (phaseCompactionRequested) return;
-    const customInstructions = phaseCompactionInstructions(note);
-    phaseCompactionRequested = true;
-    phaseCompactionCustomInstructions = customInstructions;
-    ctx.ui.notify("Orchlink auto phase compaction started.", "info");
-    setTimeout(() => {
-      let finished = false;
-      let watchdog: ReturnType<typeof setTimeout> | undefined;
-      const finishCompaction = () => {
-        if (finished) return;
-        finished = true;
-        if (watchdog) clearTimeout(watchdog);
-        phaseCompactionRequested = false;
-        phaseCompactionCustomInstructions = "";
-        schedule(0);
-      };
-      watchdog = setTimeout(() => {
-        ctx.ui.notify("Orchlink phase compaction did not report completion; polling resumed.", "warning");
-        finishCompaction();
-      }, Math.max(1000, Number(env("ORCHLINK_COMPACTION_WATCHDOG_MS", "30000")) || 30000));
-      try {
-        ctx.compact({
-          customInstructions,
-          onComplete: () => {
-            ctx.ui.notify("Orchlink auto phase compaction completed.", "info");
-            finishCompaction();
-          },
-          onError: (error: any) => {
-            ctx.ui.notify(`Orchlink phase compaction failed: ${error?.message || error}`, "error");
-            finishCompaction();
-          },
-        });
-      } catch (error: any) {
-        ctx.ui.notify(`Orchlink phase compaction failed: ${error?.message || error}`, "error");
-        finishCompaction();
-      }
-    }, 0);
-  }
-
-  pi.on("session_before_compact", async (event: any) => {
-    const autoPhase = phaseCompactionRequested;
-    const instructions = normalizeCompactionInstructions(String(event?.customInstructions || phaseCompactionCustomInstructions || ""));
-    phaseCompactionRequested = false;
-    phaseCompactionCustomInstructions = "";
-    const preparation = event?.preparation || {};
-    if (!preparation.firstKeptEntryId) return;
-    const summary = orchlinkCompactionSummary(instructions, role, projectId, currentTask);
-    postCompactionResumeSteer = orchlinkPostCompactionResumeSteer(summary);
-    return {
-      compaction: {
-        summary,
-        firstKeptEntryId: preparation.firstKeptEntryId,
-        tokensBefore: preparation.tokensBefore || 0,
-        details: {
-          orchlink: true,
-          source: autoPhase ? "auto-review" : "pi-compact",
-          projectId,
-          role,
-          taskId: currentTask?.task_id || null,
-          conversationId: currentTask?.conversation_id || null,
-          readFiles: preparation.fileOps?.readFiles || [],
-          modifiedFiles: preparation.fileOps?.modifiedFiles || [],
-        },
-      },
-    };
-  });
-
-  pi.on("session_compact", async (_event: any, ctx: any) => {
-    phaseCompactionRequested = false;
-    phaseCompactionCustomInstructions = "";
-    clearRecoveryTimer();
-    const resumeSteer = postCompactionResumeSteer;
-    postCompactionResumeSteer = "";
-    if (role === "lead" && resumeSteer) {
-      sendLeadResumeSteer(resumeSteer, ctx);
-    }
-    if (["lead", "work"].includes(role)) {
-      ctx.ui.notify(`Orchlink ${role} polling resumed after compaction.`, "info");
-      schedule(0);
-    }
-  });
 
   async function register() {
     if (!agentId || !role) return;
@@ -461,6 +292,25 @@ export default function (pi: ExtensionAPI) {
     });
   }
 
+  function currentModelName(ctx?: any): string | undefined {
+    if (role === "work" && workerModel) return workerModel;
+    const model = ctx?.model;
+    if (!model) return undefined;
+    const provider = String(model.provider || "").trim();
+    const id = String(model.id || model.name || "").trim();
+    if (provider && id && !id.startsWith(`${provider}/`)) return `${provider}/${id}`;
+    return id || provider || undefined;
+  }
+
+  function currentThinkingLevel(): string | undefined {
+    if (role === "work" && workerThinking) return workerThinking;
+    if (typeof pi.getThinkingLevel === "function") {
+      const level = pi.getThinkingLevel();
+      return level ? String(level) : undefined;
+    }
+    return undefined;
+  }
+
   async function sendReadyHeartbeat(ctx?: any) {
     if (!sessionLeaseId || !["lead", "work"].includes(role)) return;
     await postJson(`/v1/sessions/${encodeURIComponent(sessionLeaseId)}/heartbeat`, {
@@ -468,6 +318,8 @@ export default function (pi: ExtensionAPI) {
       ready: true,
       runtime_mode: runtimeMode || ctx?.mode || "tui",
       backend: backgroundBackend || (ctx?.mode === "rpc" ? "rpc-supervisor" : "interactive"),
+      model: currentModelName(ctx),
+      thinking: currentThinkingLevel(),
       supervisor_pid: supervisorPid,
       pi_pid: typeof process?.pid === "number" ? process.pid : undefined,
     });
@@ -487,6 +339,20 @@ export default function (pi: ExtensionAPI) {
     if (stopped || !["lead", "work"].includes(role)) return;
     if (timer) clearTimeout(timer);
     timer = setTimeout(() => void poll(), delayMs);
+  }
+
+  function taskThinkingLevel(message: OrchMessage): string {
+    const payload = message?.payload || {};
+    const mode = String(payload.mode || "").toUpperCase();
+    return workerThinking || normalizeThinking(payload.thinking) || normalizeThinking(MODE_THINKING_DEFAULTS[mode]) || "";
+  }
+
+  async function applyWorkerThinking(message: OrchMessage) {
+    if (role !== "work") return;
+    const level = taskThinkingLevel(message);
+    if (!level || typeof pi.setThinkingLevel !== "function") return;
+    if (typeof pi.getThinkingLevel === "function" && pi.getThinkingLevel() === level) return;
+    pi.setThinkingLevel(level as any);
   }
 
   function clearCancelCheck() {
@@ -619,12 +485,6 @@ export default function (pi: ExtensionAPI) {
     return String(conversation?.status || "").toUpperCase();
   }
 
-  async function projectHasActiveWork(): Promise<boolean> {
-    const projectQuery = `project_id=${encodeURIComponent(String(projectId || "default"))}`;
-    const body = await getJson(`/v1/jobs?limit=500&${projectQuery}`);
-    return (body.jobs || []).some((job: any) => hasActiveStatus(job.status || job.wire_status));
-  }
-
   async function checkCurrentTaskCancellation(ctx?: any): Promise<boolean> {
     if (stopped || !currentTask || cancelNoticeSent) return false;
     const status = await currentWorkStatus(currentTask);
@@ -666,16 +526,13 @@ export default function (pi: ExtensionAPI) {
           }
           pendingTask = message;
           try {
+            await applyWorkerThinking(message);
             pi.sendUserMessage(renderWorkerPrompt(message), { deliverAs: "followUp" });
           } catch (error) {
             pendingTask = undefined;
             throw error;
           }
         } else {
-          if (autoReviewCompactionEnabled() && isReviewResult(message)) {
-            (message as any)._orchlinkReceivedAt = Date.now();
-            pendingReviewCompaction = message;
-          }
           pi.sendUserMessage(renderLeadPrompt(message), { deliverAs: "steer" });
         }
       }
@@ -745,30 +602,6 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("message_end", async (event, ctx) => {
-    if (role !== "lead" || !pendingReviewCompaction) return;
-    if (event.message.role !== "assistant") return;
-    if ((event.message as any).stopReason === "toolUse") return;
-    const receivedAt = Number((pendingReviewCompaction as any)._orchlinkReceivedAt || Date.now());
-    if (Date.now() - receivedAt > 30 * 60 * 1000) {
-      pendingReviewCompaction = undefined;
-      return;
-    }
-    const output = messageText(event.message);
-    if (!looksLikeReviewReconciliation(output)) return;
-    const review = pendingReviewCompaction;
-    pendingReviewCompaction = undefined;
-    try {
-      if (await projectHasActiveWork()) {
-        ctx.ui.notify("Orchlink skipped auto compaction because project work is still active.", "info");
-        return;
-      }
-      requestAutoPhaseCompaction(autoCompactionNote(review, output), ctx);
-    } catch (error: any) {
-      ctx.ui.notify(`Orchlink auto compaction skipped: ${error?.message || error}`, "error");
-    }
-  });
-
-  pi.on("message_end", async (event, ctx) => {
     if (role !== "work" || !currentTask) return;
     if (event.message.role !== "assistant") return;
     if ((event.message as any).stopReason === "toolUse") return;
@@ -798,16 +631,411 @@ export default function (pi: ExtensionAPI) {
     clearAbortContext();
   });
 }
-'''.replace(
-    "__ORCHLINK_WORKER_TASK_GUIDANCE__",
-    json.dumps(_TASK_PROMPT_POLICY.worker_task_guidance()),
-).replace(RECONCILIATION_PLACEHOLDER, json.dumps(RECONCILIATION_PATTERN)).replace(RECOVERABLE_ERROR_PLACEHOLDER, json.dumps(RECOVERABLE_ERROR_PATTERN))
+'''
+
+
+def _render_extension() -> str:
+    rendered = _EXTENSION_TEMPLATE.replace(
+        "__ORCHLINK_WORKER_TASK_GUIDANCE__",
+        json.dumps(_TASK_PROMPT_POLICY.worker_task_guidance()),
+    )
+    for placeholder, replacement in interpolation_replacements().items():
+        rendered = rendered.replace(placeholder, replacement)
+    return rendered
+
+
+ORCHLINK_PI_EXTENSION = _render_extension()
+
+
+ORCHLINK_PI_UI_EXTENSION = r'''
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { spawn } from "node:child_process";
+
+type JsonObject = Record<string, any>;
+type PanelResult = { action: "stop"; workerName: string } | null;
+
+type WorkerRow = {
+  workerName: string;
+  agentId: string;
+  ready: boolean;
+  model: string;
+  thinking: string;
+  runtime: string;
+  backend: string;
+  heartbeat: string;
+  job?: {
+    kind: string;
+    id: string;
+    mode: string;
+    status: string;
+    activity: string;
+    tool: string;
+    updated: string;
+    turn?: number;
+    maxTurns?: number;
+  };
+};
+
+const ACTIVE_JOB_STATUSES = new Set(["PENDING", "QUEUED", "DELIVERED", "RUNNING", "IN_PROGRESS", "RECLAIMABLE", "OPEN"]);
+const ACTIVE_SESSION_STATUSES = new Set(["ACTIVE"]);
+
+function env(name: string, fallback = ""): string {
+  return process.env[name] || fallback;
+}
+
+function truncate(value: any, maxLength = 80): string {
+  const text = String(value === undefined || value === null ? "" : value).replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function isTui(ctx: any): boolean {
+  return ctx.mode === "tui" && ctx?.ui && ctx?.hasUI !== false;
+}
+
+function jobId(job: JsonObject): string {
+  return String(job.task_id || job.conversation_id || job.id || "-");
+}
+
+function jobKind(job: JsonObject): string {
+  if (job.conversation_id || String(job.kind || "").toLowerCase() === "talk") return "talk";
+  return String(job.kind || "task");
+}
+
+function workerNameFromSession(session: JsonObject): string {
+  return String(session.worker_name || session.name || session.agent_id || "worker");
+}
+
+function workerNameFromJob(job: JsonObject): string {
+  return String(job.worker_name || job.to_agent || "worker");
+}
+
+function activeJob(job: JsonObject): boolean {
+  return ACTIVE_JOB_STATUSES.has(String(job.status || "").toUpperCase());
+}
+
+function activeSession(session: JsonObject): boolean {
+  return ACTIVE_SESSION_STATUSES.has(String(session.status || "ACTIVE").toUpperCase());
+}
+
+function summarizeStatus(body: JsonObject): WorkerRow[] {
+  if (body.broker !== "ok") return [];
+  const sessions = Array.isArray(body.sessions) ? body.sessions : [];
+  const jobs = (Array.isArray(body.jobs) ? body.jobs : []).filter(activeJob);
+  const jobsByWorker = new Map<string, JsonObject>();
+  const jobsByAgent = new Map<string, JsonObject>();
+  for (const job of jobs) {
+    const workerName = workerNameFromJob(job);
+    if (workerName && !jobsByWorker.has(workerName)) jobsByWorker.set(workerName, job);
+    const target = String(job.to_agent || "");
+    if (target && !jobsByAgent.has(target)) jobsByAgent.set(target, job);
+  }
+  return sessions
+    .filter((session: JsonObject) => String(session.role || "") === "work" && activeSession(session))
+    .map((session: JsonObject) => {
+      const workerName = workerNameFromSession(session);
+      const agentId = String(session.agent_id || "");
+      const job = jobsByWorker.get(workerName) || jobsByAgent.get(agentId);
+      const row: WorkerRow = {
+        workerName,
+        agentId,
+        ready: Boolean(session.ready),
+        model: String(session.model || ""),
+        thinking: String(session.thinking || ""),
+        runtime: String(session.runtime_mode || ""),
+        backend: String(session.backend || ""),
+        heartbeat: String(session.last_heartbeat_at || ""),
+      };
+      if (job) {
+        row.job = {
+          kind: jobKind(job),
+          id: jobId(job),
+          mode: String(job.mode || (job.conversation_id ? "TALK" : "DO")),
+          status: String(job.status || "UNKNOWN"),
+          activity: String(job.last_activity_preview || ""),
+          tool: String(job.last_activity_tool || ""),
+          updated: String(job.last_activity_at || ""),
+          turn: job.turn === undefined || job.turn === null ? undefined : Number(job.turn),
+          maxTurns: job.max_turns === undefined || job.max_turns === null ? undefined : Number(job.max_turns),
+        };
+      }
+      return row;
+    })
+    .sort((a: WorkerRow, b: WorkerRow) => Number(Boolean(b.job)) - Number(Boolean(a.job)) || a.workerName.localeCompare(b.workerName));
+}
+
+function rowInlineText(row: WorkerRow): string {
+  const state = row.job ? `${row.job.id} ${row.job.status.toLowerCase()}` : row.ready ? "idle" : "starting";
+  const model = row.model || row.backend || "unknown-model";
+  const activity = row.job?.activity ? ` · ${truncate(row.job.tool ? `${row.job.tool}: ${row.job.activity}` : row.job.activity, 48)}` : "";
+  return `worker - ${row.workerName} ${model} ${state}${activity}`;
+}
+
+function sessionNameText(rows: WorkerRow[], offline = false): string {
+  if (offline) return "Orchlink Lead · workers offline";
+  const label = rows.length === 1 ? "worker" : "workers";
+  return `Orchlink Lead · ${rows.length} ${label}`;
+}
+
+function formatActivityRecord(record: JsonObject): string {
+  const type = String(record.activity_type || record.type || "activity");
+  const tool = String(record.tool_name || "");
+  const detail = String(record.detail || record.preview || "");
+  const prefix = tool ? `${type}/${tool}` : type;
+  return `${prefix}: ${detail || "working"}`;
+}
+
+function panelLines(rows: WorkerRow[], activityByItem: Record<string, string[]> = {}, offline = false, selected = 0): string[] {
+  if (offline) return ["workers offline", "", "q/Esc close"];
+  const lines: string[] = [];
+  if (!rows.length) {
+    lines.push("workers none");
+    lines.push("");
+    lines.push("q/Esc close");
+    return lines;
+  }
+  rows.forEach((row, index) => {
+    const marker = index === selected ? ">" : " ";
+    const heading = row.job ? `${marker} ${row.workerName}  ${row.job.status}  ${row.job.id}` : `${marker} ${row.workerName}  IDLE`;
+    lines.push(heading);
+    lines.push(`  agent: ${row.agentId || "-"}`);
+    lines.push(`  model: ${row.model || "-"}${row.thinking ? ` · thinking ${row.thinking}` : ""}`);
+    lines.push(`  runtime: ${row.runtime || "-"} / ${row.backend || "-"} · ready: ${row.ready ? "yes" : "no"}`);
+    if (row.job) {
+      const turn = row.job.turn && row.job.maxTurns ? ` · turn ${row.job.turn}/${row.job.maxTurns}` : "";
+      lines.push(`  work: ${row.job.kind.toUpperCase()} ${row.job.mode}${turn}`);
+      lines.push(`  last: ${truncate(row.job.tool ? `${row.job.tool}: ${row.job.activity}` : row.job.activity || "working", 160)}`);
+      const activity = activityByItem[row.job.id] || [];
+      if (activity.length) {
+        lines.push("  activity:");
+        for (const item of activity.slice(-12)) lines.push(`    ${truncate(item, 150)}`);
+      }
+    }
+    lines.push("");
+  });
+  lines.push("↑/↓ select · s stop worker · PgUp/PgDn scroll · q/Esc close");
+  return lines;
+}
+
+class OrchlinkWorkersPanel {
+  private offset = 0;
+  private selected = 0;
+  constructor(
+    private getRows: () => WorkerRow[],
+    private getActivityByItem: () => Record<string, string[]>,
+    private getOffline: () => boolean,
+    private done: (value: PanelResult) => void,
+  ) {}
+  invalidate() {}
+  private allLines(): string[] {
+    return panelLines(this.getRows(), this.getActivityByItem(), this.getOffline(), this.selected);
+  }
+  private visibleHeight(): number {
+    return Math.min(22, Math.max(6, this.allLines().length));
+  }
+  private maxOffset(): number {
+    return Math.max(0, this.allLines().length - this.visibleHeight());
+  }
+  private clampOffset() {
+    this.offset = Math.min(this.maxOffset(), Math.max(0, this.offset));
+  }
+  render(width: number): string[] {
+    const rows = this.getRows();
+    this.selected = Math.min(Math.max(0, this.selected), Math.max(0, rows.length - 1));
+    const contentWidth = Math.max(20, width - 4);
+    const all = this.allLines().map((line) => truncate(line, contentWidth));
+    const height = this.visibleHeight();
+    this.clampOffset();
+    const visible = all.slice(this.offset, this.offset + height);
+    const border = "─".repeat(Math.max(0, contentWidth));
+    return [`┌${border}┐`, ...visible.map((line) => `│${line.padEnd(contentWidth).slice(0, contentWidth)}│`), `└${border}┘`];
+  }
+  handleInput(data: string) {
+    const rows = this.getRows();
+    if (data === "q" || data === "\u001b") this.done(null);
+    else if (data === "s" && rows[this.selected]) this.done({ action: "stop", workerName: rows[this.selected].workerName });
+    else if (data === "\u001b[A") this.selected = Math.max(0, this.selected - 1);
+    else if (data === "\u001b[B") this.selected = Math.min(Math.max(0, rows.length - 1), this.selected + 1);
+    else if (data === "\u001b[5~") this.offset = Math.max(0, this.offset - 8);
+    else if (data === "\u001b[6~") this.offset = Math.min(this.maxOffset(), this.offset + 8);
+  }
+}
+
+export default function (pi: ExtensionAPI) {
+  const role = env("ORCHLINK_PI_ROLE");
+  const brokerUrl = env("ORCHLINK_BROKER_URL", "http://127.0.0.1:8787").replace(/\/$/, "");
+  const apiKey = env("ORCHLINK_API_KEY");
+  const projectId = env("ORCHLINK_PROJECT_ID", "default");
+  const pollMs = Math.max(2000, Number(env("ORCHLINK_MONITOR_POLL_SECONDS", "5")) * 1000 || 5000);
+  let rows: WorkerRow[] = [];
+  let activityByItem: Record<string, string[]> = {};
+  let offline = false;
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abortController: AbortController | undefined;
+  let overlayHandle: any;
+  let lastSessionName = "";
+  let lastCtx: any;
+
+  async function getStatus(): Promise<JsonObject> {
+    abortController?.abort();
+    abortController = new AbortController();
+    const response = await fetch(`${brokerUrl}/v1/status?limit=200`, {
+      signal: abortController.signal,
+      headers: {
+        "X-API-Key": apiKey,
+        "X-Orchlink-Project-ID": projectId,
+      },
+    });
+    if (!response.ok) throw new Error(`status ${response.status}`);
+    return await response.json() as JsonObject;
+  }
+
+  async function getActivity(itemId: string): Promise<string[]> {
+    const response = await fetch(`${brokerUrl}/v1/activity?item_id=${encodeURIComponent(itemId)}&limit=30`, {
+      headers: {
+        "X-API-Key": apiKey,
+        "X-Orchlink-Project-ID": projectId,
+      },
+    });
+    if (!response.ok) return [];
+    const body = await response.json() as JsonObject;
+    const activity = Array.isArray(body.activity) ? body.activity : [];
+    return activity.filter((item: any) => item && typeof item === "object").map(formatActivityRecord);
+  }
+
+  async function refreshActivity() {
+    const activeIds = rows.map((row) => row.job?.id).filter((id): id is string => Boolean(id));
+    const next: Record<string, string[]> = {};
+    await Promise.all(activeIds.map(async (itemId) => {
+      next[itemId] = await getActivity(itemId);
+    }));
+    activityByItem = next;
+  }
+
+  function runOrchStop(workerName: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const child = spawn("orch", ["stop", "--name", workerName], { stdio: ["ignore", "pipe", "pipe"] });
+      let output = "";
+      child.stdout.on("data", (chunk) => { output += String(chunk); });
+      child.stderr.on("data", (chunk) => { output += String(chunk); });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        if (code === 0) resolve(output.trim());
+        else reject(new Error(output.trim() || `orch stop exited ${code}`));
+      });
+    });
+  }
+
+  function render(ctx: any) {
+    if (!isTui(ctx)) return;
+    const nextName = sessionNameText(rows, offline);
+    if (nextName !== lastSessionName && typeof pi.setSessionName === "function") {
+      pi.setSessionName(nextName);
+      lastSessionName = nextName;
+    }
+    overlayHandle?.requestRender?.();
+  }
+
+  function schedule(ctx: any, delayMs = pollMs) {
+    if (stopped || role !== "lead") return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => void poll(ctx), delayMs);
+  }
+
+  async function poll(ctx: any) {
+    if (stopped || role !== "lead") return;
+    try {
+      const body = await getStatus();
+      offline = body.broker !== "ok";
+      rows = summarizeStatus(body);
+      activityByItem = {};
+      if (!offline) await refreshActivity();
+      render(ctx);
+    } catch (_error: any) {
+      offline = true;
+      rows = [];
+      activityByItem = {};
+      render(ctx);
+    } finally {
+      schedule(ctx, pollMs);
+    }
+  }
+
+  pi.registerCommand("orchlink", {
+    description: "Show Orchlink worker status panel",
+    handler: async (_args: string, ctx: any) => {
+      lastCtx = ctx;
+      if (!isTui(ctx)) {
+        ctx.ui?.notify?.("Orchlink worker panel is available only in Pi TUI mode.", "info");
+        return;
+      }
+      await poll(ctx);
+      const result = await ctx.ui.custom<PanelResult>(
+        (_tui: any, _theme: any, _keybindings: any, done: (value: PanelResult) => void) => new OrchlinkWorkersPanel(
+          () => rows,
+          () => activityByItem,
+          () => offline,
+          done,
+        ),
+        {
+          overlay: true,
+          overlayOptions: {
+            width: "70%",
+            minWidth: 32,
+            maxHeight: "70%",
+            anchor: "center",
+            margin: 1,
+          },
+          onHandle: (handle: any) => {
+            overlayHandle = handle;
+          },
+        },
+      );
+      overlayHandle = undefined;
+      if (result?.action === "stop") {
+        const confirmed = await ctx.ui.confirm(`Stop worker ${result.workerName}?`, "This releases the worker session and stops its background supervisor when tracked.");
+        if (!confirmed) return;
+        try {
+          const output = await runOrchStop(result.workerName);
+          ctx.ui.notify(output || `Stopped worker ${result.workerName}.`, "info");
+          await poll(ctx);
+        } catch (error: any) {
+          ctx.ui.notify(`Failed to stop worker ${result.workerName}: ${error?.message || error}`, "error");
+        }
+      }
+    },
+  });
+
+  pi.on("session_start", async (_event, ctx) => {
+    lastCtx = ctx;
+    if (role !== "lead" || !isTui(ctx)) return;
+    render(ctx);
+    schedule(ctx, 0);
+  });
+
+  pi.on("session_shutdown", async () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    abortController?.abort();
+    if (lastCtx && isTui(lastCtx) && typeof pi.setSessionName === "function") {
+      pi.setSessionName("Orchlink Lead");
+    }
+  });
+}
+'''
+
+
+def _write_extension_file(directory: Path, filename: str, content: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / filename
+    if not path.exists() or path.read_text(encoding="utf-8") != content:
+        path.write_text(content, encoding="utf-8")
+    return path
 
 
 def ensure_pi_extension(config: dict[str, Any]) -> Path:
-    directory = run_dir(config)
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / "orchlink-pi-extension.ts"
-    if not path.exists() or path.read_text(encoding="utf-8") != ORCHLINK_PI_EXTENSION:
-        path.write_text(ORCHLINK_PI_EXTENSION, encoding="utf-8")
-    return path
+    return _write_extension_file(run_dir(config), "orchlink-pi-extension.ts", ORCHLINK_PI_EXTENSION)
+
+
+def ensure_orchlink_ui_extension(config: dict[str, Any]) -> Path:
+    return _write_extension_file(run_dir(config), "orchlink-pi-ui-extension.ts", ORCHLINK_PI_UI_EXTENSION)

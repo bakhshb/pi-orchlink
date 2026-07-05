@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 
-from orchlink.connector.pi_extension import ensure_pi_extension
+from orchlink.connector.pi_extension import ensure_orchlink_ui_extension, ensure_pi_extension
 from orchlink.project.config import (
     broker_api_key,
     broker_session_grace_seconds,
@@ -121,6 +121,41 @@ class PiConnector:
     def _extension_args(self) -> list[str]:
         return ["--extension", str(ensure_pi_extension(self.config))]
 
+    def _lead_extension_args(self) -> list[str]:
+        return [*self._extension_args(), "--extension", str(ensure_orchlink_ui_extension(self.config))]
+
+    def _configured_model(self, role: str) -> str:
+        role_key = "work" if role == "work" else "lead"
+        role_config = self.config.get(role_key) or {}
+        return str(role_config.get("model") or "").strip()
+
+    def _model_thinking_args(self, role: str) -> list[str]:
+        role_key = "work" if role == "work" else "lead"
+        role_config = self.config.get(role_key) or {}
+        args: list[str] = []
+        model = self._configured_model(role)
+        thinking = str(role_config.get("thinking") or "").strip()
+        if model:
+            args.extend(["--model", model])
+        if thinking:
+            args.extend(["--thinking", thinking])
+        return args
+
+    def _rpc_extension_discovery_args(self, role: str) -> list[str]:
+        """Keep headless workers isolated unless their model comes from Pi extensions.
+
+        Pi custom provider packages, such as ``pi-ollama-cloud``, are loaded by
+        extension discovery. Passing ``--no-extensions`` still allows Orchlink's
+        explicit bridge extension, but it also hides those package providers from
+        Pi's RPC mode. Leave discovery enabled only for known provider-package
+        models so ``--model ollama-cloud/...`` resolves the same way it does in
+        normal Pi runs and ``pi --list-models``.
+        """
+        provider = self._configured_model(role).split("/", 1)[0].strip().lower()
+        if provider in {"ollama", "ollama-cloud"}:
+            return []
+        return ["--no-extensions"]
+
     def _env(self, role: str, extra: dict[str, str] | None = None) -> dict[str, str]:
         env = os.environ.copy()
         role_key = "work" if role == "work" else "lead"
@@ -140,6 +175,11 @@ class PiConnector:
                 "ORCHLINK_POLL_WAIT_SECONDS": str(role_config.get("poll_wait_seconds", 5)),
             }
         )
+        if role_key == "work":
+            if role_config.get("model"):
+                env["ORCHLINK_WORKER_MODEL"] = str(role_config["model"])
+            if role_config.get("thinking"):
+                env["ORCHLINK_WORKER_THINKING"] = str(role_config["thinking"])
         if extra:
             env.update(extra)
         return env
@@ -251,7 +291,7 @@ class PiConnector:
                 self.resolved_pi_command(),
                 *[str(arg) for arg in configured_args],
                 *self._system_prompt_args("lead"),
-                *self._extension_args(),
+                *self._lead_extension_args(),
             ]
         return [
             self.resolved_pi_command(),
@@ -259,7 +299,7 @@ class PiConnector:
             "--name",
             "Orchlink Lead",
             *self._system_prompt_args("lead"),
-            *self._extension_args(),
+            *self._lead_extension_args(),
         ]
 
     def work_rpc_argv(self) -> list[str]:
@@ -270,8 +310,9 @@ class PiConnector:
             *self._session_args("work"),
             "--name",
             "Orchlink Worker",
+            *self._model_thinking_args("work"),
             "--approve",
-            "--no-extensions",
+            *self._rpc_extension_discovery_args("work"),
             *self._system_prompt_args("work"),
             *self._extension_args(),
         ]
@@ -283,6 +324,7 @@ class PiConnector:
             return [
                 self.resolved_pi_command(),
                 *[str(arg) for arg in configured_args],
+                *self._model_thinking_args("work"),
                 *self._system_prompt_args("work"),
                 *self._extension_args(),
             ]
@@ -291,6 +333,7 @@ class PiConnector:
             *self._session_args("work"),
             "--name",
             "Orchlink Worker",
+            *self._model_thinking_args("work"),
             *self._system_prompt_args("work"),
             *self._extension_args(),
         ]

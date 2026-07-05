@@ -85,11 +85,20 @@ def _terminate_process_tree(process: subprocess.Popen[str], timeout: float = 5.0
         return
 
 
-def run_supervisor(project_root_path: Path, worker_name: str = "work") -> int:
+def run_supervisor(project_root_path: Path, worker_name: str = "work", model: str | None = None, thinking: str | None = None) -> int:
     worker_name = normalize_worker_name(worker_name)
     config = load_project_config(project_root_path)
     session_id = _saved_worker_session_id(config, worker_name)
     config = with_worker_name(config, worker_name, session_id=session_id)
+    if model or thinking:
+        updated = dict(config)
+        work_config = dict(config.get("work") or {})
+        if model:
+            work_config["model"] = model
+        if thinking:
+            work_config["thinking"] = thinking
+        updated["work"] = work_config
+        config = updated
     connector = PiConnector(config)
     root = project_root(config)
     paths = run_dir(config)
@@ -112,6 +121,8 @@ def run_supervisor(project_root_path: Path, worker_name: str = "work") -> int:
                 "agent_id": role_agent_id(config, "work"),
                 "worker_name": worker_name,
                 "session_id": session_id,
+                "model": (config.get("work") or {}).get("model"),
+                "thinking": (config.get("work") or {}).get("thinking"),
                 "supervisor_pid": supervisor_pid,
                 "updated_at": _now(),
                 **extra,
@@ -130,6 +141,8 @@ def run_supervisor(project_root_path: Path, worker_name: str = "work") -> int:
                         "runtime_mode": "rpc",
                         "backend": "rpc-supervisor",
                         "worker_name": worker_name,
+                        "model": (config.get("work") or {}).get("model"),
+                        "thinking": (config.get("work") or {}).get("thinking"),
                         "supervisor_pid": supervisor_pid,
                         "pi_pid": child.pid if child else None,
                     },
@@ -157,6 +170,8 @@ def run_supervisor(project_root_path: Path, worker_name: str = "work") -> int:
                 "runtime_mode": "rpc",
                 "backend": "rpc-supervisor",
                 "worker_name": worker_name,
+                "model": (config.get("work") or {}).get("model"),
+                "thinking": (config.get("work") or {}).get("thinking"),
                 "supervisor_pid": supervisor_pid,
             },
         )
@@ -219,8 +234,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the Orchlink headless worker supervisor.")
     parser.add_argument("--project-root", required=True)
     parser.add_argument("--worker-name", default="work")
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--thinking", default=None)
     args = parser.parse_args(argv)
-    return run_supervisor(Path(args.project_root), worker_name=args.worker_name)
+    return run_supervisor(Path(args.project_root), worker_name=args.worker_name, model=args.model, thinking=args.thinking)
 
 
 if __name__ == "__main__":

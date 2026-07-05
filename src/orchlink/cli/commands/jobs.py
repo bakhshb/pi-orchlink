@@ -17,6 +17,7 @@ from orchlink.cli.commands._helpers import (
     activity_query,
     blocking_jobs,
     current_project_id,
+    conversation_state,
     filter_jobs,
     format_activity,
     human_age,
@@ -284,14 +285,14 @@ def register_jobs(app: typer.Typer) -> None:
             )
             return
 
-        console.print("NAME\tAGENT\tROLE\tRUNTIME\tBACKEND\tSTATUS\tPID\tSESSION\tREADY\tHEARTBEAT")
+        console.print("NAME\tAGENT\tMODEL\tTHINKING\tROLE\tRUNTIME\tBACKEND\tSTATUS\tPID\tSESSION\tREADY\tHEARTBEAT")
         for session in sessions_list:
             console.print(
                 f"{session.get('worker_name') or worker_name_from_agent(config, str(session.get('agent_id') or ''))}\t"
-                f"{session.get('agent_id', '-')}\t{session.get('role', '-')}\t"
-                f"{session.get('runtime_mode') or '-'}\t{session.get('backend') or '-'}\t{session.get('status', '-')}\t"
-                f"{session.get('pid', '-')}\t{session.get('session_id', '-')}\t{session.get('ready', '-')}\t"
-                f"{human_age(session.get('last_heartbeat_at'))}"
+                f"{session.get('agent_id', '-')}\t{session.get('model') or '-'}\t{session.get('thinking') or '-'}\t"
+                f"{session.get('role', '-')}\t{session.get('runtime_mode') or '-'}\t{session.get('backend') or '-'}\t"
+                f"{session.get('status', '-')}\t{session.get('pid', '-')}\t{session.get('session_id', '-')}\t"
+                f"{session.get('ready', '-')}\t{human_age(session.get('last_heartbeat_at'))}"
             )
 
     @app.command(help="Exit 0 if named workers are idle; exit 1 if active work exists.")
@@ -376,7 +377,7 @@ def register_jobs(app: typer.Typer) -> None:
             body = _cli_main.broker_get_sync(config, f"/v1/tasks/{item_id}{project_query(config)}")
             validate_task_body_project(config, body, item_id)
             if body.get("status") == "missing":
-                conversation = conversation_state_shim(config, item_id)
+                conversation = conversation_state(config, item_id)
                 if conversation is not None:
                     _print_conversation_body(conversation)
                     _print_conversation_turns(config, item_id)
@@ -488,6 +489,3 @@ def register_jobs(app: typer.Typer) -> None:
         if cancelled:
             console.print(f"[Orch] Messages: {', '.join(str(item) for item in cancelled)}")
 
-
-def conversation_state_shim(config: dict[str, Any], conversation_id: str) -> dict[str, Any] | None:
-    return _cli_main.conversation_state(config, conversation_id)

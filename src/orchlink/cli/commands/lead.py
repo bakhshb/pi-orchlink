@@ -24,6 +24,7 @@ from orchlink.cli import main as _cli_main
 
 from orchlink.broker.state import is_active_session_status
 from orchlink.cli.commands._helpers import auto_refresh_project_skills, load_project_or_exit, project_query
+from orchlink.client import THINKING_LEVELS, normalize_thinking_level
 from orchlink.client.process import broker_pid_path
 from orchlink.connector.pi_connector import PiConnectorError
 from orchlink.project.config import DEFAULT_WORKER_NAME, normalize_worker_name, project_root, role_agent_id, save_project_config, with_worker_name, worker_agent_id
@@ -93,15 +94,104 @@ def with_named_worker_session(config: dict[str, Any], worker_name: str, new: boo
     return with_worker_name(config, worker_name, session_id=session_id), session_id
 
 
+def with_worker_profile(config: dict[str, Any], model: str | None = None, thinking: str | None = None) -> dict[str, Any]:
+    if model is None and thinking is None:
+        return config
+    updated = dict(config)
+    work_config = dict(config.get("work") or {})
+    if model is not None:
+        work_config["model"] = str(model).strip()
+    if thinking is not None:
+        work_config["thinking"] = normalize_thinking_level(thinking)
+    updated["work"] = work_config
+    return updated
+
+
+def model_lookup_pattern(model: str) -> str:
+    """Return the part of a Pi model pattern safe to pass to `pi --list-models`.
+
+    Pi accepts `model:thinking` shorthand, while some model IDs contain colons
+    themselves (for example Ollama IDs). Strip only a recognized thinking suffix.
+    """
+    value = str(model or "").strip()
+    if ":" not in value:
+        return value
+    base, suffix = value.rsplit(":", 1)
+    if base and suffix.lower() in THINKING_LEVELS:
+        return base
+    return value
+
+
+def pi_list_models(command: str, search: str | None = None) -> str:
+    args = [command, "--list-models"]
+    if search:
+        args.append(search)
+    result = subprocess.run(  # noqa: S603 - calls the configured local Pi executable.
+        args,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    output = result.stdout or ""
+    if result.returncode != 0:
+        detail = output.strip() or "no output"
+        raise PiConnectorError(f"`pi --list-models` failed with exit code {result.returncode}: {detail}")
+    return output
+
+
+def pi_model_rows(output: str) -> list[str]:
+    lines = [line.rstrip() for line in output.splitlines() if line.strip()]
+    if not lines or lines[0].startswith("No models matching"):
+        return []
+    if lines[0].lower().startswith("provider"):
+        return lines[1:]
+    return lines
+
+
+def ensure_pi_model_available(connector: Any, model: str | None) -> None:
+    if not model:
+        return
+    requested = str(model).strip()
+    if not requested:
+        return
+    search = model_lookup_pattern(requested)
+    try:
+        matching_output = pi_list_models(connector.resolved_pi_command(), search)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise PiConnectorError(f"Could not check Pi model availability with `pi --list-models`: {exc}") from exc
+    if pi_model_rows(matching_output):
+        return
+
+    console.print(f"[Orch] Pi model is not registered or available: {requested}")
+    if search != requested:
+        console.print(f"[Orch] Checked model pattern: {search}")
+    try:
+        available_output = pi_list_models(connector.resolved_pi_command())
+    except (OSError, subprocess.SubprocessError, PiConnectorError):
+        available_output = ""
+    rows = pi_model_rows(available_output)
+    if rows:
+        console.print("[Orch] Available models from `pi --list-models`:")
+        header = next((line.rstrip() for line in available_output.splitlines() if line.strip()), "")
+        if header and header.lower().startswith("provider"):
+            console.print(header)
+        for line in rows[:50]:
+            console.print(line)
+        if len(rows) > 50:
+            console.print(f"[Orch] ... {len(rows) - 50} more. Run `pi --list-models` to see all models.")
+    else:
+        console.print("[Orch] `pi --list-models` returned no available models. Configure/login to Pi first.")
+    raise typer.Exit(1)
+
+
 def active_work_sessions(config: dict[str, Any], worker_name: str | None = None) -> list[dict[str, Any]]:
     body = _cli_main.broker_get_sync(config, f"/v1/sessions?active=true{project_query(config, '&')}")
-    # Sessions created by the visible Pi launcher use role="work"; agent
-    # registration uses role="worker". Accept both so old and new workers show up.
     sessions = [
         session
         for session in body.get("sessions", [])
-        if str(session.get("role") or "") in {"work", "worker"}
-        or str(session.get("agent_id") or "").endswith(".work")
+        if str(session.get("role") or "") == "work"
     ]
     if worker_name is None:
         return sessions
@@ -110,7 +200,7 @@ def active_work_sessions(config: dict[str, Any], worker_name: str | None = None)
         session
         for session in sessions
         if str(session.get("agent_id") or "") == target_agent
-        or str(session.get("worker_name") or session.get("name") or "") == worker_name
+        or str(session.get("worker_name") or "") == worker_name
         or (worker_name == DEFAULT_WORKER_NAME and str(session.get("agent_id") or "") in {"", target_agent})
     ]
 
@@ -151,29 +241,13 @@ def is_ready_work_session(config: dict[str, Any], session: dict[str, Any]) -> bo
     return (datetime.now(timezone.utc) - last_ready).total_seconds() < grace
 
 
-def _session_int(session: dict[str, Any], key: str) -> int | None:
-    try:
-        return int(session.get(key) or 0)
-    except (TypeError, ValueError):
-        return None
-
-
-def background_work_sessions(sessions: list[dict[str, Any]], tracked_pid: int | None) -> list[dict[str, Any]]:
-    # Prefer explicit runtime/backend metadata from the RPC supervisor. PID
-    # matching is a fallback for older sessions or partially recorded launches.
-    selected: list[dict[str, Any]] = []
-    for session in sessions:
-        backend = str(session.get("backend") or "")
-        runtime_mode = str(session.get("runtime_mode") or "")
-        if backend == "rpc-supervisor" or runtime_mode == "rpc":
-            selected.append(session)
-            continue
-        if tracked_pid is not None and _session_int(session, "pid") == tracked_pid:
-            selected.append(session)
-            continue
-        if tracked_pid is not None and _session_int(session, "supervisor_pid") == tracked_pid:
-            selected.append(session)
-    return selected
+def background_work_sessions(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        session
+        for session in sessions
+        if str(session.get("backend") or "") == "rpc-supervisor"
+        or str(session.get("runtime_mode") or "") == "rpc"
+    ]
 
 
 def release_work_sessions(config: dict[str, Any], sessions: list[dict[str, Any]], reason: str) -> None:
@@ -205,6 +279,11 @@ def launch_work_background(config: dict[str, Any], worker_name: str = DEFAULT_WO
         "--worker-name",
         worker_name,
     ]
+    work_config = config.get("work") or {}
+    if work_config.get("model"):
+        command.extend(["--model", str(work_config["model"])])
+    if work_config.get("thinking"):
+        command.extend(["--thinking", str(work_config["thinking"])])
     env = os.environ.copy()
     python_path = str(Path(sys.executable).parent)
     path_value = env.get("PATH") or env.get("Path") or ""
@@ -250,6 +329,47 @@ def wait_for_background_worker(
         time.sleep(1)
 
 
+def _pid_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _terminate_pid(pid: int, timeout_seconds: float = 5.0) -> bool:
+    """Terminate a tracked background worker supervisor and its process group."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return False
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if not _pid_running(pid):
+            return True
+        time.sleep(0.1)
+    if sys.platform != "win32":
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            os.kill(pid, signal.SIGKILL)
+    else:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return True
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        if not _pid_running(pid):
+            return True
+        time.sleep(0.1)
+    return not _pid_running(pid)
+
+
 def stop_pid_file(path: Path, label: str) -> bool:
     """Stop the background process recorded in ``path`` (a PID file)."""
     if not path.is_file():
@@ -261,16 +381,26 @@ def stop_pid_file(path: Path, label: str) -> bool:
         path.unlink(missing_ok=True)
         console.print(f"[Orch] Removed invalid {label} PID file.")
         return False
-    stopped = False
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        console.print(f"[Orch] {label} process was not running.")
-    else:
-        stopped = True
+    stopped = _terminate_pid(pid)
+    if stopped:
         console.print(f"[Orch] Stopped {label} PID {pid}")
+    else:
+        console.print(f"[Orch] Could not stop {label} PID {pid}; process may need manual cleanup.")
     path.unlink(missing_ok=True)
     return stopped
+
+
+def worker_pid_files(config: dict[str, Any]) -> list[tuple[str, Path]]:
+    run_path = project_root(config) / ".orch" / "run"
+    paths: list[tuple[str, Path]] = []
+    default_path = run_path / "orch-work.pid"
+    if default_path.is_file():
+        paths.append((DEFAULT_WORKER_NAME, default_path))
+    workers_path = run_path / "workers"
+    if workers_path.is_dir():
+        for pid_path in sorted(workers_path.glob("*/orch-work.pid")):
+            paths.append((pid_path.parent.name, pid_path))
+    return paths
 
 
 def register_lead(app: typer.Typer) -> None:
@@ -330,6 +460,14 @@ def register_lead(app: typer.Typer) -> None:
             bool,
             typer.Option("--test", help="Start a safe fresh background test worker (default name: bg-test)."),
         ] = False,
+        model: Annotated[
+            str | None,
+            typer.Option("--model", help="Pi model pattern for this worker session, e.g. provider/model or model:thinking."),
+        ] = None,
+        thinking: Annotated[
+            str | None,
+            typer.Option("--thinking", help="Default worker thinking: off, minimal, low, medium, high, xhigh."),
+        ] = None,
     ) -> None:
         config = load_project_or_exit()
         try:
@@ -339,7 +477,10 @@ def register_lead(app: typer.Typer) -> None:
                 if worker_name == DEFAULT_WORKER_NAME:
                     worker_name = "bg-test"
             worker_name = normalize_worker_name(worker_name)
+            thinking = normalize_thinking_level(thinking)
             config, session_id = with_named_worker_session(config, worker_name, new=new)
+            config = with_worker_profile(config, model=model, thinking=thinking)
+            profile_override = model is not None or thinking is not None
             named_worker_label = f" worker '{worker_name}'" if worker_name != DEFAULT_WORKER_NAME else " worker"
             auto_refresh_project_skills(config)
             _cli_main.ensure_broker_running(config)
@@ -347,14 +488,15 @@ def register_lead(app: typer.Typer) -> None:
             connector = _cli_main.PiConnector(config)
             if not connector.check_available():
                 raise PiConnectorError(f"Pi command not found: {connector.pi_command()}")
+            ensure_pi_model_available(connector, (config.get("work") or {}).get("model"))
 
             pid_path, log_path = work_background_paths(config, worker_name)
             existing = active_work_sessions(config, worker_name)
             tracked_pid = read_pid_file(pid_path)
-            existing_background = background_work_sessions(existing, tracked_pid)
+            existing_background = background_work_sessions(existing)
             ready_background = [session for session in existing_background if is_ready_work_session(config, session)]
             if existing and not replace:
-                if background and ready_background and not new and len(existing_background) == len(existing):
+                if background and ready_background and not new and not profile_override and len(existing_background) == len(existing):
                     session_id = str(ready_background[0].get("session_id") or "unknown")
                     console.print(f"[Orch] Background worker already ready: {session_id}")
                     console.print("[Orch] Use --new --replace to start a fresh worker session.")
@@ -438,22 +580,32 @@ def register_lead(app: typer.Typer) -> None:
         stop_worker = not broker or all_
         stop_broker = broker or all_
         if stop_worker:
-            worker_pid_path, _ = work_background_paths(config, target_worker_name)
-            tracked_pid = read_pid_file(worker_pid_path)
-            try:
-                sessions = active_work_sessions(config, target_worker_name)
-            except httpx.HTTPError:
-                sessions = []
-            background_sessions = background_work_sessions(sessions, tracked_pid)
-            if stop_pid_file(worker_pid_path, f"worker '{target_worker_name}'"):
-                release_work_sessions(config, background_sessions, f"Stopped by orch stop --name {target_worker_name}.")
-            elif sessions and explicit_worker_name:
-                release_work_sessions(config, sessions, f"Stopped by orch stop --name {target_worker_name}.")
-                console.print(f"[Orch] Fenced active worker '{target_worker_name}' session lease(s).")
-                console.print("[Orch] If it is a visible worker terminal, stop it there with Ctrl-C.")
-            elif sessions:
-                console.print("[Orch] Active worker session exists but no tracked background PID was found.")
-                console.print("[Orch] If it is a visible worker terminal, stop it there with Ctrl-C.")
+            if all_:
+                stopped_any = False
+                for name, pid_path in worker_pid_files(config):
+                    stopped_any = stop_pid_file(pid_path, f"worker '{name}'") or stopped_any
+                try:
+                    release_work_sessions(config, active_work_sessions(config), "Stopped by orch stop --all.")
+                except httpx.HTTPError:
+                    pass
+                if not stopped_any:
+                    console.print("[Orch] No tracked background worker PID files found for this project.")
+            else:
+                worker_pid_path, _ = work_background_paths(config, target_worker_name)
+                try:
+                    sessions = active_work_sessions(config, target_worker_name)
+                except httpx.HTTPError:
+                    sessions = []
+                background_sessions = background_work_sessions(sessions)
+                if stop_pid_file(worker_pid_path, f"worker '{target_worker_name}'"):
+                    release_work_sessions(config, background_sessions, f"Stopped by orch stop --name {target_worker_name}.")
+                elif sessions and explicit_worker_name:
+                    release_work_sessions(config, sessions, f"Stopped by orch stop --name {target_worker_name}.")
+                    console.print(f"[Orch] Fenced active worker '{target_worker_name}' session lease(s).")
+                    console.print("[Orch] If it is a visible worker terminal, stop it there with Ctrl-C.")
+                elif sessions:
+                    console.print("[Orch] Active worker session exists but no tracked background PID was found.")
+                    console.print("[Orch] If it is a visible worker terminal, stop it there with Ctrl-C.")
         if stop_broker:
             stop_pid_file(broker_pid_path(config), "broker")
         else:

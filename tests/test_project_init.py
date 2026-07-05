@@ -2,6 +2,7 @@ import yaml
 from typer.testing import CliRunner
 
 from orchlink.client import build_chat_envelope, build_task_envelope
+from orchlink.core.envelope import MessageEnvelope, envelope_to_dict
 from orchlink.cli.main import app
 from orchlink.core.prompt_policy import TaskPromptPolicy
 from orchlink.connector.pi_connector import PiConnector
@@ -114,6 +115,19 @@ def test_pi_connector_defaults_to_project_local_session_dir(tmp_path):
     assert session_dir.is_dir()
 
 
+def test_pi_connector_loads_ui_monitor_extension_for_lead_only(tmp_path):
+    init_project(tmp_path, project_id="demo")
+    config = load_project_config(tmp_path)
+
+    lead_argv = PiConnector(config).lead_argv()
+    work_argv = PiConnector(config).work_interactive_argv()
+
+    ui_extension = str(tmp_path / ".orch" / "run" / "orchlink-pi-ui-extension.ts")
+    assert ui_extension in lead_argv
+    assert ui_extension not in work_argv
+    assert (tmp_path / ".orch" / "run" / "orchlink-pi-ui-extension.ts").is_file()
+
+
 def test_pi_connector_launches_resolved_path_from_path_lookup(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     config = load_project_config(tmp_path)
@@ -142,6 +156,45 @@ def test_pi_connector_adds_current_scripts_dir_to_pi_environment(monkeypatch, tm
 
     assert env["PATH"].split(";" if ";" in env["PATH"] else ":")[0] == str(scripts_dir)
     assert env["Path"] == env["PATH"]
+
+
+def test_pi_connector_passes_worker_model_and_thinking_to_pi(tmp_path):
+    init_project(tmp_path, project_id="demo")
+    config = load_project_config(tmp_path)
+    config["work"]["model"] = "openai/codex-max"
+    config["work"]["thinking"] = "xhigh"
+
+    connector = PiConnector(config)
+    argv = connector.work_rpc_argv()
+    env = connector._env("work")
+
+    assert argv[argv.index("--model") + 1] == "openai/codex-max"
+    assert argv[argv.index("--thinking") + 1] == "xhigh"
+    assert env["ORCHLINK_WORKER_MODEL"] == "openai/codex-max"
+    assert env["ORCHLINK_WORKER_THINKING"] == "xhigh"
+
+
+def test_pi_connector_keeps_rpc_extension_discovery_for_ollama_provider(tmp_path):
+    init_project(tmp_path, project_id="demo")
+    config = load_project_config(tmp_path)
+    config["work"]["model"] = "ollama-cloud/kimi-k2.7-code"
+
+    argv = PiConnector(config).work_rpc_argv()
+
+    assert "--model" in argv
+    assert argv[argv.index("--model") + 1] == "ollama-cloud/kimi-k2.7-code"
+    assert "--no-extensions" not in argv
+    assert "--extension" in argv
+
+
+def test_pi_connector_disables_rpc_extension_discovery_for_builtin_providers(tmp_path):
+    init_project(tmp_path, project_id="demo")
+    config = load_project_config(tmp_path)
+    config["work"]["model"] = "openai-codex/gpt-5.5"
+
+    argv = PiConnector(config).work_rpc_argv()
+
+    assert "--no-extensions" in argv
 
 
 def test_pi_connector_acquire_metadata_cannot_override_session_identity(monkeypatch, tmp_path):
@@ -190,14 +243,16 @@ def test_chat_envelope_summarizes_topic_without_duplicating_full_message(tmp_pat
     long_message = "MODE: DISCUSS\nTASK_ID: SHOULD_NOT_BECOME_TOPIC\n" + ("x" * 180)
 
     envelope = build_chat_envelope(config, "work", "C001", long_message)
+    wire = envelope_to_dict(envelope)
 
-    assert envelope["type"] == "CHAT_START"
-    assert envelope["delivery"] == "conversation"
-    assert envelope["payload"]["topic"] == "MODE: DISCUSS"
-    assert envelope["payload"]["message"] == long_message
-    assert "Reply conversationally." in envelope["payload"]["constraints"]
-    assert envelope["payload"]["expected_reply"] == []
-    assert any("Do not read every file" in item for item in envelope["payload"]["constraints"])
+    assert isinstance(envelope, MessageEnvelope)
+    assert wire["type"] == "CHAT_START"
+    assert wire["delivery"] == "conversation"
+    assert wire["payload"]["topic"] == "MODE: DISCUSS"
+    assert wire["payload"]["message"] == long_message
+    assert "Reply conversationally." in wire["payload"]["constraints"]
+    assert wire["payload"]["expected_reply"] == []
+    assert any("Do not read every file" in item for item in wire["payload"]["constraints"])
 
 
 def test_project_ask_envelope_resolves_named_worker_alias_without_yaml_registry(tmp_path):
@@ -206,10 +261,12 @@ def test_project_ask_envelope_resolves_named_worker_alias_without_yaml_registry(
     data = yaml.safe_load(paths["config"].read_text(encoding="utf-8"))
 
     envelope = build_task_envelope(config, "review", "R001", "Return PLAN only.", timeout_seconds=30)
+    wire = envelope_to_dict(envelope)
 
-    assert envelope["project_id"] == "demo"
-    assert envelope["from_agent"] == "demo.lead"
-    assert envelope["to_agent"] == "demo.review"
+    assert isinstance(envelope, MessageEnvelope)
+    assert wire["project_id"] == "demo"
+    assert wire["from_agent"] == "demo.lead"
+    assert wire["to_agent"] == "demo.review"
     assert "workers" not in data
 
 
@@ -218,21 +275,29 @@ def test_project_ask_envelope_resolves_work_alias(tmp_path):
     config = load_project_config(tmp_path)
 
     envelope = build_task_envelope(config, "work", "T001", "Return PLAN only.", timeout_seconds=30)
+    wire = envelope_to_dict(envelope)
 
-    assert envelope["protocol"] == "orch-a2a-v1"
-    assert envelope["project_id"] == "demo"
-    assert envelope["from_agent"] == "demo.lead"
-    assert envelope["to_agent"] == "demo.work"
-    assert envelope["task_id"] == "T001"
-    assert envelope["delivery"] == "async"
-    assert envelope["payload"]["mode"] == "PLAN"
-    assert envelope["payload"]["scope"]["forbidden"] == [".git/**", ".orch/**", "node_modules/**", ".venv/**"]
-    assert envelope["payload"]["expected_reply"] == []
+    assert isinstance(envelope, MessageEnvelope)
+    assert wire["protocol"] == "orch-a2a-v1"
+    assert wire["project_id"] == "demo"
+    assert wire["from_agent"] == "demo.lead"
+    assert wire["to_agent"] == "demo.work"
+    assert wire["task_id"] == "T001"
+    assert wire["delivery"] == "async"
+    assert wire["payload"]["mode"] == "PLAN"
+    assert wire["payload"]["scope"]["forbidden"] == [".git/**", ".orch/**", "node_modules/**", ".venv/**"]
+    assert wire["payload"]["expected_reply"] == []
+    assert wire["payload"]["thinking"] == "xhigh"
 
-    review_envelope = build_task_envelope(config, "work", "T002", "Please inspect my changes.", timeout_seconds=30)
-    no_edit_envelope = build_task_envelope(config, "work", "T003", "Reply in one sentence. Do not inspect files or edit anything.", timeout_seconds=30)
-    do_envelope = build_task_envelope(config, "work", "T004", "Add one parser test. Do not edit docs.", timeout_seconds=30)
+    review_envelope = envelope_to_dict(build_task_envelope(config, "work", "T002", "Please inspect my changes.", timeout_seconds=30))
+    no_edit_envelope = envelope_to_dict(build_task_envelope(config, "work", "T003", "Reply in one sentence. Do not inspect files or edit anything.", timeout_seconds=30))
+    do_envelope = envelope_to_dict(build_task_envelope(config, "work", "T004", "Add one parser test. Do not edit docs.", timeout_seconds=30))
+    explicit_envelope = envelope_to_dict(build_task_envelope(config, "work", "T005", "Please inspect my changes.", timeout_seconds=30, thinking="low"))
 
     assert review_envelope["payload"]["mode"] == "REVIEW"
+    assert review_envelope["payload"]["thinking"] == "xhigh"
     assert no_edit_envelope["payload"]["mode"] == "PLAN"
+    assert no_edit_envelope["payload"]["thinking"] == "xhigh"
     assert do_envelope["payload"]["mode"] == "DO"
+    assert do_envelope["payload"]["thinking"] == "medium"
+    assert explicit_envelope["payload"]["thinking"] == "low"

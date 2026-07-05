@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from orchlink.broker.protocol import MessageEnvelope, PROTOCOL_VERSION
+from orchlink.core.envelope import MessageEnvelope, PROTOCOL_VERSION
 
 
 def sample_envelope(**overrides):
@@ -67,6 +67,19 @@ def test_payload_modes_parse():
         )
 
         assert envelope.payload.mode == mode
+
+
+def test_message_meta_thinking_levels_parse():
+    envelope = MessageEnvelope.model_validate(sample_envelope(meta={"thinking": "xhigh", "thinking_applied": "high"}))
+
+    assert envelope.meta.thinking == "xhigh"
+    assert envelope.meta.thinking_applied == "high"
+
+
+@pytest.mark.parametrize("level", ["max", "", "med"])
+def test_unknown_thinking_level_is_rejected(level):
+    with pytest.raises(ValidationError):
+        MessageEnvelope.model_validate(sample_envelope(meta={"thinking": level}))
 
 
 def test_chat_message_requires_talk_mode():

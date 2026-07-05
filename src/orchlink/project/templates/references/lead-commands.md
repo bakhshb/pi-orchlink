@@ -8,9 +8,9 @@ Human daily commands:
 
 - `orch init` creates `.orch/project.yaml`, generated lead/work skills, and reference files for a project.
 - `orch lead` starts or reopens the visible Pi lead session.
-- `orch work` starts or reopens the default visible Pi worker named `work`. Use `orch work --name review` for another configless named worker, `orch work --background --name bg-test --new` for an isolated headless test worker, or `orch work --background --test` as the shortcut.
+- `orch work` starts or reopens the default visible Pi worker named `work`. Use `orch work --name review` for another configless named worker, `orch work --background --name bg-test --new` for an isolated headless test worker, or `orch work --background --test` as the shortcut. Use `--model` and `--thinking` to pin a worker session's Pi model/default thinking; Orchlink validates model availability with `pi --list-models` before launching.
 - `orch doctor` checks project config, broker compatibility, Pi command, and generated skills.
-- `orch sessions` shows registered lead and named worker Pi sessions with worker name, runtime, backend, ready state, and lease heartbeat. Use `orch sessions --name review`, `--all`, or `--json` when useful.
+- `orch sessions` shows registered lead and named worker Pi sessions with worker name, model, reported thinking, runtime, backend, ready state, and lease heartbeat. Use `orch sessions --name review`, `--all`, or `--json` when useful.
 - `orch jobs` browses recent and active work in the current project.
 - `orch goal ...` runs PRD/plan-driven Goal Mode from source to verified completion. Read `goal-mode.md` before using it.
 - `orch stop` stops this project's tracked default background worker and leaves the shared broker running. Use `orch stop --name bg-test` for a named worker, or `orch stop --broker`/`--all` only when no other project needs that broker.
@@ -18,16 +18,16 @@ Human daily commands:
 
 Lead coordination commands:
 
-- `orch ask work --wait -t T001 -m "..."` sends a blocking task to a named worker (`work` by default; e.g. `orch ask review ...`). Use it for reviews, decisions, discussions, and any answer that changes your next action. `orch ask --no-wait` exists, but prefer `orch send` for async work so intent is obvious.
-- `orch send work -t T002 -m "..."` sends async work to one named worker only when you can safely work on a different scope while Pi works. Different worker names can run independent tasks; the same name remains single-flight.
+- `orch ask work --wait -t T001 -m "..."` sends a blocking task to a named worker (`work` by default; e.g. `orch ask review ...`). Use it for reviews, decisions, discussions, and any answer that changes your next action. Use `--edit` or `--message-file` for long/shell-sensitive prompts. Add `--thinking` only when one task needs an explicit thinking override. `orch ask --no-wait` exists, but prefer `orch send` for async work so intent is obvious.
+- `orch send work -t T002 -m "..."` sends async work to one named worker only when you can safely work on a different scope while Pi works. Different worker names can run independent tasks; the same name remains single-flight. Use `--edit` or `--message-file` for long/shell-sensitive prompts. Add `--thinking` only when one task needs an explicit thinking override.
 - `orch wait T002` waits for one exact task result. A wait timeout does not cancel the task.
 - `orch get T002` rereads a completed task result. Use `wait` or `get` routinely, not both.
 - `orch idle` is the safety gate. Run it before dependent tests, final conclusions, or assigning more worker work.
 - `orch peek T002` shows recent activity for long-running work. It does not return the final result.
 - `orch cancel T002 -m "reason"` cancels stale or no-longer-needed work before assigning something else. Read `recovery.md` for cancellation details.
-- `orch talk work -m "one short question" -r 6` starts Talk Mode with the worker.
-- `orch say C001 -m "answer or follow-up"` sends the next Talk turn.
-- `orch close C001 -m "Decision: ..."` closes Talk with a decision record.
+- `orch talk work -m "one short question" -r 6` starts Talk Mode with the worker. Use `--edit` or `--message-file` for long/shell-sensitive messages.
+- `orch say C001 -m "answer or follow-up"` sends the next Talk turn. Use `--edit` or `--message-file` for long/shell-sensitive messages.
+- `orch close C001 -m "Decision: ..."` closes Talk with a decision record. Use `--edit` or `--message-file` for long/shell-sensitive messages.
 
 Debug/reference commands:
 
@@ -63,6 +63,13 @@ Use `ask --wait` when the worker answer can change your next action.
 
 ```bash
 orch ask work --wait -t TREV001 -m "Please review my staged parser change. Inspect parser.py and tests/test_parser.py only; do not edit. You may run python3 -m pytest tests/test_parser.py -v. Reply with verdict, risks, files inspected, tests run, and whether I can proceed."
+```
+
+For long prompts or text containing backticks, `$VARS`, or quotes, prefer editor or file input:
+
+```bash
+orch ask work --wait -t TREV001 --edit
+orch ask work --wait -t TREV001 --message-file .orch/prompts/review.md
 ```
 
 Good uses:

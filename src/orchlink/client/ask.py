@@ -10,15 +10,23 @@ from typing import Any
 
 import httpx
 
-from orchlink.core.envelope import PROTOCOL_VERSION
+from orchlink.connector.pi_extension_pure import MODE_THINKING_DEFAULTS as SHARED_MODE_THINKING_DEFAULTS
+from orchlink.connector.pi_extension_pure import THINKING_LEVELS as SHARED_THINKING_LEVELS
+from orchlink.core.envelope import (
+    DeliveryMode,
+    MessageEnvelope,
+    MessageType,
+    PROTOCOL_VERSION,
+    envelope_to_dict,
+)
 from orchlink.core.prompt_policy import TaskPromptPolicy
 from orchlink.project.config import broker_api_key, broker_url, resolve_agent_id, role_agent_id
 
 
+THINKING_LEVELS = set(SHARED_THINKING_LEVELS)
+MODE_THINKING_DEFAULTS = dict(SHARED_MODE_THINKING_DEFAULTS)
 TASK_PROMPT_POLICY = TaskPromptPolicy()
-DEFAULT_EXPECTED_REPLY: list[str] = TASK_PROMPT_POLICY.default_expected_reply()
 TALK_EXPECTED_REPLY: list[str] = []
-VALID_TASK_MODES = set(TASK_PROMPT_POLICY.valid_task_modes)
 
 
 def summarize_chat_topic(message: str, limit: int = 120) -> str:
@@ -33,7 +41,25 @@ def infer_task_mode(message: str, default: str = "PLAN") -> str:
     return TASK_PROMPT_POLICY.infer_mode(message, default=default)
 
 
-def _base_envelope(config: dict[str, Any], to_agent: str, timeout_seconds: int) -> dict[str, Any]:
+def normalize_thinking_level(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    if normalized not in THINKING_LEVELS:
+        raise ValueError("Thinking level must be one of: off, minimal, low, medium, high, xhigh")
+    return normalized
+
+
+def thinking_for_mode(mode: str | None, explicit: str | None = None) -> str | None:
+    override = normalize_thinking_level(explicit)
+    if override:
+        return override
+    return MODE_THINKING_DEFAULTS.get(str(mode or "").upper())
+
+
+def _base_envelope_fields(config: dict[str, Any], to_agent: str, timeout_seconds: int) -> dict[str, Any]:
     project_id = str(config.get("project_id") or "default")
     return {
         "protocol": PROTOCOL_VERSION,
@@ -56,27 +82,30 @@ def build_task_envelope(
     task_id: str,
     message: str,
     timeout_seconds: int = 1800,
-    delivery: str = "async",
+    delivery: DeliveryMode = "async",
     mode: str | None = None,
-) -> dict[str, Any]:
+    thinking: str | None = None,
+) -> MessageEnvelope:
     project_id = str(config.get("project_id") or "default")
     scope = config.get("scope") or {"allowed": ["**/*"], "forbidden": []}
     selected_mode = TASK_PROMPT_POLICY.normalize_mode(mode, message)
-    envelope = _base_envelope(config, resolve_agent_id(config, worker), timeout_seconds)
-    return {
-        **envelope,
-        "conversation_id": f"{project_id}-tasks",
-        "task_id": task_id,
-        "type": "TASK",
-        "delivery": delivery,
-        "payload": {
-            "mode": selected_mode,
-            "intent": message,
-            "scope": scope,
-            "constraints": [],
-            "expected_reply": TASK_PROMPT_POLICY.default_expected_reply(),
-        },
-    }
+    return MessageEnvelope.model_validate(
+        {
+            **_base_envelope_fields(config, resolve_agent_id(config, worker), timeout_seconds),
+            "conversation_id": f"{project_id}-tasks",
+            "task_id": task_id,
+            "type": "TASK",
+            "delivery": delivery,
+            "payload": {
+                "mode": selected_mode,
+                "intent": message,
+                "thinking": thinking_for_mode(selected_mode, thinking),
+                "scope": scope,
+                "constraints": [],
+                "expected_reply": TASK_PROMPT_POLICY.default_expected_reply(),
+            },
+        }
+    )
 
 
 def build_chat_envelope(
@@ -84,43 +113,46 @@ def build_chat_envelope(
     worker: str,
     conversation_id: str,
     message: str,
-    message_type: str = "CHAT_START",
+    message_type: MessageType = "CHAT_START",
     turn: int = 1,
     max_turns: int = 6,
     timeout_seconds: int = 1800,
     transcript_preview: str = "",
     requires_reply: bool | None = None,
-) -> dict[str, Any]:
-    envelope = _base_envelope(config, resolve_agent_id(config, worker), timeout_seconds)
+    thinking: str | None = None,
+) -> MessageEnvelope:
     if requires_reply is None:
         requires_reply = message_type != "CHAT_CLOSE"
-    return {
-        **envelope,
-        "conversation_id": conversation_id,
-        "task_id": None,
-        "type": message_type,
-        "turn": turn,
-        "max_turns": max_turns,
-        "requires_reply": requires_reply,
-        "delivery": "conversation",
-        "payload": {
-            "mode": "TALK",
-            "topic": summarize_chat_topic(message) if message_type == "CHAT_START" else "",
-            "message": message,
-            "transcript_preview": transcript_preview,
-            "constraints": TASK_PROMPT_POLICY.talk_constraints(),
-            "expected_reply": TALK_EXPECTED_REPLY,
-        },
-    }
+    return MessageEnvelope.model_validate(
+        {
+            **_base_envelope_fields(config, resolve_agent_id(config, worker), timeout_seconds),
+            "conversation_id": conversation_id,
+            "task_id": None,
+            "type": message_type,
+            "turn": turn,
+            "max_turns": max_turns,
+            "requires_reply": requires_reply,
+            "delivery": "conversation",
+            "payload": {
+                "mode": "TALK",
+                "topic": summarize_chat_topic(message) if message_type == "CHAT_START" else "",
+                "message": message,
+                "thinking": thinking_for_mode("TALK", thinking),
+                "transcript_preview": transcript_preview,
+                "constraints": TASK_PROMPT_POLICY.talk_constraints(),
+                "expected_reply": TALK_EXPECTED_REPLY,
+            },
+        }
+    )
 
 
-async def post_envelope(config: dict[str, Any], envelope: dict[str, Any], wait: bool = False) -> dict[str, Any]:
+async def post_envelope(config: dict[str, Any], envelope: MessageEnvelope, wait: bool = False) -> dict[str, Any]:
     endpoint = "/v1/messages/send-and-wait" if wait else "/v1/messages/send"
     async with httpx.AsyncClient(base_url=broker_url(config), timeout=None) as client:
         response = await client.post(
             endpoint,
             headers={"X-API-Key": broker_api_key(config), "X-Orchlink-Project-ID": str(config.get("project_id") or "default")},
-            json=envelope,
+            json=envelope_to_dict(envelope),
         )
         response.raise_for_status()
         body = response.json()
@@ -128,10 +160,10 @@ async def post_envelope(config: dict[str, Any], envelope: dict[str, Any], wait: 
             return body
         return {
             **body,
-            "correlation_id": envelope["correlation_id"],
-            "conversation_id": envelope["conversation_id"],
-            "task_id": envelope.get("task_id"),
-            "to_agent": envelope["to_agent"],
+            "correlation_id": envelope.correlation_id,
+            "conversation_id": envelope.conversation_id,
+            "task_id": envelope.task_id,
+            "to_agent": envelope.to_agent,
         }
 
 
@@ -142,7 +174,14 @@ class WorkerBridge:
         self.config = config
         self.worker = worker
 
-    async def ask(self, task_id: str, message: str, timeout_seconds: int = 1800, wait: bool = True) -> dict[str, Any]:
+    async def ask(
+        self,
+        task_id: str,
+        message: str,
+        timeout_seconds: int = 1800,
+        wait: bool = True,
+        thinking: str | None = None,
+    ) -> dict[str, Any]:
         envelope = build_task_envelope(
             config=self.config,
             worker=self.worker,
@@ -150,10 +189,11 @@ class WorkerBridge:
             message=message,
             timeout_seconds=timeout_seconds,
             delivery="blocking" if wait else "async",
+            thinking=thinking,
         )
         return await post_envelope(self.config, envelope, wait=wait)
 
-    async def send(self, task_id: str, message: str, timeout_seconds: int = 1800) -> dict[str, Any]:
+    async def send(self, task_id: str, message: str, timeout_seconds: int = 1800, thinking: str | None = None) -> dict[str, Any]:
         envelope = build_task_envelope(
             config=self.config,
             worker=self.worker,
@@ -161,6 +201,7 @@ class WorkerBridge:
             message=message,
             timeout_seconds=timeout_seconds,
             delivery="async",
+            thinking=thinking,
         )
         return await post_envelope(self.config, envelope, wait=False)
 
@@ -171,6 +212,7 @@ class WorkerBridge:
         max_turns: int = 6,
         timeout_seconds: int = 1800,
         wait: bool = False,
+        thinking: str | None = None,
     ) -> dict[str, Any]:
         envelope = build_chat_envelope(
             config=self.config,
@@ -181,10 +223,19 @@ class WorkerBridge:
             turn=1,
             max_turns=max_turns,
             timeout_seconds=timeout_seconds,
+            thinking=thinking,
         )
         return await post_envelope(self.config, envelope, wait=wait)
 
-    async def say_talk(self, conversation_id: str, message: str, turn: int, max_turns: int, timeout_seconds: int = 1800) -> dict[str, Any]:
+    async def say_talk(
+        self,
+        conversation_id: str,
+        message: str,
+        turn: int,
+        max_turns: int,
+        timeout_seconds: int = 1800,
+        thinking: str | None = None,
+    ) -> dict[str, Any]:
         envelope = build_chat_envelope(
             config=self.config,
             worker=self.worker,
@@ -194,6 +245,7 @@ class WorkerBridge:
             turn=turn,
             max_turns=max_turns,
             timeout_seconds=timeout_seconds,
+            thinking=thinking,
         )
         return await post_envelope(self.config, envelope, wait=False)
 
@@ -219,8 +271,9 @@ async def ask_worker(
     message: str,
     timeout_seconds: int = 1800,
     wait: bool = True,
+    thinking: str | None = None,
 ) -> dict[str, Any]:
-    return await WorkerBridge(config, worker).ask(task_id, message, timeout_seconds, wait=wait)
+    return await WorkerBridge(config, worker).ask(task_id, message, timeout_seconds, wait=wait, thinking=thinking)
 
 
 async def send_worker(
@@ -229,8 +282,9 @@ async def send_worker(
     task_id: str,
     message: str,
     timeout_seconds: int = 1800,
+    thinking: str | None = None,
 ) -> dict[str, Any]:
-    return await WorkerBridge(config, worker).send(task_id, message, timeout_seconds)
+    return await WorkerBridge(config, worker).send(task_id, message, timeout_seconds, thinking=thinking)
 
 
 async def start_talk(
@@ -241,8 +295,11 @@ async def start_talk(
     max_turns: int = 6,
     timeout_seconds: int = 1800,
     wait: bool = False,
+    thinking: str | None = None,
 ) -> dict[str, Any]:
-    return await WorkerBridge(config, worker).start_talk(conversation_id, message, max_turns, timeout_seconds, wait=wait)
+    return await WorkerBridge(config, worker).start_talk(
+        conversation_id, message, max_turns, timeout_seconds, wait=wait, thinking=thinking
+    )
 
 
 async def say_talk(
@@ -253,8 +310,9 @@ async def say_talk(
     turn: int,
     max_turns: int,
     timeout_seconds: int = 1800,
+    thinking: str | None = None,
 ) -> dict[str, Any]:
-    return await WorkerBridge(config, worker).say_talk(conversation_id, message, turn, max_turns, timeout_seconds)
+    return await WorkerBridge(config, worker).say_talk(conversation_id, message, turn, max_turns, timeout_seconds, thinking=thinking)
 
 
 async def close_talk(
@@ -276,6 +334,7 @@ def ask_worker_sync(
     message: str,
     timeout_seconds: int = 1800,
     wait: bool = True,
+    thinking: str | None = None,
 ) -> dict[str, Any]:
     return asyncio.run(
         ask_worker(
@@ -285,6 +344,7 @@ def ask_worker_sync(
             message=message,
             timeout_seconds=timeout_seconds,
             wait=wait,
+            thinking=thinking,
         )
     )
 
@@ -295,8 +355,9 @@ def send_worker_sync(
     task_id: str,
     message: str,
     timeout_seconds: int = 1800,
+    thinking: str | None = None,
 ) -> dict[str, Any]:
-    return asyncio.run(send_worker(config, worker, task_id, message, timeout_seconds))
+    return asyncio.run(send_worker(config, worker, task_id, message, timeout_seconds, thinking=thinking))
 
 
 def start_talk_sync(
@@ -307,8 +368,9 @@ def start_talk_sync(
     max_turns: int = 6,
     timeout_seconds: int = 1800,
     wait: bool = False,
+    thinking: str | None = None,
 ) -> dict[str, Any]:
-    return asyncio.run(start_talk(config, worker, conversation_id, message, max_turns, timeout_seconds, wait=wait))
+    return asyncio.run(start_talk(config, worker, conversation_id, message, max_turns, timeout_seconds, wait=wait, thinking=thinking))
 
 
 def say_talk_sync(
@@ -319,8 +381,9 @@ def say_talk_sync(
     turn: int,
     max_turns: int,
     timeout_seconds: int = 1800,
+    thinking: str | None = None,
 ) -> dict[str, Any]:
-    return asyncio.run(say_talk(config, worker, conversation_id, message, turn, max_turns, timeout_seconds))
+    return asyncio.run(say_talk(config, worker, conversation_id, message, turn, max_turns, timeout_seconds, thinking=thinking))
 
 
 def close_talk_sync(
@@ -344,6 +407,7 @@ __all__ = [
     "close_talk",
     "close_talk_sync",
     "infer_task_mode",
+    "normalize_thinking_level",
     "post_envelope",
     "say_talk",
     "say_talk_sync",

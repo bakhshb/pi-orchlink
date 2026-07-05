@@ -1,6 +1,6 @@
 # Orchlink full manual smoke test
 
-Use this plan when validating real visible lead and named worker Pi sessions before a release or after changing coordination behavior. It is intentionally broader than a quick smoke: it exercises every documented `orch` command surface, Goal Mode, generated skill references, compaction hooks, the main broker/session/storage paths, and the real Pi handoff paths that unit tests cannot prove.
+Use this plan when validating real visible lead and named worker Pi sessions before a release or after changing coordination behavior. It is intentionally broader than a quick smoke: it exercises every documented `orch` command surface, Goal Mode, generated skill references, native Pi compaction compatibility, the main broker/session/storage paths, and the real Pi handoff paths that unit tests cannot prove.
 
 This is still not a mathematical proof of every timing race. Treat the full validation as:
 
@@ -47,6 +47,9 @@ Pass criteria:
 - Help text distinguishes human commands from debug/agent coordination commands where relevant.
 - `orch wait --help` documents `--timeout`, `--progress/--no-progress`, and `--poll-seconds`.
 - `orch jobs --help` documents `--active`, `--status`, `--kind`, `--id`, and `--json`.
+- `orch work --help` documents `--model` and `--thinking`.
+- `orch ask --help`, `orch send --help`, `orch talk --help`, `orch say --help`, and `orch close --help` document clean long-message inputs (`--edit`, `--message-file`, and `-m -`) where applicable.
+- `orch ask --help`, `orch send --help`, `orch talk --help`, and `orch say --help` document per-task/per-turn `--thinking` overrides.
 - `orch goal --help` lists `start`, `list`, `derive`, `review`, `approve`, `gate`, `work`, `resume`, `show`, `audit`, `signoff`, `trial`, `trials`, and `cancel`.
 
 ## 2. Create a throwaway project
@@ -80,7 +83,7 @@ Pass criteria:
 - `.orch/project.yaml`, `.orch/skills/lead.md`, `.orch/skills/work.md`, and `.orch/skills/references/*.md` exist.
 - `orch doctor` reports the project config and generated skills.
 - `orch doctor` reports `lead.md: current`, `work.md: current`, `references/: current`, and `Project .orch files: current`.
-- Broker compatibility is current. Expected health includes version `0.5.0` or newer and capabilities including:
+- Broker compatibility is current. Expected health includes version `0.5.3` or newer and capabilities including:
 
 ```text
 project_header_scope
@@ -225,18 +228,29 @@ Goal: prove configless named workers do not steal the default visible worker ses
 
 ```bash
 cd "$ORCH_SMOKE_ROOT"
-orch work --background --name bg-test --new --timeout 45
+pi --list-models
+export ORCH_SMOKE_MODEL="provider/model-from-pi-list-models"
+orch work --background --name bg-test --new --model "$ORCH_SMOKE_MODEL" --thinking xhigh --timeout 45
 orch sessions --name bg-test
-orch ask bg-test --wait -t TASK-BG-TEST-001 -m "Smoke test only. Reply exactly: bg-test-ok"
+orch ask bg-test --wait -t TASK-BG-TEST-001 --thinking low -m "Smoke test only. Reply exactly: bg-test-ok"
 orch stop --name bg-test
 orch sessions --all --name bg-test
 ```
 
+Model availability guard:
+
+```bash
+orch work --background --name bad-model --new --model orchlink/definitely-not-a-real-model || true
+orch sessions --name bad-model --all
+```
+
 Pass criteria:
 
-- `bg-test` appears as a separate worker name with runtime/backend and ready state.
-- `TASK-BG-TEST-001` routes to `bg-test`, not the default `work` worker.
+- `bg-test` appears as a separate worker name with runtime/backend, model, thinking, and ready state.
+- `orch sessions --name bg-test` shows the selected `ORCH_SMOKE_MODEL` and `xhigh` before the task; after the task, it shows a valid reported thinking level.
+- `TASK-BG-TEST-001` routes to `bg-test`, not the default `work` worker, and the per-task `--thinking low` override is accepted.
 - `orch stop --name bg-test` stops/releases only the named background worker.
+- The bad model command exits non-zero before starting a worker, prints `Pi model is not registered or available`, and lists available models when Pi can provide them.
 
 ## 6. Blocking task, async task, and wait/get paths
 
@@ -247,6 +261,14 @@ Blocking ask:
 ```bash
 orch ask work --wait -t TASK-BLOCKING-001 -m "Smoke test only. Inspect no files and make no edits. Reply in one sentence confirming you received TASK-BLOCKING-001."
 orch get TASK-BLOCKING-001
+```
+
+Message-file input, for prompts that contain shell-sensitive text:
+
+```bash
+printf '%s\n' 'Smoke test file input only. Inspect no files and make no edits. Confirm you received literal `backticks` and $VARS.' > /tmp/orch-smoke-prompt.txt
+orch ask work --wait -t TASK-MESSAGE-FILE-001 --message-file /tmp/orch-smoke-prompt.txt
+orch get TASK-MESSAGE-FILE-001
 ```
 
 Async send and wait:
@@ -287,6 +309,7 @@ orch get TASK-FAILED-STDERR-001 || true
 Pass criteria:
 
 - `ask --wait` prints a terminal result.
+- `--message-file` reads the message from a UTF-8 file and preserves shell-sensitive prompt text literally. `--edit` and `-m -` are available for interactive/editor and stdin workflows.
 - `send` returns immediately with guidance.
 - `wait` returns the exact requested task result.
 - `get` rereads the completed result.
@@ -550,9 +573,9 @@ Pass criteria for derivation:
 - The artifacts mention concrete `--name=value` behavior, not generic "work on everything" language.
 - If artifacts are vague, reject the gate and record the failure.
 
-## 8B. Compaction: native Pi compact and default no auto review compact
+## 8B. Compaction: native Pi compact only
 
-Goal: prove there is no separate Orchlink manual compact command, normal Pi `/compact` preserves Orchlink state, and review gates do not compact unexpectedly by default.
+Goal: prove there is no separate Orchlink compact command or hook. Pi's native `/compact` should remain available, and review gates should not trigger Orchlink compaction.
 
 Manual native Pi compaction:
 
@@ -591,17 +614,8 @@ Pass criteria:
 
 - The worker result remains visible in the lead conversation.
 - The lead reconciliation remains visible after the review.
-- Orchlink does not start auto phase compaction with default settings.
-- The Pi UI does not show `Orchlink auto phase compaction started`.
-
-Opt-in auto review compaction, required only for compaction/extension changes that touch the opt-in path:
-
-```bash
-# Restart the lead Pi session with auto review compaction explicitly enabled.
-ORCHLINK_AUTO_COMPACT_PHASES=review orch lead --new
-```
-
-Repeat the review/reconcile drill with a response that starts with `Review reconciled:`. Pass criteria: auto compaction starts only in this explicit opt-in session, never before the reconciliation response, and never while `orch idle` reports active work. Native `/compact` must still work.
+- Orchlink does not start or mention any Orchlink compaction flow.
+- Compaction remains Pi-native only.
 
 ## 9. Talk Mode follow-up, disagreement, max-turn discipline, and close
 
@@ -1031,12 +1045,13 @@ Pass criteria:
 | `update`, installer | Section 3 | Extended unless update/install changed |
 | `broker run`, health, auth, `stop` | Sections 4, 15 | Required; foreground flag drill extended |
 | `lead`, `work`, sessions, reopen without `--new` | Sections 5, 15 | Required |
+| Worker `--model`/`--thinking`, per-task thinking overrides, model guard, session display | Sections 1, 5a, 6-9, 10 | Required for model/thinking changes |
 | `ask`, `send`, `wait`, `get` | Sections 6-8 | Required |
 | Missing/failed result display | Section 6 | Required for CLI display changes |
 | REVIEW gate safety | Section 7 | Required |
 | Worker edits and tests | Section 8 | Required |
 | Goal Mode source, gate, work loop, evidence, audit, trial, signoff | Section 8A | Required for Goal Mode releases |
-| Native Pi compaction, default no-auto review flow, and opt-in auto review compaction | Section 8B | Required for compaction/extension changes |
+| Native Pi compaction and no Orchlink auto review compaction | Section 8B | Required for compaction/extension changes |
 | `talk`, `say`, `close`, closed/missing/max-turn errors | Section 9 | Required |
 | `jobs`, `idle`, named-worker locks, hard timeout | Section 10 | Core required; lock/timeout drills extended |
 | `cancel` | Section 11 | Required; shell abort timing extended |

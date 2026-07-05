@@ -25,7 +25,7 @@ Load bundled references only when the task needs that detail:
 
 - `references/core.md` — read before non-trivial Orchlink coordination: startup checks, command choice, ask/send/wait/get, jobs/idle, Talk Mode, prompt shape, and worker replies.
 - `references/goal-mode.md` — read before using `orch goal ...` or advising on PRD/plan-driven work.
-- `references/review-gates.md` — read before review gates, expensive test/release steps, or phase compaction.
+- `references/review-gates.md` — read before review gates or expensive test/release steps.
 - `references/recovery.md` — read when sessions, broker state, cancellation, stale results, or debug output are involved.
 
 ## Startup checklist

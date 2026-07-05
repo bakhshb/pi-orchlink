@@ -11,6 +11,7 @@ ENVELOPE_VERSION_HEADER = "x-orchlink-envelope"
 
 MessageType = Literal[
     "TASK",
+    "TASK_REPLY",
     "PLAN",
     "RESULT",
     "BLOCKER",
@@ -36,6 +37,7 @@ MessageStatus = Literal[
     "CLOSED",
 ]
 MessageMode = Literal["DISCUSS", "PLAN", "DO", "REVIEW", "TALK"]
+ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
 DeliveryMode = Literal["blocking", "async", "conversation"]
 AgentRole = Literal["lead", "worker"]
 
@@ -58,6 +60,13 @@ class MessagePayload(BaseModel):
     scope: Scope | None = None
     constraints: list[str] = Field(default_factory=list)
     expected_reply: list[str] = Field(default_factory=list)
+
+
+class MessageMeta(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    thinking: ThinkingLevel | None = None
+    thinking_applied: ThinkingLevel | None = None
 
 
 class AgentRegistration(BaseModel):
@@ -89,6 +98,7 @@ class MessageEnvelope(BaseModel):
     timeout_seconds: int = Field(default=1800, gt=0)
     delivery: DeliveryMode = "async"
     payload: MessagePayload = Field(default_factory=MessagePayload)
+    meta: MessageMeta = Field(default_factory=MessageMeta)
 
     @field_validator("protocol")
     @classmethod

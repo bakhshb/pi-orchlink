@@ -1,5 +1,17 @@
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Union
+
+from orchlink.core.envelope import AgentRegistration, MessageEnvelope
+from orchlink.core.models import Agent, SessionAcquire, SessionHeartbeat, StoredMessage, WorkerActivityInput
+
+
+# Storage inputs are typed inside the broker. Wire dictionaries are decoded at
+# FastAPI/client/JSONL boundaries before reaching the store abstraction.
+MessageInput = Union[MessageEnvelope, StoredMessage]
+AgentInput = Union[AgentRegistration, Agent]
+SessionAcquireInput = SessionAcquire
+SessionHeartbeatInput = SessionHeartbeat
+ActivityInput = WorkerActivityInput
 
 
 class MessageStoreBusy(RuntimeError):
@@ -15,13 +27,13 @@ class LeaseConflictError(RuntimeError):
 
 class MessageStore(ABC):
     @abstractmethod
-    async def register_agent(self, agent: dict[str, Any]) -> dict[str, Any]:
+    async def register_agent(self, agent: AgentInput) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
     async def enqueue_message(
         self,
-        message: dict[str, Any],
+        message: MessageInput,
         create_waiter: bool = False,
     ) -> dict[str, Any]:
         raise NotImplementedError
@@ -40,7 +52,7 @@ class MessageStore(ABC):
     async def save_reply(
         self,
         message_id: str,
-        reply: dict[str, Any],
+        reply: MessageInput,
         lease_epoch: int | None = None,
         lease_holder: str | None = None,
         session_lease_id: str | None = None,
@@ -57,7 +69,7 @@ class MessageStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def record_activity(self, activity: dict[str, Any]) -> dict[str, Any]:
+    async def record_activity(self, activity: ActivityInput) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
@@ -70,7 +82,7 @@ class MessageStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def acquire_session(self, session: dict[str, Any]) -> dict[str, Any]:
+    async def acquire_session(self, session: SessionAcquireInput) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
@@ -78,7 +90,7 @@ class MessageStore(ABC):
         self,
         lease_id: str,
         project_id: str | None = None,
-        heartbeat: dict[str, Any] | None = None,
+        heartbeat: SessionHeartbeatInput | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -118,7 +130,7 @@ class MessageStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def close_conversation(self, conversation_id: str, message: dict[str, Any]) -> dict[str, Any]:
+    async def close_conversation(self, conversation_id: str, message: MessageInput) -> dict[str, Any]:
         raise NotImplementedError
 
     @abstractmethod
