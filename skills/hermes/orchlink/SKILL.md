@@ -1,7 +1,7 @@
 ---
 name: orchlink
-description: "Use when Hermes is the Orchlink lead for local named Pi workers (`work`, `review`, `bg-test`): coordinate ask/send/talk/goal tasks, review gates, wait/get results, cancellation, and stale-state recovery."
-version: 1.1.1
+description: "Use when Hermes is the Orchlink lead for local named Pi workers (`work`, `review`, `bg-test`): coordinate ask/send/talk/goal tasks, review gates, jobs results, cancellation, and stale-state recovery. Must use whenever the user mentions Orchlink, orch commands, Pi workers, background/oneshot workers, review gates, stale sessions, or broker/session recovery."
+version: 1.1.3
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -18,13 +18,13 @@ Treat Orchlink as one local lead/work loop, not as a workflow engine or agent pl
 
 Do not substitute Hermes-native subagents or other Hermes delegation for named Pi workers. Orchlink's own `orch work --background` and `orch work --background --name ...` are the approved background workers; Hermes-native background sessions are not. If the human asks for Orchlink, work must flow through `orch work` plus `orch ask`/`orch send`; otherwise stop and ask whether a non-Orchlink substitute is acceptable.
 
-As an external agent, do not run plain `orch work` yourself; it opens an interactive Pi chat and blocks until the session ends. Use `orch work --background` for the default worker, add `--oneshot` when the background worker is task-scoped, or use `orch work --background --name bg-test --new`/`--test` for isolated background testing while a visible worker is already open.
+As an external agent, do not run plain `orch work` yourself; it opens an interactive Pi chat and blocks until the session ends. Use `orch work --background` for a persistent default worker, `orch work --background --new --replace --oneshot` for a fresh task-scoped worker, or `orch work --background --name bg-test --new`/`--test` for isolated background testing while a visible worker is already open.
 
 ## Reference files
 
 Load bundled references only when the task needs that detail:
 
-- `references/core.md` — read before non-trivial Orchlink coordination: startup checks, command choice, ask/send/wait/get, jobs/idle, Talk Mode, prompt shape, and worker replies.
+- `references/core.md` — read before non-trivial Orchlink coordination: startup checks, command choice, ask/send/jobs, Talk Mode, prompt shape, and worker replies.
 - `references/goal-mode.md` — read before using `orch goal ...` or advising on PRD/plan-driven work.
 - `references/review-gates.md` — read before review gates or expensive test/release steps.
 - `references/recovery.md` — read when sessions, broker state, cancellation, stale results, or debug output are involved.
@@ -37,7 +37,7 @@ From the target project directory, use Orchlink commands as the source of truth.
 command -v orch
 orch doctor
 orch sessions
-orch idle
+orch jobs --idle
 ```
 
 If `command -v orch` fails, stop and tell the human to install or update Orchlink. For local development, suggest:
@@ -49,8 +49,8 @@ cd /home/debian/projects/orchlink
 
 If the project is not initialized, ask the human to run `orch init`. If no worker session is active, this is a mandatory branch before any Orchlink task:
 
-1. Start the worker in the background, recommended for external agents: run `orch work --background`. Use `orch work --background --oneshot` when it should exit after one completed task reply. It returns only after the headless RPC worker becomes ready or fails with `.orch/run/orch-work.log` diagnostics.
-2. If a visible `work` terminal is already active and you only need to test background mode, use `orch work --background --name bg-test --new` or `orch work --background --test` and target `bg-test` explicitly.
+1. Start the worker in the background, recommended for external agents: run `orch work --background`. For a fresh task-scoped background worker that exits after one reply, use `orch work --background --new --replace --oneshot`; `--new --replace` avoids stale context or an active same-name session, and `--oneshot` exits after one completed task reply. It returns only after the headless RPC worker becomes ready or fails with `.orch/run/orch-work.log` diagnostics.
+2. If a visible `work` terminal is already active and you only need to test background mode, do not replace `work`; use `orch work --background --name bg-test --new --replace --oneshot` if `bg-test` may already exist, or `orch work --background --test` as the shortcut, and target `bg-test` explicitly.
 3. If the background worker fails or the human wants a visible worker terminal instead, ask them to run `orch work --new` in a separate terminal. Visible terminals are more reliable for long sessions.
 
 If neither option is available, stop and tell the human Orchlink cannot proceed yet. Do not silently use Hermes-native subagents as a substitute.
@@ -60,18 +60,19 @@ Do not start `orch lead` by default. Hermes can act as lead through CLI commands
 ## Quick command chooser
 
 1. Need a review, decision, critique, plan, or blocker answer before continuing? Use `orch ask work --wait` or target a specific active worker name such as `review`.
-2. Need worker implementation while you can work on a separate scope? Use `orch send <name>`, then `orch wait` later.
+2. Need long or heavy worker implementation while you stay responsive? Use `orch send <name>`, then continue with independent lead work. Use `orch jobs --result <task_id>` or `orch jobs --wait <task_id>` only when the result actually blocks your next action. Do not use `orch ask --wait` for heavy implementation just to start work; that blocks the lead until the worker finishes.
 3. Need PRD/plan-driven completion with acceptance criteria? Read `references/goal-mode.md`, then use `orch goal ...`.
 4. Need short peer discussion in a visible lead/work chat? Use Talk Mode.
-5. Need to know whether it is safe to continue? Use `orch idle`.
+5. Need to know whether it is safe to continue? Use `orch jobs --idle`.
 6. Need active work details? Use `orch jobs --active`.
-7. Need final output? Use `orch wait T002` or `orch get T002`, not `orch jobs`.
+7. Need final output? Use `orch jobs --wait T002` or `orch jobs --result T002`, not the plain jobs list.
 
 ## Safety rules
 
 - Keep Hermes-owned work and worker-owned work separate.
 - Do not expose API keys, tokens, secrets, or private logs in prompts.
 - Do not ask the worker to edit outside the allowed scope.
+- Do not stop visible worker terminals from the lead. Stop only tracked background workers; a visible worker should be stopped by the human in its own terminal with Ctrl-C.
 - Do not run dependent full tests while worker work is active.
 - Do not make final claims until blocking reviews and active work are resolved.
 - Do not accept worker output blindly. Name the risk, disagreement, or assumption before deciding.

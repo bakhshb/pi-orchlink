@@ -7,7 +7,7 @@ Use this file when normal coordination output is stale, contradictory, cross-pro
 Cancel stale or no-longer-needed work before assigning more work:
 
 ```bash
-orch cancel T002 -m "reason"
+orch jobs --cancel T002 -m "reason"
 ```
 
 Cancellation marks broker work `CANCELLED` and asks Pi to abort the current turn. Future tool calls should be blocked. Already-running shell commands are best-effort and may only stop if Pi's abort reaches them.
@@ -16,7 +16,7 @@ After cancellation:
 
 ```bash
 orch jobs --id T002
-orch idle
+orch jobs --idle
 ```
 
 Do not assume cancelled shell commands stopped instantly.
@@ -29,7 +29,7 @@ Use readable checks first:
 orch doctor
 orch sessions
 orch jobs --active
-orch idle
+orch jobs --idle
 ```
 
 Use help when unsure:
@@ -68,10 +68,10 @@ orch work --new
 Raw debug commands:
 
 ```bash
-orch status --task T002 --limit 20
-orch watch --iterations 1 --limit 20
-orch task T002
+orch broker status --task T002 --limit 20
+orch broker watch --iterations 1 --limit 20
+orch jobs --live T002
 orch broker run --host 127.0.0.1 --port 8787
 ```
 
-Do not use raw debug output for normal coordination or session checks. Use `orch sessions` for sessions and `orch jobs`/`idle` for work state.
+Do not use raw debug output for normal coordination or session checks. Use `orch sessions` for sessions and `orch jobs`/`orch jobs --idle` for work state.

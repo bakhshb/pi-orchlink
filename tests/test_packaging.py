@@ -151,7 +151,7 @@ def test_readme_documents_resume_as_first_recovery_command_for_g006_ac7():
     assert "last broker checkpoint" in text
     assert "drifted leases" in text
     assert "one recommended next command" in text
-    assert "`orch idle`" in text
+    assert "`orch jobs --idle`" in text
     assert "`orch jobs`" in text
     assert "`orch sessions`" in text
     assert "`orch goal show Gxxx`" in text
@@ -222,13 +222,36 @@ def test_cli_imports_from_installable_package_and_exposes_required_commands():
     assert "talk" in result.output
     assert "say" in result.output
     assert "close" in result.output
-    assert "cancel" in result.output
     assert "jobs" in result.output
-    assert "idle" in result.output
-    assert "peek" in result.output
-    assert "status" in result.output
+    assert "--cancel" in CliRunner().invoke(app, ["jobs", "--help"]).output
+    assert "--idle" in CliRunner().invoke(app, ["jobs", "--help"]).output
+    assert "--live" in CliRunner().invoke(app, ["jobs", "--help"]).output
     assert "doctor" in result.output
     assert "update" in result.output
+
+
+def test_skill_references_list_all_top_level_cli_commands():
+    from orchlink.cli.main import app
+    from orchlink.cli.commands.broker import broker_app
+    from orchlink.goal.cli import goal_app
+
+    top_level = {command.name or command.callback.__name__.replace("_", "-") for command in app.registered_commands}
+    top_level.update(group.name for group in app.registered_groups)
+    goal_commands = {command.name or command.callback.__name__.replace("_", "-") for command in goal_app.registered_commands}
+    broker_commands = {command.name or command.callback.__name__.replace("_", "-") for command in broker_app.registered_commands}
+
+    reference_paths = [
+        ROOT / "src" / "orchlink" / "project" / "templates" / "references" / "lead-commands.md",
+        ROOT / "skills" / "general" / "orchlink" / "references" / "core.md",
+    ]
+    for path in reference_paths:
+        text = path.read_text(encoding="utf-8")
+        for command in sorted(top_level):
+            assert f"`orch {command}`" in text
+        for command in sorted(goal_commands):
+            assert command in text
+        for command in sorted(broker_commands):
+            assert command in text
 
 
 def test_pi_extension_uses_valid_record_type():

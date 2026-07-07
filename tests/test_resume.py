@@ -47,7 +47,7 @@ def test_resume_cli_reports_status_checkpoint_drift_and_recommendation(monkeypat
     assert "Last broker checkpoint:" in result.output
     assert "Drifted leases since checkpoint:" in result.output
     assert "T900: missing_after_restart" in result.output
-    assert "Recommended next: orch cancel T900" in result.output
+    assert "Recommended next: orch jobs --cancel T900" in result.output
     assert "Needs intervention." in result.output
 
 
@@ -151,5 +151,5 @@ def test_resume_states():
         )
     )
     assert "T003: epoch_changed" in stale
-    assert "Recommended next: orch get T003" in stale
+    assert "Recommended next: orch jobs --result T003" in stale
     assert "Needs intervention." in stale

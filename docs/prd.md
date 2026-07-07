@@ -50,9 +50,9 @@ Current protocol/status names are close but not identical; do not treat this lif
 Everything else should derive from that model:
 
 - `orch jobs`
-- `orch wait`
-- `orch get`
-- `orch idle`
+- `orch jobs --wait`
+- `orch jobs --result`
+- `orch jobs --idle`
 - cancellation
 - timeout handling
 - activity
@@ -98,8 +98,8 @@ Near-term reliability should come from:
 - visible sessions
 - session leases and expiry
 - `orch jobs`
-- `orch idle`
-- `orch cancel`
+- `orch jobs --idle`
+- `orch jobs --cancel`
 - `orch doctor`
 - simple restart guidance
 
@@ -186,11 +186,11 @@ orch send work -t T002 -m "Implement ..."
 orch talk work -m "one short question" -r 6
 orch say C001 -m "follow-up"
 orch close C001 -m "Decision: ..."
-orch wait T002
-orch get T002
-orch idle
-orch peek T002
-orch cancel T002 -m "reason"
+orch jobs --wait T002
+orch jobs --result T002
+orch jobs --idle
+orch jobs --live T002
+orch jobs --cancel T002 -m "reason"
 ```
 
 Rules:
@@ -198,18 +198,18 @@ Rules:
 - `ask --wait` is for synchronous decisions and review gates.
 - `send` is for async work only when lead can work on a different scope.
 - `talk` is for visible discussion, not automation glue.
-- `wait` and `get` should not both be used routinely.
-- `idle` is a safety check before dependent tests, final conclusions, or new worker assignment.
-- `cancel` marks broker work cancelled immediately, but process interruption is best-effort.
+- `jobs --wait` and `jobs --result` should not both be used routinely.
+- `jobs --idle` is a safety check before dependent tests, final conclusions, or new worker assignment.
+- `jobs --cancel` marks broker work cancelled immediately, but process interruption is best-effort.
 
 ### 6.3 Debug/reference commands
 
 These exist for debugging and advanced inspection:
 
 ```bash
-orch status
-orch watch
-orch task T001
+orch broker status
+orch broker watch
+orch jobs T001
 orch broker run
 ```
 
@@ -385,7 +385,7 @@ Fields:
 
 ### 8.5 Event
 
-An event is a runtime observation used by `orch watch`, status views, and debugging.
+An event is a runtime observation used by `orch broker watch`, status views, and debugging.
 
 Examples:
 
@@ -598,7 +598,7 @@ Cancellation is coordination cancellation, not process isolation.
 
 Expected behavior:
 
-- `orch cancel <id>` marks matching broker work `CANCELLED` immediately.
+- `orch jobs --cancel <id>` marks matching broker work `CANCELLED` immediately.
 - pending `wait` calls resolve with cancellation.
 - task/conversation/job status changes to cancelled.
 - an event is recorded.
@@ -747,42 +747,42 @@ Sends async work. Must block REVIEW unless explicitly allowed as non-gating asyn
 
 Manage visible Talk Mode conversations. Must preserve plain conversational UX and max-turn protection.
 
-#### `orch idle`
+#### `orch jobs --idle`
 
 Exit-code safety check:
 
 - 0: no active/blocking work
 - 1: active/blocking work exists
 
-#### `orch wait`
+#### `orch jobs --wait`
 
 Waits for one exact task result. A wait timeout does not cancel the task.
 
-#### `orch get`
+#### `orch jobs --result`
 
 Reads or rereads a task result, or conversation summary when supported.
 
-#### `orch peek`
+#### `orch jobs --live`
 
 Shows recent activity for long-running work only.
 
-#### `orch cancel`
+#### `orch jobs --cancel`
 
 Marks work cancelled and asks Pi to stop. Must be honest about best-effort interruption.
 
 ### Debug/reference commands
 
-#### `orch status`
+#### `orch broker status`
 
 Prints raw broker status JSON for debugging.
 
-#### `orch watch`
+#### `orch broker watch`
 
 Watches broker events for debugging worker activity and routing.
 
-#### `orch task`
+#### `orch jobs <id>`
 
-Shows focused route/activity status until `orch jobs --id` fully replaces it.
+Shows focused route/status details for one job. Use `orch jobs --live <id>` for recent activity.
 
 #### `orch broker run`
 
@@ -801,8 +801,8 @@ Orchlink is acceptable for v1 when:
 7. `orch send` supports async work without stacking worker work.
 8. `orch talk/say/close` supports visible Talk conversations.
 9. `orch jobs` is the main current-project work browser.
-10. `orch idle` correctly reports active/blocking work through its exit code.
-11. `orch wait` and `orch get` return project-scoped results and reject stale cross-project data.
+10. `orch jobs --idle` correctly reports active/blocking work through its exit code.
+11. `orch jobs --wait` and `orch jobs --result` return project-scoped results and reject stale cross-project data.
 12. Activity telemetry appears for active work when supported by Pi.
 13. Cancellation marks broker state immediately and sends best-effort stop/abort steering to Pi.
 14. Timeout behavior is explicit and tested.

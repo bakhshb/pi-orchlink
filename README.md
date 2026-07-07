@@ -56,7 +56,7 @@ orch stop      # stop this project's default background worker; add --name for a
 orch update    # update Orchlink
 ```
 
-Commands like `orch ask`, `orch send`, `orch talk`, `orch say`, `orch close`, `orch wait`, `orch get`, `orch idle`, `orch peek`, and `orch cancel` are mostly for the lead agent. Debug commands like `orch status`, `orch watch`, `orch task`, and `orch broker run` are for troubleshooting.
+Commands like `orch ask`, `orch send`, `orch talk`, `orch say`, `orch close`, and `orch jobs --wait/--result/--idle/--live/--cancel` are mostly for the lead agent. Debug commands like `orch broker status`, `orch broker watch`, and `orch broker run` are for troubleshooting.
 
 ## Install
 
@@ -129,7 +129,7 @@ For external agents or background use, start the worker without blocking the cur
 orch work --background
 ```
 
-This starts the headless Pi RPC worker named `work`, writes `.orch/run/orch-work.pid` and `.orch/run/orch-work.log`, waits for readiness, and returns. Add `--oneshot` when the background worker should exit after one completed task reply. Use a visible worker terminal (`orch work --new`) if background readiness fails or you want to watch the Pi worker chat.
+This starts the headless Pi RPC worker named `work`, writes `.orch/run/orch-work.pid` and `.orch/run/orch-work.log`, waits for readiness, and returns. For a fresh task-scoped background worker that should exit after one completed task reply, use `orch work --background --new --replace --oneshot`. Use a visible worker terminal (`orch work --new`) if background readiness fails or you want to watch the Pi worker chat.
 
 Named workers need no YAML setup. Start another durable worker context with `--name` and target it by that name:
 
@@ -141,9 +141,9 @@ orch send review -t R001 -m "Review only, no edits."
 To test background mode while a visible `orch work` terminal is already open, do not replace it. Start an isolated named worker instead:
 
 ```bash
-orch work --background --name bg-test --new
+orch work --background --name bg-test --new --replace --oneshot
 orch ask bg-test --wait -t BG001 -m "Reply exactly: bg-ok"
-orch stop --name bg-test
+# --oneshot exits after the reply; use orch stop --name bg-test only for persistent background workers.
 ```
 
 `orch work --background --test` is the shortcut for that background test worker.
@@ -187,7 +187,7 @@ You should not need to watch the broker or copy messages between terminals.
 
 Use `orch resume` first when returning after an interruption, broker restart, cancelled task, or compacted conversation. It prints the active task or goal, lead/work sessions, the last broker checkpoint, drifted leases, and one recommended next command in a single plain-text report.
 
-Use the narrower commands when you already know what you need: `orch idle` for a quick safe/unsafe worker check, `orch jobs` for recent task/talk rows, `orch sessions` for lead/work session leases, and `orch goal show Gxxx` for a specific goal's acceptance evidence.
+Use the narrower commands when you already know what you need: `orch jobs --idle` for a quick safe/unsafe worker check, `orch jobs` for recent task/talk rows, `orch sessions` for lead/work session leases, and `orch goal show Gxxx` for a specific goal's acceptance evidence.
 
 ## How lead should use work
 
@@ -388,7 +388,7 @@ For real-session validation beyond unit tests, run the manual smoke plan in [`do
 
 ## Agent skills
 
-This repo includes a general Orchlink lead skill plus adapter skills for OpenClaw and Hermes while Pi runs named worker sessions such as `work`, `review`, or `bg-test`. External leads should prefer `orch ask --wait` for synchronous decisions/reviews, use `orch wait` or `orch get` but not both unless rereading, and reserve Talk Mode for visible lead/work discussion.
+This repo includes a general Orchlink lead skill plus adapter skills for OpenClaw and Hermes while Pi runs named worker sessions such as `work`, `review`, or `bg-test`. External leads should prefer `orch ask --wait` for synchronous decisions/reviews, use `orch jobs --wait` or `orch jobs --result` but not both unless rereading, and reserve Talk Mode for visible lead/work discussion.
 
 ```text
 skills/general/orchlink/SKILL.md
@@ -470,7 +470,7 @@ Orchlink has one `orch` command, but the commands are meant for different audien
 | --- | --- |
 | `orch init` | Set up `.orch/` for the current project. |
 | `orch lead` | Start or reopen the visible lead Pi session. |
-| `orch work` | Start or reopen the visible worker named `work`; use `--name review` for another named worker, `--background --test` for isolated background smoke, and `--model`/`--thinking` to pin worker runtime defaults. |
+| `orch work` | Start or reopen the visible worker named `work`; use `--name review` for another named worker, `--background --test` for isolated background smoke, `--new --replace --oneshot` for fresh task-scoped background work, and `--model`/`--thinking` to pin worker runtime defaults. |
 | `orch doctor` | Check local setup, broker compatibility, Pi command, and generated skills. |
 | `orch sessions` | Show active lead and named worker Pi sessions, model, reported thinking, runtime/backend, ready state, and leases. Use `--name` or `--all` as needed. |
 | `orch jobs` | Main browser for recent work in the current project ID. Status is authoritative. |
@@ -485,27 +485,41 @@ You normally do not type these yourself. The lead agent uses them when it coordi
 
 | Command | What it means |
 | --- | --- |
-| `orch ask work --wait -t T001 -m "..."` | Ask a named worker and wait. Replace `work` with `review`, `test`, etc. when targeting another worker. Use `--edit` or `--message-file` for long prompts; add `--thinking xhigh` to override one task. |
-| `orch send work -t T002 -m "..."` | Send one named worker an independent task only when lead can work on another scope. Different names can run in parallel; one name stays single-flight. Use `--edit` or `--message-file` for long prompts; add `--thinking medium` to override one task. |
+| `orch ask work --wait -t T001 -m "..."` | Ask a named worker and wait for reviews, decisions, or blockers. Replace `work` with `review`, `test`, etc. when targeting another worker. Do not use it for long/heavy implementation that can be dispatched with `send`. Use `--edit` or `--message-file` for long prompts; add `--thinking xhigh` to override one task. |
+| `orch send work -t T002 -m "..."` | Send one named worker an independent task only when lead can work on another scope. Different names can run in parallel; one name stays single-flight. Retrieve the result later with `orch jobs --result` or `orch jobs --wait` only when it blocks the next step. Use `--edit` or `--message-file` for long prompts; add `--thinking medium` to override one task. |
 | `orch talk work -m "..." -r 6` | Start a visible lead/work discussion for up to 6 lead↔worker rounds. Use `--edit` or `--message-file` for long messages. Do not use Talk as automation glue. |
 | `orch say C001 -m "..."` | Continue a Talk Mode conversation. Use `--edit` or `--message-file` for long messages. |
 | `orch close C001 -m "..."` | Close Talk Mode with a decision. Use `--edit` or `--message-file` for long messages. |
-| `orch wait T002` | Wait for that exact task result and print worker activity while waiting. This does not cancel the task if the wait times out. |
-| `orch get T002` | Read or reread a completed task result. Use `wait` or `get`, not both routinely. |
-| `orch idle` | Script/check idle state across workers; add `--name review` for one named worker. |
-| `orch peek T002` | Show recent worker heartbeat/tool activity for long-running work; `orch peek --name review` peeks the active job for that worker. |
-| `orch cancel T002 -m "..."` | Mark broker work CANCELLED immediately and ask Pi to abort the current turn. Future tool calls are blocked when possible; already-running shell commands are best-effort. |
+| `orch jobs --wait T002` | Wait for that exact task result and print worker activity while waiting. This does not cancel the task if the wait times out. |
+| `orch jobs --result T002` | Read or reread a completed task result. Use `--wait` or `--result`, not both routinely. |
+| `orch jobs --idle` | Script/check idle state across workers; add `--name review` for one named worker. |
+| `orch jobs --live T002` | Show recent worker heartbeat/tool activity for long-running work; add `--name review` to focus on one worker. |
+| `orch jobs --cancel T002 -m "..."` | Mark broker work CANCELLED immediately and ask Pi to abort the current turn. Future tool calls are blocked when possible; already-running shell commands are best-effort. |
 
 Useful `jobs` filters:
 
 | Command | What it means |
 | --- | --- |
+| `orch jobs T002` | Inspect one job's current status and route. |
 | `orch jobs --active` | Show active/open/blocking work. |
+| `orch jobs --idle` | Exit 0 only when no active/blocking worker work remains. |
+| `orch jobs --live T002` | Show recent activity for one task/conversation. |
+| `orch jobs --result T002` | Print a terminal result or Talk summary. |
+| `orch jobs --wait T002` | Block for one exact task result. |
+| `orch jobs --cancel T002 -m "..."` | Cancel stale or unneeded work. |
 | `orch jobs --status STATUS` | Filter by broker status. |
 | `orch jobs --kind task\|talk` | Show only task or Talk conversation rows. |
 | `orch jobs --id T002` | Focus on one task/conversation/message ID. |
 | `orch jobs --json` | Print machine-readable jobs output. |
 | `orch jobs --name review` | Filter jobs for one named worker. |
+
+If the status commands feel similar, use this order:
+
+1. `orch jobs --idle` answers "can I proceed?" with a yes/no exit code.
+2. `orch jobs --active` answers "what is currently busy?"
+3. `orch jobs --live <task_id>` answers "what progress has that busy task reported?"
+4. `orch jobs --result <task_id>` or `orch jobs --wait <task_id>` retrieves the final result.
+5. `orch broker status` is raw broker JSON for debugging, not the normal human status command.
 
 For big tasks, give work more time when sending the task. For long prompts, use the editor or a prompt file so shell quoting stays clean:
 
@@ -519,12 +533,11 @@ orch send work -t T012 --message-file .orch/prompts/chunk-2.md
 
 | Command | Use |
 | --- | --- |
-| `orch status --task T010 --since-id 120 --limit 20` | Print raw broker JSON for debugging; normal agents should not use it for coordination. |
-| `orch watch` | Watch broker events, including worker activity heartbeats/tool calls. Lifecycle lines are labeled QUEUED, DELIVERED, or SETTLED. |
-| `orch task T010` | Show focused route/activity status until `orch jobs --id` fully replaces it. |
+| `orch broker status --task T010 --since-id 120 --limit 20` | Print raw broker JSON for debugging; normal agents should not use it for coordination. |
+| `orch broker watch` | Watch broker events, including worker activity heartbeats/tool calls. Lifecycle lines are labeled QUEUED, DELIVERED, or SETTLED. |
 | `orch broker run --host 127.0.0.1 --port 8787` | Run the broker by hand. |
 
-`orch get` and `orch wait` refuse cross-project or unscoped task results. If you see a stale-broker error, stop the old broker only after checking no other project needs it, then restart fresh sessions:
+`orch jobs --result` and `orch jobs --wait` refuse cross-project or unscoped task results. If you see a stale-broker error, stop the old broker only after checking no other project needs it, then restart fresh sessions:
 
 ```bash
 orch stop --all
@@ -549,7 +562,7 @@ orch sessions --all
 For broker debugging in long sessions, filter raw status output instead of dumping everything:
 
 ```bash
-orch status --task T010 --since-id 120 --limit 20
+orch broker status --task T010 --since-id 120 --limit 20
 # use --all-projects only for broker debugging
 ```
 

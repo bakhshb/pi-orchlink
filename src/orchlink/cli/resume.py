@@ -131,19 +131,19 @@ def _drift_recommendation(drifts: Sequence[DriftedLease]) -> tuple[str, str]:
     first = drifts[0]
     if first.reason == "missing_after_restart":
         return (
-            f"orch cancel {first.task_id}",
+            f"orch jobs --cancel {first.task_id}",
             f"Task {first.task_id} had no live lease after the restart; "
             "cancel it before resending to avoid a duplicate job.",
         )
     if first.reason == "epoch_changed":
         return (
-            f"orch get {first.task_id}",
+            f"orch jobs --result {first.task_id}",
             f"Task {first.task_id} was re-acquired during downtime; "
             "read the latest result before deciding whether to cancel.",
         )
     if first.reason == "holder_changed":
         return (
-            f"orch cancel {first.task_id}",
+            f"orch jobs --cancel {first.task_id}",
             f"Task {first.task_id} moved to a different holder during "
             "downtime; cancel and decide whether to retry.",
         )
@@ -166,7 +166,7 @@ def _recommendation(state: ResumeState) -> tuple[str, str]:
             )
         if first.state.upper() in {"BLOCKING", "DELIVERED"}:
             return (
-                f"orch get {first.task_id}",
+                f"orch jobs --result {first.task_id}",
                 f"Task {first.task_id} is waiting for a result; read or wait on it.",
             )
         return (

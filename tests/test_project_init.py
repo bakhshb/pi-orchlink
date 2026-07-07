@@ -46,9 +46,9 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "## Non-negotiable safety rules" in lead_skill
     assert "orch ask work --wait" in lead_skill
     assert "orch send" in lead_skill
-    assert "orch wait" in lead_skill
-    assert "orch get" in lead_skill
-    assert "orch idle" in lead_skill
+    assert "orch jobs --wait" in lead_skill
+    assert "orch jobs --result" in lead_skill
+    assert "orch jobs --idle" in lead_skill
     assert "references/lead-commands.md" in lead_skill
     assert "references/goal-mode.md" in lead_skill
     policy = TaskPromptPolicy()

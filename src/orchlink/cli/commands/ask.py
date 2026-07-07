@@ -56,7 +56,7 @@ def _print_task_body(body: dict[str, Any]) -> None:
 
 
 def job_activity_line_for(job: dict[str, Any]) -> str:
-    """Render the ``last activity: ...`` line used by ``orch task`` and ``get``.
+    """Render the ``last activity: ...`` line used by jobs result/live output.
 
     Inlined rather than imported to keep this module free of cross-group
     dependencies — the helpers module's ``job_activity_line`` has the same
@@ -70,9 +70,10 @@ def job_activity_line_for(job: dict[str, Any]) -> str:
 def print_async_guidance(config: dict[str, Any], worker_id: str, task_id: str) -> None:
     console.print(f"[Orch] Sent {task_id} to {worker_id}.")
     console.print("[Orch] Async mode: worker scope is pending.")
-    console.print("[Orch] Check status: orch jobs")
-    console.print(f"[Orch] Wait: orch wait {task_id}")
-    console.print(f"[Orch] Read result: orch get {task_id}")
+    console.print("[Orch] Check active work: orch jobs --active")
+    console.print(f"[Orch] Watch activity: orch jobs --live {task_id}")
+    console.print(f"[Orch] Wait: orch jobs --wait {task_id}")
+    console.print(f"[Orch] Read result: orch jobs --result {task_id}")
 
 
 def register_ask(app: typer.Typer) -> None:
@@ -202,5 +203,5 @@ def register_ask(app: typer.Typer) -> None:
         print_async_guidance(config, worker_id, task_id)
         if mode == "REVIEW" and allow_async_review:
             console.print(
-                f"[Orch] Async REVIEW is not a gate. Before acting on it, verify the exact result with: orch wait {task_id}"
+                f"[Orch] Async REVIEW is not a gate. Before acting on it, verify the exact result with: orch jobs --wait {task_id}"
             )

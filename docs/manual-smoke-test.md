@@ -32,11 +32,13 @@ Goal: prove every public command is installed and help is discoverable.
 ```bash
 orch --help
 orch broker --help
+orch broker status --help
+orch broker watch --help
 orch broker run --help
 
 for cmd in \
-  init lead work ask send task talk say close jobs sessions idle peek get wait \
-  cancel update watch stop status doctor resume goal; do
+  init lead work ask send talk say close jobs sessions \
+  update stop doctor resume goal broker; do
   orch "$cmd" --help >/tmp/orch-help-$cmd.txt || exit 1
 done
 ```
@@ -45,8 +47,7 @@ Pass criteria:
 
 - Every command prints help and exits successfully.
 - Help text distinguishes human commands from debug/agent coordination commands where relevant.
-- `orch wait --help` documents `--timeout`, `--progress/--no-progress`, and `--poll-seconds`.
-- `orch jobs --help` documents `--active`, `--status`, `--kind`, `--id`, and `--json`.
+- `orch jobs --help` documents `--active`, `--idle`, `--live`, `--result`, `--wait`, `--cancel`, `--timeout`, `--progress/--no-progress`, `--poll-seconds`, `--status`, `--kind`, `--id`, and `--json`.
 - `orch work --help` documents `--model` and `--thinking`.
 - `orch ask --help`, `orch send --help`, `orch talk --help`, `orch say --help`, and `orch close --help` document clean long-message inputs (`--edit`, `--message-file`, and `-m -`) where applicable.
 - `orch ask --help`, `orch send --help`, `orch talk --help`, and `orch say --help` document per-task/per-turn `--thinking` overrides.
@@ -252,15 +253,15 @@ Pass criteria:
 - `orch stop --name bg-test` stops/releases only the named background worker.
 - The bad model command exits non-zero before starting a worker, prints `Pi model is not registered or available`, and lists available models when Pi can provide them.
 
-## 6. Blocking task, async task, and wait/get paths
+## 6. Blocking task, async task, and jobs result paths
 
-Goal: prove `ask`, `send`, `wait`, `get`, progress polling, and exact task IDs.
+Goal: prove `ask`, `send`, `jobs --wait`, `jobs --result`, progress polling, and exact task IDs.
 
 Blocking ask:
 
 ```bash
 orch ask work --wait -t TASK-BLOCKING-001 -m "Smoke test only. Inspect no files and make no edits. Reply in one sentence confirming you received TASK-BLOCKING-001."
-orch get TASK-BLOCKING-001
+orch jobs --result TASK-BLOCKING-001
 ```
 
 Message-file input, for prompts that contain shell-sensitive text:
@@ -268,7 +269,7 @@ Message-file input, for prompts that contain shell-sensitive text:
 ```bash
 printf '%s\n' 'Smoke test file input only. Inspect no files and make no edits. Confirm you received literal `backticks` and $VARS.' > /tmp/orch-smoke-prompt.txt
 orch ask work --wait -t TASK-MESSAGE-FILE-001 --message-file /tmp/orch-smoke-prompt.txt
-orch get TASK-MESSAGE-FILE-001
+orch jobs --result TASK-MESSAGE-FILE-001
 ```
 
 Async send and wait:
@@ -276,34 +277,34 @@ Async send and wait:
 ```bash
 orch send work -t TASK-ASYNC-001 -m "Smoke test only. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-ASYNC-001."
 orch jobs --id TASK-ASYNC-001
-orch wait TASK-ASYNC-001 --timeout 300 --poll-seconds 1
-orch get TASK-ASYNC-001
+orch jobs --wait TASK-ASYNC-001 --timeout 300 --poll-seconds 1
+orch jobs --result TASK-ASYNC-001
 ```
 
 Ask without waiting:
 
 ```bash
 orch ask work --no-wait -t TASK-ASK-NOWAIT-001 -m "Smoke test for ask --no-wait. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-ASK-NOWAIT-001."
-orch wait TASK-ASK-NOWAIT-001 --timeout 300 --no-progress
+orch jobs --wait TASK-ASK-NOWAIT-001 --timeout 300 --no-progress
 ```
 
 Wait timeout does not cancel:
 
 ```bash
 orch send work -t TASK-WAIT-TIMEOUT-001 -m "Smoke test wait timeout. Do not edit files. Wait about 10 seconds, then reply that TASK-WAIT-TIMEOUT-001 completed."
-orch wait TASK-WAIT-TIMEOUT-001 --timeout 2 --poll-seconds 1
+orch jobs --wait TASK-WAIT-TIMEOUT-001 --timeout 2 --poll-seconds 1
 orch jobs --active
-orch wait TASK-WAIT-TIMEOUT-001 --timeout 60
+orch jobs --wait TASK-WAIT-TIMEOUT-001 --timeout 60
 ```
 
 Missing-result and failed-result display:
 
 ```bash
-orch get TASK-DOES-NOT-EXIST || true
-orch wait TASK-DOES-NOT-EXIST --timeout 1 --no-progress || true
+orch jobs --result TASK-DOES-NOT-EXIST || true
+orch jobs --wait TASK-DOES-NOT-EXIST --timeout 1 --no-progress || true
 
 orch ask work --wait -t TASK-FAILED-STDERR-001 -m "Smoke test failed-result display. Do not edit files. Run python3 -c 'import sys; sys.stderr.write(\"smoke-stderr\\n\"); sys.exit(3)' and report the command failure, including stderr if your harness exposes it."
-orch get TASK-FAILED-STDERR-001 || true
+orch jobs --result TASK-FAILED-STDERR-001 || true
 ```
 
 Pass criteria:
@@ -311,8 +312,8 @@ Pass criteria:
 - `ask --wait` prints a terminal result.
 - `--message-file` reads the message from a UTF-8 file and preserves shell-sensitive prompt text literally. `--edit` and `-m -` are available for interactive/editor and stdin workflows.
 - `send` returns immediately with guidance.
-- `wait` returns the exact requested task result.
-- `get` rereads the completed result.
+- `jobs --wait` returns the exact requested task result.
+- `jobs --result` rereads the completed result.
 - `ask --no-wait` behaves like async task submission.
 - Timeout output clearly says the task is still pending unless cancelled or expired.
 - Missing task lookups are explicit and do not return another task's result.
@@ -338,7 +339,7 @@ Explicit async review, only for non-gating checks:
 
 ```bash
 orch send work --allow-async-review -t TASK-REVIEW-ASYNC-001 -m "Non-gating smoke review. Inspect no files and make no edits. Reply with no findings for TASK-REVIEW-ASYNC-001."
-orch wait TASK-REVIEW-ASYNC-001 --timeout 300
+orch jobs --wait TASK-REVIEW-ASYNC-001 --timeout 300
 ```
 
 Blocking review gate:
@@ -362,9 +363,9 @@ Goal: prove worker can make a scoped edit and report verification.
 orch send work -t TASK-EDIT-001 -m "In this throwaway parser project, add one tiny parser behavior and one focused test. Edit only orch_task.py and tests/test_orch_task.py. Do not edit .orch, docs, install files, or unrelated tests. Run python3 -m pytest tests/test_orch_task.py -v. Return files changed, tests run, and remaining risks."
 orch jobs --active
 orch jobs --id TASK-EDIT-001
-orch task TASK-EDIT-001
-orch peek TASK-EDIT-001 || true
-orch wait TASK-EDIT-001 --timeout 300
+orch jobs TASK-EDIT-001
+orch jobs --live TASK-EDIT-001 || true
+orch jobs --wait TASK-EDIT-001 --timeout 300
 python3 -m pytest tests/test_orch_task.py -v
 ```
 
@@ -378,8 +379,8 @@ Pass criteria:
 
 - Worker edits only the allowed files.
 - Focused test passes for worker and lead.
-- `orch task` reports route/status/activity while the task exists.
-- `peek` reports activity if activity was recorded; no activity is acceptable for very short tasks.
+- `orch jobs` reports route/status/activity while the task exists.
+- `jobs --live` reports activity if activity was recorded; no activity is acceptable for very short tasks.
 - Review result arrives before the lead treats the edit as accepted.
 
 ## 8A. Goal Mode: goal loop to verified done
@@ -601,7 +602,7 @@ Default review flow must not compact:
 
 ```bash
 orch ask work --wait -t TASK-NO-AUTO-COMPACT-001 -m "Please review only orch_task.py and tests/test_orch_task.py for the smoke compaction drill. Do not edit. You may run python3 -m pytest tests/test_orch_task.py -v. Return verdict, risks, files inspected, and tests run."
-orch idle
+orch jobs --idle
 ```
 
 After the review result appears in the visible lead Pi chat, prompt lead in that same chat:
@@ -632,7 +633,7 @@ After the worker reply appears in the lead Pi chat:
 ```bash
 orch say C001 -m "This is a teaching toy parser, not production CLI behavior. Prefer simple, explicit errors."
 orch close C001 -m "Decision: reject unknown flags explicitly. Rationale: easier teaching/debugging. Dissent/risk accepted: less permissive than argparse. Next step: implement only if requested. Owner: lead. Human approval needed: no"
-orch get C001
+orch jobs --result C001
 ```
 
 Disagreement path:
@@ -664,11 +665,11 @@ Pass criteria:
 - `close` records a decision and the conversation becomes terminal.
 - Empty Talk/Say messages are rejected locally.
 - `say` against closed, missing, or max-turn conversations exits non-zero with a useful message.
-- `orch get C###` prints conversation summary/guidance.
+- `orch jobs --result C###` prints conversation summary/guidance.
 
-## 10. Jobs, filters, idle, and stale activity handling
+## 10. Jobs filters, idle gate, and stale activity handling
 
-Goal: prove `jobs` is the main browser and `idle` is the safety gate.
+Goal: prove `jobs` is the main browser and `jobs --idle` is the safety gate.
 
 ```bash
 orch jobs
@@ -681,17 +682,17 @@ orch jobs --kind talk
 orch jobs --id TASK-EDIT-001
 orch jobs --json
 orch jobs --kind bad || true
-orch idle
+orch jobs --idle
 ```
 
 Active-work drill:
 
 ```bash
 orch send work -t TASK-IDLE-ACTIVE-001 -m "Idle drill. Do not edit files. Wait about 15 seconds, then reply that TASK-IDLE-ACTIVE-001 completed."
-orch idle || true
+orch jobs --idle || true
 orch jobs --active
-orch wait TASK-IDLE-ACTIVE-001 --timeout 60
-orch idle
+orch jobs --wait TASK-IDLE-ACTIVE-001 --timeout 60
+orch jobs --idle
 ```
 
 Extended worker-name locking and hard-timeout drills:
@@ -699,7 +700,7 @@ Extended worker-name locking and hard-timeout drills:
 ```bash
 orch send work -t TASK-WORKER-LOCK-001 -m "Worker-name locking drill. Do not edit files. Wait about 20 seconds, then reply that TASK-WORKER-LOCK-001 completed."
 orch send work -t TASK-WORKER-LOCK-002 -m "This should be rejected while TASK-WORKER-LOCK-001 owns the worker named work." || true
-orch wait TASK-WORKER-LOCK-001 --timeout 60
+orch jobs --wait TASK-WORKER-LOCK-001 --timeout 60
 
 orch talk work -m "Keep this talk open until I close it; I will verify open Talk blocks new worker tasks." -r 3
 # Replace C004 with the printed conversation ID.
@@ -709,7 +710,7 @@ orch close C004 -m "Decision: open Talk blocks tasks for the same worker name. R
 orch send work --timeout 2 -t TASK-HARD-TIMEOUT-001 -m "Hard timeout drill. Do not edit files. Wait about 30 seconds, then reply that TASK-HARD-TIMEOUT-001 completed."
 sleep 5
 orch jobs --id TASK-HARD-TIMEOUT-001
-orch idle
+orch jobs --idle
 ```
 
 Extended lease-expiry and reclaim drill (M3):
@@ -739,7 +740,7 @@ Pass criteria:
 - `--active` shows only pending/running/open work.
 - `--status`, `--kind`, `--id`, and `--json` filter correctly.
 - Unknown `--kind` exits non-zero with a useful message.
-- `idle` exits non-zero while active work exists and exits zero afterward.
+- `jobs --idle` exits non-zero while active work exists and exits zero afterward.
 - Terminal jobs do not display stale heartbeat activity as proof of active work.
 - Extended lease drill: after the lease TTL expires with no heartbeat, `POST /v1/jobs/{id}/reclaim` reassigns the holder and increments `epoch`; a stale-holder `POST /v1/jobs/{id}/heartbeat` or a reply with `X-Orchlink-Lease-Epoch`/`X-Orchlink-Lease-Holder` from the old holder returns 409 with no state change. Reclaim by the current holder while still valid is idempotent (`reclaimed=false`).
 - Extended: second worker task is rejected while one task is active.
@@ -755,34 +756,34 @@ Task cancellation:
 ```bash
 orch send work -t TASK-CANCEL-001 -m "Cancellation drill. Do not edit files. Wait about 30 seconds, then reply that TASK-CANCEL-001 completed."
 orch jobs --active
-orch cancel TASK-CANCEL-001 -m "manual cancellation drill"
+orch jobs --cancel TASK-CANCEL-001 -m "manual cancellation drill"
 orch jobs --id TASK-CANCEL-001
-orch idle
+orch jobs --idle
 ```
 
 Shell-command cancellation, if you want to measure tool-abort behavior:
 
 ```bash
 orch send work -t TASK-CANCEL-SHELL-001 -m "Shell cancellation drill. Do not edit files. Run python3 -c 'import time; time.sleep(30)' and then reply that TASK-CANCEL-SHELL-001 completed."
-orch peek TASK-CANCEL-SHELL-001
-orch cancel TASK-CANCEL-SHELL-001 -m "manual shell cancellation drill"
+orch jobs --live TASK-CANCEL-SHELL-001
+orch jobs --cancel TASK-CANCEL-SHELL-001 -m "manual shell cancellation drill"
 orch jobs --id TASK-CANCEL-SHELL-001
-orch idle
+orch jobs --idle
 ```
 
 Conversation cancellation:
 
 ```bash
 orch talk work -m "Hold this conversation open briefly so I can cancel it." -r 3
-orch cancel C003 -m "manual talk cancellation drill"
+orch jobs --cancel C003 -m "manual talk cancellation drill"
 orch jobs --id C003
-orch idle
+orch jobs --idle
 ```
 
 Completed-task cancellation:
 
 ```bash
-orch cancel TASK-BLOCKING-001 -m "completed task cancellation check" || true
+orch jobs --cancel TASK-BLOCKING-001 -m "completed task cancellation check" || true
 orch jobs --id TASK-BLOCKING-001
 ```
 
@@ -794,19 +795,19 @@ Pass criteria:
 - Already-running shell commands are recorded as best-effort, not guaranteed immediate stop.
 - Cancelling completed work does not resurrect or corrupt terminal state.
 
-## 12. Raw debug commands: status, task, watch, peek
+## 12. Raw debug commands and jobs live/status views
 
-Goal: prove debug commands work but remain secondary to `jobs`/`idle` for normal coordination.
+Goal: prove debug commands work but remain secondary to `jobs`/`jobs --idle` for normal coordination.
 
 ```bash
-orch status --limit 20
-orch status --task TASK-EDIT-001 --limit 20
-orch status --since-id 0 --limit 5
-orch status --all-projects --limit 5
-orch task TASK-EDIT-001
-orch task DOES-NOT-EXIST || true
-orch peek TASK-EDIT-001 || true
-orch watch --iterations 1 --limit 5
+orch broker status --limit 20
+orch broker status --task TASK-EDIT-001 --limit 20
+orch broker status --since-id 0 --limit 5
+orch broker status --all-projects --limit 5
+orch jobs TASK-EDIT-001
+orch jobs DOES-NOT-EXIST || true
+orch jobs --live TASK-EDIT-001 || true
+orch broker watch --iterations 1 --limit 5
 # Audit journal (M1): append-only transition log, observability-only.
 curl -s -H 'X-API-Key: change-me' 'http://127.0.0.1:8787/v1/journal?project_id=smoke-full&limit=20'
 curl -s -H 'X-API-Key: change-me' 'http://127.0.0.1:8787/v1/journal?project_id=smoke-full&since=0&limit=5' | python3 -m json.tool
@@ -814,10 +815,10 @@ curl -s -H 'X-API-Key: change-me' 'http://127.0.0.1:8787/v1/journal?project_id=s
 
 Pass criteria:
 
-- `status` prints raw JSON and respects task/project filters.
-- `task` reports known task status and handles missing IDs cleanly.
-- `peek` is useful for long-running work and harmless for short completed work.
-- `watch --iterations 1` exits after one poll.
+- `broker status` prints raw JSON and respects task/project filters.
+- `jobs <id>` reports known task status and handles missing IDs cleanly.
+- `jobs --live` is useful for long-running work and harmless for short completed work.
+- `broker watch --iterations 1` exits after one poll.
 - `GET /v1/journal?project_id=&since=&limit=` returns ordered transition entries scoped to the project; goal transitions (`goal.started`, `goal.gated`, `goal.worked`, `goal.done`, `goal.cancelled`, `goal.signedoff`) and broker transitions (`job.created`, `job.dispatched`, `job.replied`, `session.registered`, etc.) both appear.
 
 ## 13. Project scoping and same-ID safety
@@ -831,7 +832,7 @@ export ORCH_SMOKE_ROOT_B="$(mktemp -d /tmp/orchlink-smoke-b-XXXXXX)"
 cd "$ORCH_SMOKE_ROOT_B"
 orch init --project-id smoke-full-b
 orch jobs
-orch status --limit 20
+orch broker status --limit 20
 orch resume
 ```
 
@@ -840,16 +841,16 @@ From the original project:
 ```bash
 cd "$ORCH_SMOKE_ROOT"
 orch jobs
-orch status --limit 20
-orch status --all-projects --limit 20
+orch broker status --limit 20
+orch broker status --all-projects --limit 20
 orch resume
 ```
 
-If you have a visible lead/work pair for the second project, also submit the same task ID in both projects and verify each `orch get TASK-SAME-ID-001` returns only the local project result.
+If you have a visible lead/work pair for the second project, also submit the same task ID in both projects and verify each `orch jobs --result TASK-SAME-ID-001` returns only the local project result.
 
 Pass criteria:
 
-- Current-project `jobs`/`status`/`resume` output does not show other project jobs or checkpoint drift.
+- Current-project `jobs`/`broker status`/`resume` output does not show other project jobs or checkpoint drift.
 - `--all-projects` is explicitly required for cross-project debug visibility.
 - Same task IDs in different projects do not collide.
 - `orch resume` filters checkpoint leases to the current project; stale leases for another project sharing the broker must not produce a `Needs intervention.` report.
@@ -873,14 +874,14 @@ In another terminal, with lead/work sessions attached to this broker:
 ```bash
 cd "$ORCH_SMOKE_ROOT"
 orch ask work --wait -t TASK-JSONL-001 -m "JSONL smoke. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-JSONL-001. I will restart the broker after this."
-orch get TASK-JSONL-001
+orch jobs --result TASK-JSONL-001
 ```
 
 Stop and restart the foreground broker, then run:
 
 ```bash
 cd "$ORCH_SMOKE_ROOT"
-orch get TASK-JSONL-001
+orch jobs --result TASK-JSONL-001
 orch jobs --id TASK-JSONL-001
 ```
 
@@ -899,7 +900,7 @@ Use a throwaway foreground broker so you can kill only the smoke broker process:
 
 ```bash
 cd "$ORCH_SMOKE_ROOT"
-orch idle
+orch jobs --idle
 orch stop --broker || true
 orch broker run --store-backend jsonl --store-path .orch/run/crash-journal.jsonl
 ```
@@ -909,7 +910,7 @@ In another terminal, with lead/work sessions attached to this foreground broker:
 ```bash
 cd "$ORCH_SMOKE_ROOT"
 orch ask work --wait -t TASK-CRASH-PERSIST-001 -m "Crash recovery smoke. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-CRASH-PERSIST-001."
-orch get TASK-CRASH-PERSIST-001
+orch jobs --result TASK-CRASH-PERSIST-001
 ```
 
 Kill the foreground broker terminal ungracefully, for example by sending `SIGKILL` to that broker process. Do not use a broad `pkill` on a machine running other Orchlink projects. Then run:
@@ -917,10 +918,10 @@ Kill the foreground broker terminal ungracefully, for example by sending `SIGKIL
 ```bash
 cd "$ORCH_SMOKE_ROOT"
 orch jobs
-orch get TASK-CRASH-PERSIST-001
+orch jobs --result TASK-CRASH-PERSIST-001
 orch sessions
 orch jobs --active
-orch idle
+orch jobs --idle
 ```
 
 Optional stale-worker drill:
@@ -931,15 +932,15 @@ orch send work -t TASK-STALE-WORKER-001 -m "Stale worker drill. Do not edit file
 # Wait longer than the session lease/heartbeat timeout configured for this broker, then:
 orch sessions --all
 orch jobs --id TASK-STALE-WORKER-001
-orch idle || true
+orch jobs --idle || true
 ```
 
 Pass criteria:
 
 - A normal command restarts the broker after the ungraceful death.
-- `orch get TASK-CRASH-PERSIST-001` still returns the completed result from JSONL storage.
+- `orch jobs --result TASK-CRASH-PERSIST-001` still returns the completed result from JSONL storage.
 - `sessions`/`jobs` make stale or released sessions explicit instead of silently showing healthy active work.
-- `jobs --active` and `idle` reflect the real terminal state; stale heartbeats are not treated as proof of active work.
+- `jobs --active` and `jobs --idle` reflect the real terminal state; stale heartbeats are not treated as proof of active work.
 - Optional stale-worker drill either cancels/times out the orphaned task or leaves an explicit terminal/recoverable state; it must not block the named worker forever.
 
 ## 15. Stop/restart and session release
@@ -949,7 +950,7 @@ Goal: prove background-worker stop behavior, broker cleanup, and visible session
 ```bash
 cd "$ORCH_SMOKE_ROOT"
 orch work --background --new
-orch idle
+orch jobs --idle
 orch sessions
 orch stop
 orch sessions
@@ -978,7 +979,7 @@ Pass criteria:
 - A later command restarts the broker.
 - Sessions can be re-registered after restart.
 - `lead`/`work` without `--new` reopen saved sessions.
-- `idle` is clean before final conclusions.
+- `jobs --idle` is clean before final conclusions.
 
 ## 16. Peer-offline guard
 
@@ -1023,7 +1024,7 @@ Run from the smoke project:
 cd "$ORCH_SMOKE_ROOT"
 orch jobs
 orch jobs --active
-orch idle
+orch jobs --idle
 orch sessions --all
 ```
 
@@ -1046,16 +1047,16 @@ Pass criteria:
 | `broker run`, health, auth, `stop` | Sections 4, 15 | Required; foreground flag drill extended |
 | `lead`, `work`, sessions, reopen without `--new` | Sections 5, 15 | Required |
 | Worker `--model`/`--thinking`, per-task thinking overrides, model guard, session display | Sections 1, 5a, 6-9, 10 | Required for model/thinking changes |
-| `ask`, `send`, `wait`, `get` | Sections 6-8 | Required |
+| `ask`, `send`, `jobs --wait`, `jobs --result` | Sections 6-8 | Required |
 | Missing/failed result display | Section 6 | Required for CLI display changes |
 | REVIEW gate safety | Section 7 | Required |
 | Worker edits and tests | Section 8 | Required |
 | Goal Mode source, gate, work loop, evidence, audit, trial, signoff | Section 8A | Required for Goal Mode releases |
 | Native Pi compaction and no Orchlink auto review compaction | Section 8B | Required for compaction/extension changes |
 | `talk`, `say`, `close`, closed/missing/max-turn errors | Section 9 | Required |
-| `jobs`, `idle`, named-worker locks, hard timeout | Section 10 | Core required; lock/timeout drills extended |
-| `cancel` | Section 11 | Required; shell abort timing extended |
-| `task`, `peek`, `watch`, `status` | Section 12 | Required for CLI/debug changes |
+| `jobs`, `jobs --idle`, named-worker locks, hard timeout | Section 10 | Core required; lock/timeout drills extended |
+| `jobs --cancel` | Section 11 | Required; shell abort timing extended |
+| `jobs <id>`, `jobs --live`, `broker watch`, `broker status` | Section 12 | Required for CLI/debug changes |
 | Project scoping, `resume` checkpoint scope, and same-ID safety | Section 13 | Required for scoping/resume changes |
 | JSONL persistence | Section 14 | Extended unless storage changed |
 | Ungraceful broker crash and stale-session recovery | Section 14A | Extended unless broker/session/persistence changed; required before production-readiness claims |
@@ -1075,7 +1076,7 @@ Task/conversation ID:
 Expected:
 Actual:
 Broker health output:
-Relevant orch jobs --id / orch get / orch status / orch resume output:
+Relevant orch jobs --id / orch jobs --result / orch broker status / orch resume output:
 Relevant lead/work Pi chat excerpt:
 Files changed unexpectedly:
 ```

@@ -1,5 +1,4 @@
-"""``orch task``, ``orch jobs``, ``orch idle``, ``orch peek``, ``orch sessions``,
-``orch get``, ``orch wait``, ``orch cancel`` — job inspection and wait commands."""
+"""``orch jobs`` and ``orch sessions`` — job inspection and session commands."""
 
 from __future__ import annotations
 
@@ -134,113 +133,299 @@ def validate_task_body_project(config: dict[str, Any], body: dict[str, Any], tas
     raise typer.Exit(1)
 
 
-def register_jobs(app: typer.Typer) -> None:
-    """Register all jobs/sessions/inspection/wait commands on the given Typer app."""
+def _jobs_body(
+    config: dict[str, Any],
+    *,
+    limit: int,
+    active: bool = False,
+    status: str | None = None,
+    kind: str | None = None,
+    item_id: str | None = None,
+    worker_name: str | None = None,
+) -> dict[str, Any]:
+    broker_limit = 500 if (active or status or kind or item_id or worker_name) else limit
+    body = _cli_main.broker_get_sync(
+        config,
+        jobs_query(config, limit=broker_limit, active=active, status=status, kind=kind, item_id=item_id),
+    )
+    filtered = filter_jobs(body.get("jobs", []), active=active, status=status, kind=kind, item_id=item_id)
+    filtered = filter_jobs_by_worker_name(config, filtered, worker_name)
+    body["jobs"] = [sanitize_job(job) for job in filtered[:limit]]
+    return body
 
-    @app.command(help="Show live broker status for a task: route, delivery, and latest activity. Use `orch get` for the final result body.")
-    def task(task_id: str) -> None:
-        config = load_project_or_exit()
+
+def _print_jobs_table(config: dict[str, Any], jobs: list[dict[str, Any]]) -> None:
+    console.print("ID\tWORKER\tKIND\tMODE\tSTATUS\tUPDATED\tROUTE\tPREVIEW")
+    for job in jobs:
+        preview = str(job.get("preview") or job.get("last_message_preview") or "")
+        console.print(
+            f"{job_id(job)}\t{worker_name_for_job(config, job)}\t{job_kind(job)}\t{job.get('mode', '-')}\t{job.get('status', '-')}\t"
+            f"{human_age(job.get('updated_at') or job.get('created_at'))}\t{job_route(job)}\t{preview}"
+        )
+        activity = _cli_main.job_activity_line(job)
+        if activity:
+            console.print(f"  last activity: {activity}")
+
+
+def _print_one_job(
+    config: dict[str, Any],
+    item_id: str,
+    *,
+    json_output: bool = False,
+    active: bool = False,
+    status: str | None = None,
+    kind: str | None = None,
+    worker_name: str | None = None,
+) -> None:
+    body = _jobs_body(config, limit=1, active=active, status=status, kind=kind, item_id=item_id, worker_name=worker_name)
+    if json_output:
+        console.print_json(json.dumps(body))
+        return
+    jobs = body.get("jobs") or []
+    if not jobs:
+        console.print(f"[Orch] No job found for {item_id}.")
+        raise typer.Exit(1)
+    job = jobs[0]
+    console.print(f"[Orch] Job {job_id(job)}: {job_kind(job)} {job.get('mode', '-')} {job.get('status', '-')}")
+    console.print(f"[Orch] Worker: {worker_name_for_job(config, job)}")
+    console.print(f"[Orch] Route: {job_route(job)}")
+    console.print(f"[Orch] Updated: {human_age(job.get('updated_at') or job.get('created_at'))}")
+    activity = _cli_main.job_activity_line(job)
+    if activity:
+        console.print(f"[Orch] Last activity: {activity}")
+    preview = str(job.get("preview") or job.get("last_message_preview") or "").strip()
+    if preview:
+        console.print(preview)
+
+
+def _print_idle_state(config: dict[str, Any], *, limit: int, worker_name: str | None) -> None:
+    body = _cli_main.broker_get_sync(config, jobs_query(config, limit=limit, active=True))
+    pending = blocking_jobs(filter_jobs_by_worker_name(config, body.get("jobs", []), worker_name))
+    if not pending:
+        label = f"Worker '{normalize_worker_name(worker_name)}'" if worker_name else "Worker"
+        console.print(f"[Orch] {label} idle: no pending tasks or open talks.")
+        return
+
+    console.print("[Orch] Worker is not idle. Pending worker work exists:")
+    for job in pending:
+        preview = str(job.get("preview") or job.get("last_message_preview") or "")
+        console.print(
+            f"- {worker_name_for_job(config, job)}: {job_id(job)} {job_kind(job)} {job.get('mode', '-')} {job.get('status', '-')}: {preview}"
+        )
+        activity = _cli_main.job_activity_line(job)
+        if activity:
+            console.print(f"  last activity: {activity}")
+    console.print("[Orch] Do not run dependent full tests or final conclusions yet.")
+    raise typer.Exit(1)
+
+
+def _print_activity(config: dict[str, Any], item_id: str, *, limit: int) -> None:
+    try:
+        body = _cli_main.broker_get_sync(config, task_activity_query(config, item_id, limit=limit))
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 404:
+            raise
+        body = _cli_main.broker_get_sync(config, activity_query(config, item_id=item_id, limit=limit))
+    activity = body.get("activity") or []
+    if not activity:
+        console.print(f"[Orch] No worker activity recorded for {item_id} yet.")
+        console.print(f"[Orch] Check job status: orch jobs --id {item_id}")
+        console.print(f"[Orch] Block for result: orch jobs --wait {item_id}")
+        return
+
+    console.print(f"[Orch] Recent worker activity for {item_id}:")
+    for item in activity:
+        console.print(f"- {format_activity(item)}")
+
+
+def _print_result(config: dict[str, Any], item_id: str) -> None:
+    body = _cli_main.broker_get_sync(config, f"/v1/tasks/{item_id}{project_query(config)}")
+    validate_task_body_project(config, body, item_id)
+    if body.get("status") == "missing":
+        conversation = conversation_state(config, item_id)
+        if conversation is not None:
+            _print_conversation_body(conversation)
+            _print_conversation_turns(config, item_id)
+            return
+        _print_task_body(body)
+        raise typer.Exit(1)
+    if body.get("reply") or body.get("error"):
+        _print_task_body(body)
+        return
+    status = str(body.get("status") or "UNKNOWN")
+    console.print(f"[Orch] Job {item_id} is not finished yet (status: {status}).")
+    console.print(f"[Orch] Check live activity: orch jobs --live {item_id}")
+    console.print(f"[Orch] Block for result: orch jobs --wait {item_id}")
+    raise typer.Exit(1)
+
+
+def _wait_for_result(
+    config: dict[str, Any],
+    task_id: str,
+    *,
+    timeout: int,
+    progress: bool,
+    poll_seconds: int,
+) -> None:
+    deadline = time.monotonic() + timeout
+    last_activity_id = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _print_task_body(
+                {
+                    "status": "WAIT_TIMEOUT",
+                    "task_id": task_id,
+                    "error": "No task result arrived before the wait timeout.",
+                }
+            )
+            return
+        wait_seconds = timeout if not progress else max(1, min(poll_seconds, int(remaining)))
+        body = _cli_main.broker_get_sync(
+            config,
+            f"/v1/tasks/{task_id}/wait?timeout_seconds={wait_seconds}{project_query(config, '&')}",
+        )
+        if body.get("status") != "WAIT_TIMEOUT":
+            returned_task_id = body.get("task_id")
+            if returned_task_id and str(returned_task_id) != task_id:
+                console.print(
+                    f"[Orch] Broker returned result for {returned_task_id} while waiting for {task_id}; ignoring stale response."
+                )
+                raise typer.Exit(1)
+            validate_task_body_project(config, body, task_id)
+            _print_task_body(body)
+            if body.get("status") == "missing":
+                raise typer.Exit(1)
+            return
+        if not progress:
+            _print_task_body(body)
+            return
         try:
-            _cli_main.ensure_broker_running(config)
-            status_body = _cli_main.fetch_status_sync(
-                broker_url(config), broker_api_key(config), project_id=current_project_id(config)
-            )
-            events_body = _cli_main.fetch_events_sync(
-                broker_url(config), broker_api_key(config), limit=500, project_id=current_project_id(config)
-            )
-        except (RuntimeError, httpx.HTTPError) as exc:
-            console.print(f"[Orch] {exc}")
-            raise typer.Exit(1) from exc
+            activity_body = _cli_main.broker_get_sync(config, task_activity_query(config, task_id, limit=5))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                activity_body = {"activity": []}
+            else:
+                try:
+                    activity_body = _cli_main.broker_get_sync(config, activity_query(config, item_id=task_id, limit=5))
+                except httpx.HTTPError:
+                    activity_body = {"activity": []}
+        except httpx.HTTPError:
+            activity_body = {"activity": []}
+        for activity in activity_body.get("activity", []):
+            activity_id = int(activity.get("id") or 0)
+            if activity_id <= last_activity_id:
+                continue
+            console.print(f"[Orch] Worker activity: {format_activity(activity)}")
+            last_activity_id = activity_id
 
-        messages = [item for item in status_body.get("active_messages", []) if item.get("task_id") == task_id]
-        events = [item for item in events_body.get("events", []) if item.get("task_id") == task_id]
-        if not messages and not events:
-            console.print(f"[Orch] No broker record found for task {task_id}.")
-            return
 
-        latest_message = messages[-1] if messages else {}
-        status_text = str(latest_message.get("status") or "UNKNOWN")
-        console.print(f"[Orch] Task {task_id}: {status_text}")
-        console.print(f"[Orch] Route: {latest_message.get('from_agent', '-')} → {latest_message.get('to_agent', '-')}")
-        activity_events = [item for item in events if item.get("type") == "worker_activity"]
-        if activity_events:
-            console.print(f"[Orch] Last worker activity: {format_activity(activity_events[-1].get('payload') or activity_events[-1])}")
+def _cancel_job(config: dict[str, Any], item_id: str, *, reason: str) -> None:
+    from orchlink.cli.main import print_orch_exception  # late import
 
-        reply_events = [item for item in events if item.get("type") == "reply_received"]
-        if reply_events:
-            reply = reply_events[-1]
-            console.print(
-                f"[Orch] Reply: {reply.get('message_type', 'RESULT')} "
-                f"from {reply.get('from_agent', 'work')} to {reply.get('to_agent', 'lead')}"
-            )
-            preview = str(reply.get("preview") or "").strip()
-            if preview:
-                console.print(preview)
-            return
+    try:
+        body = _cli_main.broker_post_sync(
+            config,
+            f"/v1/jobs/{item_id}/cancel",
+            {"reason": reason, "project_id": current_project_id(config)},
+        )
+    except (RuntimeError, httpx.HTTPError) as exc:
+        print_orch_exception(exc)
+        raise typer.Exit(1) from exc
+    console.print(f"[Orch] Cancelled {item_id}.")
+    console.print(
+        "[Orch] Note: cancel marks broker work CANCELLED and asks Pi to abort the current turn. Pi can stop before the next tool call; an already-running shell command may only stop if Pi's abort reaches it."
+    )
+    cancelled = body.get("cancelled") or []
+    if cancelled:
+        console.print(f"[Orch] Messages: {', '.join(str(item) for item in cancelled)}")
 
-        delivered_events = [item for item in events if item.get("type") == "message_delivered"]
-        if delivered_events:
-            delivered = delivered_events[-1]
-            console.print(f"[Orch] Delivered to {delivered.get('to_agent', 'worker')}. Worker is still in progress.")
-        else:
-            console.print("[Orch] Queued. Waiting for worker pickup.")
 
-    @app.command(help="Show recent tasks and Talk conversations for the current project.")
+def register_jobs(app: typer.Typer) -> None:
+    """Register jobs and sessions commands on the given Typer app."""
+
+    @app.command(help="Inspect and control tracked work. List jobs by default; pass a job ID or use --live/--result/--wait/--cancel for one job.")
     def jobs(
-        limit: Annotated[int, typer.Option("--limit", help="Maximum number of recent jobs to show.")] = 50,
+        item: Annotated[str | None, typer.Argument(help="Optional job ID to inspect, equivalent to --id.")] = None,
+        limit: Annotated[int, typer.Option("--limit", help="Maximum number of recent jobs to show; also caps --live rows.")] = 50,
         active: Annotated[bool, typer.Option("--active", help="Show only pending/running/open work.")] = False,
+        idle: Annotated[bool, typer.Option("--idle", help="Exit 0 if no active work exists; exit 1 if work is busy.")] = False,
         status: Annotated[str | None, typer.Option("--status", help="Show only jobs with this status.")] = None,
         kind: Annotated[str | None, typer.Option("--kind", help="Show only task or talk jobs.")] = None,
-        item_id: Annotated[str | None, typer.Option("--id", help="Show one task/conversation/message ID.")] = None,
-        worker_name: Annotated[str | None, typer.Option("--name", help="Show jobs for one named worker.")] = None,
-        json_output: Annotated[bool, typer.Option("--json", help="Print raw jobs JSON.")] = False,
+        item_id: Annotated[str | None, typer.Option("--id", help="Show one job's current status/details.")] = None,
+        live_id: Annotated[str | None, typer.Option("--live", help="Show recent worker activity for one job ID.")] = None,
+        result_id: Annotated[str | None, typer.Option("--result", help="Print the completed result for one job ID.")] = None,
+        wait_id: Annotated[str | None, typer.Option("--wait", help="Wait for one job result; timeout does not cancel the job.")] = None,
+        cancel_id: Annotated[str | None, typer.Option("--cancel", help="Cancel one active job ID.")] = None,
+        reason: Annotated[str, typer.Option("--reason", "-m", help="Reason recorded with --cancel.")] = "Cancelled by lead.",
+        worker_name: Annotated[str | None, typer.Option("--name", help="Show/check jobs for one named worker.")] = None,
+        timeout: Annotated[int, typer.Option("--timeout", help="Maximum seconds for --wait.")] = 1800,
+        progress: Annotated[bool, typer.Option("--progress/--no-progress", help="Print worker activity while --wait is pending.")] = True,
+        poll_seconds: Annotated[int, typer.Option("--poll-seconds", min=1, max=60, help="Seconds between --wait progress polls.")] = 5,
+        json_output: Annotated[bool, typer.Option("--json", help="Print raw jobs JSON for list/status views.")] = False,
     ) -> None:
         normalized_kind = kind.lower() if kind else None
         if normalized_kind and normalized_kind not in {"task", "talk"}:
             console.print("[Orch] --kind must be 'task' or 'talk'.")
             raise typer.Exit(1)
+        if item and item_id:
+            console.print("[Orch] Pass the job ID either positionally or with --id, not both.")
+            raise typer.Exit(1)
+        effective_item_id = item_id or item
+        action_values = [value for value in [effective_item_id, live_id, result_id, wait_id, cancel_id] if value]
+        if len(action_values) > 1:
+            console.print("[Orch] Choose only one job action: ID, --live, --result, --wait, or --cancel.")
+            raise typer.Exit(1)
+        if idle and action_values:
+            console.print("[Orch] --idle cannot be combined with one-job actions.")
+            raise typer.Exit(1)
 
         config = load_project_or_exit()
-        broker_limit = 500 if (active or status or normalized_kind or item_id) else limit
         try:
             _cli_main.ensure_broker_running(config)
-            body = _cli_main.broker_get_sync(
-                config,
-                jobs_query(
+            if idle:
+                _print_idle_state(config, limit=limit, worker_name=worker_name)
+                return
+            if effective_item_id:
+                _print_one_job(
                     config,
-                    limit=broker_limit,
+                    effective_item_id,
+                    json_output=json_output,
                     active=active,
                     status=status,
                     kind=normalized_kind,
-                    item_id=item_id,
-                ),
+                    worker_name=worker_name,
+                )
+                return
+            if live_id:
+                _print_activity(config, live_id, limit=min(max(1, limit), 100))
+                return
+            if result_id:
+                _print_result(config, result_id)
+                return
+            if wait_id:
+                _wait_for_result(config, wait_id, timeout=timeout, progress=progress, poll_seconds=poll_seconds)
+                return
+            if cancel_id:
+                _cancel_job(config, cancel_id, reason=reason)
+                return
+            body = _jobs_body(
+                config,
+                limit=limit,
+                active=active,
+                status=status,
+                kind=normalized_kind,
+                worker_name=worker_name,
             )
+        except typer.Exit:
+            raise
         except (RuntimeError, httpx.HTTPError) as exc:
             console.print(f"[Orch] {exc}")
             raise typer.Exit(1) from exc
-        filtered = filter_jobs(
-            body.get("jobs", []),
-            active=active,
-            status=status,
-            kind=normalized_kind,
-            item_id=item_id,
-        )
-        filtered = filter_jobs_by_worker_name(config, filtered, worker_name)
-        body["jobs"] = [sanitize_job(job) for job in filtered[:limit]]
         if json_output:
             console.print_json(json.dumps(body))
             return
-
-        console.print("ID\tWORKER\tKIND\tMODE\tSTATUS\tUPDATED\tROUTE\tPREVIEW")
-        for job in body.get("jobs", []):
-            preview = str(job.get("preview") or job.get("last_message_preview") or "")
-            console.print(
-                f"{job_id(job)}\t{worker_name_for_job(config, job)}\t{job_kind(job)}\t{job.get('mode', '-')}\t{job.get('status', '-')}\t"
-                f"{human_age(job.get('updated_at') or job.get('created_at'))}\t{job_route(job)}\t{preview}"
-            )
-            activity = _cli_main.job_activity_line(job)
-            if activity:
-                console.print(f"  last activity: {activity}")
+        _print_jobs_table(config, body.get("jobs", []))
 
     @app.command(help="Show registered lead and named worker Pi sessions for the current project.")
     def sessions(
@@ -294,198 +479,3 @@ def register_jobs(app: typer.Typer) -> None:
                 f"{session.get('status', '-')}\t{session.get('pid', '-')}\t{session.get('session_id', '-')}\t"
                 f"{session.get('ready', '-')}\t{human_age(session.get('last_heartbeat_at'))}"
             )
-
-    @app.command(help="Exit 0 if named workers are idle; exit 1 if active work exists.")
-    def idle(
-        limit: Annotated[int, typer.Option("--limit", help="Maximum number of recent jobs to inspect.")] = 50,
-        worker_name: Annotated[str | None, typer.Option("--name", help="Check one named worker only.")] = None,
-    ) -> None:
-        config = load_project_or_exit()
-        try:
-            _cli_main.ensure_broker_running(config)
-            body = _cli_main.broker_get_sync(config, jobs_query(config, limit=limit, active=True))
-        except (RuntimeError, httpx.HTTPError) as exc:
-            console.print(f"[Orch] {exc}")
-            raise typer.Exit(1) from exc
-
-        pending = blocking_jobs(filter_jobs_by_worker_name(config, body.get("jobs", []), worker_name))
-        if not pending:
-            label = f"Worker '{normalize_worker_name(worker_name)}'" if worker_name else "Worker"
-            console.print(f"[Orch] {label} idle: no pending tasks or open talks.")
-            return
-
-        console.print("[Orch] Worker is not idle. Pending worker work exists:")
-        for job in pending:
-            preview = str(job.get("preview") or job.get("last_message_preview") or "")
-            console.print(
-                f"- {worker_name_for_job(config, job)}: {job_id(job)} {job_kind(job)} {job.get('mode', '-')} {job.get('status', '-')}: {preview}"
-            )
-            activity = _cli_main.job_activity_line(job)
-            if activity:
-                console.print(f"  last activity: {activity}")
-        console.print("[Orch] Do not run dependent full tests or final conclusions yet.")
-        raise typer.Exit(1)
-
-    @app.command(help="Show recent worker activity for a long-running task or conversation.")
-    def peek(
-        item_id: Annotated[str | None, typer.Argument(help="Task, conversation, or message ID to inspect.")] = None,
-        worker_name: Annotated[str | None, typer.Option("--name", help="Peek at the latest active job for one named worker.")] = None,
-        limit: Annotated[int, typer.Option("--limit", min=1, max=100, help="Maximum activity rows to show.")] = 10,
-    ) -> None:
-        config = load_project_or_exit()
-        try:
-            _cli_main.ensure_broker_running(config)
-            if item_id is None:
-                if not worker_name:
-                    console.print("[Orch] Provide an item ID, or use --name to peek at one worker's active job.")
-                    raise typer.Exit(1)
-                jobs_body = _cli_main.broker_get_sync(config, jobs_query(config, limit=500, active=True))
-                active_jobs = blocking_jobs(filter_jobs_by_worker_name(config, jobs_body.get("jobs", []), worker_name))
-                if not active_jobs:
-                    console.print(f"[Orch] Worker '{normalize_worker_name(worker_name)}' has no active work to peek.")
-                    return
-                item_id = job_id(active_jobs[0])
-            try:
-                body = _cli_main.broker_get_sync(config, task_activity_query(config, item_id, limit=limit))
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code != 404:
-                    raise
-                body = _cli_main.broker_get_sync(config, activity_query(config, item_id=item_id, limit=limit))
-        except typer.Exit:
-            raise
-        except (RuntimeError, httpx.HTTPError) as exc:
-            console.print(f"[Orch] {exc}")
-            raise typer.Exit(1) from exc
-
-        activity = body.get("activity") or []
-        if not activity:
-            console.print(f"[Orch] No worker activity recorded for {item_id}.")
-            console.print(
-                "[Orch] If the task is pending, the worker may not have picked it up yet or the broker/session is stale."
-            )
-            return
-
-        console.print(f"[Orch] Recent worker activity for {item_id}:")
-        for item in activity:
-            console.print(f"- {format_activity(item)}")
-
-    @app.command("get", help="Print a completed task result, or a conversation summary for a conversation ID.")
-    def get_command(item_id: str) -> None:
-        config = load_project_or_exit()
-        try:
-            _cli_main.ensure_broker_running(config)
-            body = _cli_main.broker_get_sync(config, f"/v1/tasks/{item_id}{project_query(config)}")
-            validate_task_body_project(config, body, item_id)
-            if body.get("status") == "missing":
-                conversation = conversation_state(config, item_id)
-                if conversation is not None:
-                    _print_conversation_body(conversation)
-                    _print_conversation_turns(config, item_id)
-                    return
-        except (RuntimeError, httpx.HTTPError) as exc:
-            console.print(f"[Orch] {exc}")
-            raise typer.Exit(1) from exc
-        _print_task_body(body)
-
-    @app.command("wait", help="Wait for one exact task result; timeout does not cancel the task.")
-    def wait_command(
-        task_id: str,
-        timeout: Annotated[int, typer.Option("--timeout", help="Maximum seconds to wait in this shell.")] = 1800,
-        progress: Annotated[
-            bool,
-            typer.Option("--progress/--no-progress", help="Print worker activity while waiting."),
-        ] = True,
-        poll_seconds: Annotated[
-            int,
-            typer.Option("--poll-seconds", min=1, max=60, help="Seconds between progress polls."),
-        ] = 5,
-    ) -> None:
-        config = load_project_or_exit()
-        try:
-            _cli_main.ensure_broker_running(config)
-        except RuntimeError as exc:
-            console.print(f"[Orch] {exc}")
-            raise typer.Exit(1) from exc
-
-        deadline = time.monotonic() + timeout
-        last_activity_id = 0
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                _print_task_body(
-                    {
-                        "status": "WAIT_TIMEOUT",
-                        "task_id": task_id,
-                        "error": "No task result arrived before the wait timeout.",
-                    }
-                )
-                return
-            wait_seconds = timeout if not progress else max(1, min(poll_seconds, int(remaining)))
-            try:
-                body = _cli_main.broker_get_sync(
-                    config,
-                    f"/v1/tasks/{task_id}/wait?timeout_seconds={wait_seconds}{project_query(config, '&')}",
-                )
-            except httpx.HTTPError as exc:
-                console.print(f"[Orch] {exc}")
-                raise typer.Exit(1) from exc
-            if body.get("status") != "WAIT_TIMEOUT":
-                returned_task_id = body.get("task_id")
-                if returned_task_id and str(returned_task_id) != task_id:
-                    console.print(
-                        f"[Orch] Broker returned result for {returned_task_id} while waiting for {task_id}; ignoring stale response."
-                    )
-                    raise typer.Exit(1)
-                validate_task_body_project(config, body, task_id)
-                _print_task_body(body)
-                if body.get("status") == "missing":
-                    raise typer.Exit(1)
-                return
-            if not progress:
-                _print_task_body(body)
-                return
-            try:
-                activity_body = _cli_main.broker_get_sync(config, task_activity_query(config, task_id, limit=5))
-            except httpx.HTTPStatusError as exc:
-                if exc.response.status_code != 404:
-                    activity_body = {"activity": []}
-                else:
-                    try:
-                        activity_body = _cli_main.broker_get_sync(config, activity_query(config, item_id=task_id, limit=5))
-                    except httpx.HTTPError:
-                        activity_body = {"activity": []}
-            except httpx.HTTPError:
-                activity_body = {"activity": []}
-            for activity in activity_body.get("activity", []):
-                activity_id = int(activity.get("id") or 0)
-                if activity_id <= last_activity_id:
-                    continue
-                console.print(f"[Orch] Worker activity: {format_activity(activity)}")
-                last_activity_id = activity_id
-
-    @app.command(help="Mark active work CANCELLED and ask Pi to stop the current turn.")
-    def cancel(
-        item_id: str,
-        reason: Annotated[str, typer.Option("--reason", "-m", help="Reason recorded with the cancellation.")] = "Cancelled by lead.",
-    ) -> None:
-        from orchlink.cli.main import print_orch_exception  # late import
-
-        config = load_project_or_exit()
-        try:
-            _cli_main.ensure_broker_running(config)
-            body = _cli_main.broker_post_sync(
-                config,
-                f"/v1/jobs/{item_id}/cancel",
-                {"reason": reason, "project_id": current_project_id(config)},
-            )
-        except (RuntimeError, httpx.HTTPError) as exc:
-            print_orch_exception(exc)
-            raise typer.Exit(1) from exc
-        console.print(f"[Orch] Cancelled {item_id}.")
-        console.print(
-            "[Orch] Note: cancel marks broker work CANCELLED and asks Pi to abort the current turn. Pi can stop before the next tool call; an already-running shell command may only stop if Pi's abort reaches it."
-        )
-        cancelled = body.get("cancelled") or []
-        if cancelled:
-            console.print(f"[Orch] Messages: {', '.join(str(item) for item in cancelled)}")
-

@@ -115,7 +115,8 @@ def test_send_queues_async_task(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "Sent T002" in result.output
     assert "Async mode" in result.output
-    assert "orch wait T002" in result.output
+    assert "orch jobs --wait T002" in result.output
+    assert "orch jobs --result T002" in result.output
 
 
 def test_send_reads_message_from_stdin(monkeypatch, tmp_path):
@@ -232,7 +233,7 @@ def test_send_allows_async_review_when_explicit(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "Sent R002" in result.output
     assert "verify the exact result" in result.output
-    assert "orch wait R002" in result.output
+    assert "orch jobs --wait R002" in result.output
 
 
 def test_talk_rejects_empty_message():
@@ -453,7 +454,7 @@ def test_get_conversation_id_prints_conversation_guidance(monkeypatch, tmp_path)
         },
     )
 
-    result = runner.invoke(cli_main.app, ["get", "C001"])
+    result = runner.invoke(cli_main.app, ["jobs", "--result", "C001"])
 
     assert result.exit_code == 0
     assert "Conversation C001: OPEN" in result.output
@@ -476,7 +477,7 @@ def test_cancel_command_posts_cancel(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli_main, "broker_post_sync", fake_broker_post_sync)
 
-    result = runner.invoke(cli_main.app, ["cancel", "T010", "-m", "Wrong scope."])
+    result = runner.invoke(cli_main.app, ["jobs", "--cancel", "T010", "-m", "Wrong scope."])
 
     assert result.exit_code == 0
     assert called == {"path": "/v1/jobs/T010/cancel", "body": {"reason": "Wrong scope.", "project_id": "demo"}}
@@ -521,7 +522,7 @@ def test_get_rejects_cross_project_result(monkeypatch, tmp_path):
         },
     )
 
-    result = runner.invoke(cli_main.app, ["get", "T001"])
+    result = runner.invoke(cli_main.app, ["jobs", "--result", "T001"])
 
     assert result.exit_code == 1
     assert "Refusing cross-project result" in result.output
@@ -544,8 +545,8 @@ def test_jobs_get_and_wait_commands(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
 
     jobs_result = runner.invoke(cli_main.app, ["jobs"])
-    get_result = runner.invoke(cli_main.app, ["get", "T010"])
-    wait_result = runner.invoke(cli_main.app, ["wait", "T010", "--timeout", "1"])
+    get_result = runner.invoke(cli_main.app, ["jobs", "--result", "T010"])
+    wait_result = runner.invoke(cli_main.app, ["jobs", "--wait", "T010", "--timeout", "1"])
 
     assert jobs_result.exit_code == 0
     assert "ID" in jobs_result.output
@@ -593,13 +594,44 @@ def test_jobs_supports_filters_json_and_activity(monkeypatch, tmp_path):
 
     assert table.exit_code == 0
     assert seen_paths[0] == "/v1/jobs?limit=500&project_id=demo&active=true&status=OPEN&kind=talk&id=C001"
-    assert "UPDATED" in table.output
+    assert "Updated" in table.output
     assert "C001" in table.output
     assert "talk" in table.output
-    assert "last activity" in table.output
+    assert "Last activity" in table.output
     assert "read:" in table.output
     assert json_result.exit_code == 0
     assert '"project_id": "demo"' in json_result.output
+
+
+def test_jobs_positional_id_matches_id_option(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    seen_paths = []
+
+    def fake_broker_get_sync(config, path):
+        seen_paths.append(path)
+        return {
+            "project_id": "demo",
+            "jobs": [
+                {
+                    "task_id": "T123",
+                    "kind": "task",
+                    "mode": "DO",
+                    "status": "RUNNING",
+                    "from_agent": "demo.lead",
+                    "to_agent": "demo.work",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+
+    result = runner.invoke(cli_main.app, ["jobs", "T123"])
+
+    assert result.exit_code == 0
+    assert seen_paths == ["/v1/jobs?limit=500&project_id=demo&id=T123"]
+    assert "Job T123" in result.output
 
 
 def test_jobs_status_json_fetches_wide_window_before_client_filter(monkeypatch, tmp_path):
@@ -655,22 +687,28 @@ def test_job_activity_line_hides_only_terminal_heartbeat():
     assert "read: src/foo.py" in cli_main.job_activity_line(done_tool_job)
 
 
+def test_job_actions_are_not_duplicate_top_level_commands():
+    for command in ["task", "peek", "get", "wait", "cancel", "idle", "status", "watch"]:
+        result = runner.invoke(cli_main.app, [command, "--help"])
+        assert result.exit_code != 0, command
+
+
 def test_root_help_explains_commands():
     result = runner.invoke(cli_main.app, ["--help"])
 
     assert result.exit_code == 0
     assert "Start or reopen the visible Pi lead session" in result.output
     assert "Send a task to work and wait" in result.output
-    assert "Show recent tasks and Talk conversations" in result.output
-    assert "Print raw broker status JSON" in result.output
+    assert "Inspect and control tracked work" in result.output
+    assert "Run and manage the local Orchlink broker" in result.output
 
 
 def test_jobs_help_explains_options():
     result = runner.invoke(cli_main.app, ["jobs", "--help"])
 
     assert result.exit_code == 0
-    assert "Show recent tasks and Talk conversations" in result.output
-    assert "Maximum number of recent jobs to show" in result.output
+    assert "Inspect and control tracked work" in result.output
+    assert "recent jobs" in result.output
     assert "--active" in result.output
     assert "--status" in result.output
     assert "--kind" in result.output
@@ -728,8 +766,8 @@ def test_sessions_all_and_json(monkeypatch, tmp_path):
     assert '"status": "RELEASED"' in result.output
 
 
-def test_wait_help_shows_timeout_flag_only():
-    result = runner.invoke(cli_main.app, ["wait", "--help"])
+def test_jobs_help_shows_timeout_flag_once():
+    result = runner.invoke(cli_main.app, ["jobs", "--help"])
 
     assert result.exit_code == 0
     assert result.output.count("--timeout") == 1
@@ -764,7 +802,7 @@ def test_wait_prints_worker_activity_during_progress(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
 
-    result = runner.invoke(cli_main.app, ["wait", "T010", "--timeout", "3", "--poll-seconds", "1"])
+    result = runner.invoke(cli_main.app, ["jobs", "--wait", "T010", "--timeout", "3", "--poll-seconds", "1"])
 
     assert result.exit_code == 0
     assert "Worker activity" in result.output
@@ -784,7 +822,7 @@ def test_wait_rejects_mismatched_task_result(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
 
-    result = runner.invoke(cli_main.app, ["wait", "T013", "--timeout", "1"])
+    result = runner.invoke(cli_main.app, ["jobs", "--wait", "T013", "--timeout", "1"])
 
     assert result.exit_code == 1
     assert "waiting for T013" in result.output
@@ -806,7 +844,7 @@ def test_get_failed_task_prints_stderr(monkeypatch, tmp_path):
         },
     )
 
-    result = runner.invoke(cli_main.app, ["get", "T010"])
+    result = runner.invoke(cli_main.app, ["jobs", "--result", "T010"])
 
     assert result.exit_code == 0
     assert "Task T010: FAILED" in result.output
@@ -815,19 +853,19 @@ def test_get_failed_task_prints_stderr(monkeypatch, tmp_path):
     assert "WebSocket error" in result.output
 
 
-def test_idle_reports_ready_when_no_pending_jobs(monkeypatch, tmp_path):
+def test_jobs_idle_reports_ready_when_no_pending_jobs(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
     monkeypatch.setattr(cli_main, "broker_get_sync", lambda config, path: {"jobs": []})
 
-    result = runner.invoke(cli_main.app, ["idle"])
+    result = runner.invoke(cli_main.app, ["jobs", "--idle"])
 
     assert result.exit_code == 0
     assert "Worker idle" in result.output
 
 
-def test_idle_blocks_when_worker_has_pending_jobs(monkeypatch, tmp_path):
+def test_jobs_idle_blocks_when_worker_has_pending_jobs(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
@@ -851,7 +889,7 @@ def test_idle_blocks_when_worker_has_pending_jobs(monkeypatch, tmp_path):
         },
     )
 
-    result = runner.invoke(cli_main.app, ["idle"])
+    result = runner.invoke(cli_main.app, ["jobs", "--idle"])
 
     assert result.exit_code == 1
     assert "Worker is not idle" in result.output
@@ -884,7 +922,7 @@ def test_peek_prints_worker_activity(monkeypatch, tmp_path):
 
     monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
 
-    result = runner.invoke(cli_main.app, ["peek", "T001"])
+    result = runner.invoke(cli_main.app, ["jobs", "--live", "T001"])
 
     assert result.exit_code == 0
     assert "Recent worker activity" in result.output
@@ -892,57 +930,38 @@ def test_peek_prints_worker_activity(monkeypatch, tmp_path):
     assert "bash: rg organization_id" in result.output
 
 
-def test_task_command_reports_in_progress(monkeypatch, tmp_path):
+def test_jobs_id_reports_in_progress(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
     monkeypatch.setattr(
         cli_main,
-        "fetch_status_sync",
-        lambda broker_url, api_key, project_id=None, task_id=None, since=0, limit=20: {
-            "active_messages": [
+        "broker_get_sync",
+        lambda config, path: {
+            "jobs": [
                 {
                     "task_id": "T001",
+                    "kind": "task",
+                    "mode": "DO",
                     "status": "IN_PROGRESS",
                     "from_agent": "demo.lead",
                     "to_agent": "demo.work",
-                }
-            ]
-        },
-    )
-    monkeypatch.setattr(
-        cli_main,
-        "fetch_events_sync",
-        lambda broker_url, api_key, limit=500, project_id=None: {
-            "events": [
-                {
-                    "task_id": "T001",
-                    "type": "message_delivered",
-                    "to_agent": "demo.work",
-                },
-                {
-                    "task_id": "T001",
-                    "type": "worker_activity",
-                    "payload": {
-                        "id": 1,
-                        "time": "2026-06-23T04:42:00+00:00",
-                        "activity_type": "tool_call",
-                        "tool_name": "read",
-                        "detail": "apps/api/app/api/users.py",
-                    },
+                    "last_activity_at": "2026-06-23T04:42:00+00:00",
+                    "last_activity_type": "tool_call",
+                    "last_activity_tool": "read",
+                    "last_activity_preview": "apps/api/app/api/users.py",
                 }
             ]
         },
     )
 
-    result = runner.invoke(cli_main.app, ["task", "T001"])
+    result = runner.invoke(cli_main.app, ["jobs", "--id", "T001"])
 
     assert result.exit_code == 0
-    assert "Task T001: IN_PROGRESS" in result.output
-    assert "Last worker activity" in result.output
+    assert "Job T001: task DO IN_PROGRESS" in result.output
+    assert "Last activity" in result.output
     assert "read:" in result.output
     assert "apps/api/app/api/users.py" in result.output
-    assert "Worker is still in progress" in result.output
 
 
 def test_work_command_starts_visible_pi(monkeypatch, tmp_path):
@@ -1897,7 +1916,7 @@ def test_status_command_prints_status(monkeypatch):
 
     result = runner.invoke(
         cli_main.app,
-        ["status", "--broker-url", "http://broker", "--api-key", "test-key", "--task", "T010", "--since-id", "7", "--limit", "3"],
+        ["broker", "status", "--broker-url", "http://broker", "--api-key", "test-key", "--task", "T010", "--since-id", "7", "--limit", "3"],
     )
 
     assert result.exit_code == 0

@@ -8,7 +8,7 @@ Treat Orchlink as one local lead/work loop, not a workflow engine or dashboard. 
 
 Use the small rules here by default. Load `.orch/skills/references/*.md` only when the task needs that detail:
 
-- Read `.orch/skills/references/lead-commands.md` before choosing among `ask`, `send`, `wait/get`, `jobs`, `idle`, or Talk Mode for non-trivial coordination.
+- Read `.orch/skills/references/lead-commands.md` before choosing among `ask`, `send`, `jobs`, or Talk Mode for non-trivial coordination.
 - Read `.orch/skills/references/goal-mode.md` before using `orch goal ...` or advising on PRD/plan-driven work.
 - Read `.orch/skills/references/review-gates.md` before review gates or expensive test/release steps.
 - Read `.orch/skills/references/recovery.md` when sessions, broker state, cancellation, stale results, or debug output are involved.
@@ -20,10 +20,10 @@ Prefer readable checks:
 ```bash
 orch doctor
 orch sessions
-orch idle
+orch jobs --idle
 ```
 
-Completion criterion: `doctor` shows a valid project/compatible broker, `sessions` shows known lead/work state, and `idle` shows whether active work blocks you. If output is stale, cross-project, or confusing, read `references/recovery.md` before guessing.
+Completion criterion: `doctor` shows a valid project/compatible broker, `sessions` shows known lead/work state, and `jobs --idle` shows whether active work blocks you. If output is stale, cross-project, or confusing, read `references/recovery.md` before guessing.
 
 ## Worker-use trigger
 
@@ -35,12 +35,12 @@ Do not use the worker for tiny mechanical edits, unclear requests that need a hu
 
 1. Non-trivial coding or risky change? First decide whether worker review, challenge, verification, or implementation would tighten the loop.
 2. Need a review, decision, critique, plan, or blocker answer before continuing? Use `orch ask work --wait`.
-3. Need worker implementation while you can work on a separate scope? Use `orch send`, then `orch wait` later.
+3. Need long or heavy worker implementation while you work on a separate scope? Use `orch send`, continue independently, and retrieve the result with `orch jobs --result <task_id>` or `orch jobs --wait <task_id>` only when it actually blocks your next step. Do not use `orch ask --wait` for heavy implementation.
 4. Need short peer discussion? Use Talk Mode: `orch talk`, `orch say`, `orch close`.
 5. Need a PRD/plan-driven run until acceptance criteria are verified? Use Goal Mode after reading `references/goal-mode.md`.
-6. Need to know whether it is safe to continue? Use `orch idle`.
+6. Need to know whether it is safe to continue? Use `orch jobs --idle`.
 7. Need active work details? Use `orch jobs --active`.
-8. Need final output? Use `orch wait T002` or `orch get T002`, not `orch jobs`.
+8. Need final output? Use `orch jobs --wait T002` or `orch jobs --result T002`, not the plain jobs list.
 
 ## Task prompt shape
 
@@ -76,6 +76,7 @@ When a `[Orchlink] Result from ...` message appears, treat it as a steering inte
 - Split parallel work clearly: lead owns X, worker owns Y.
 - Do not expose API keys, tokens, secrets, or private logs in prompts.
 - Do not ask the worker to edit outside the allowed scope.
+- Do not stop visible worker terminals from the lead. Stop only tracked background workers; a visible worker should be stopped by the human in its own terminal with Ctrl-C.
 - Do not run dependent full tests, final conclusions, packaging, release notes, or cleanup while worker work is active.
 - Do not make final claims until blocking reviews and active work are resolved.
 - Do not accept worker output blindly. Name the risk, disagreement, or assumption before deciding.

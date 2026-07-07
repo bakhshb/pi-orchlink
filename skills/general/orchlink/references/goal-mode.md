@@ -110,7 +110,7 @@ When dispatching goal-related worker work:
 - Include the goal ID, relevant AC IDs, allowed files, forbidden files, and checks the worker may run.
 - Use `orch ask --wait` for review gates, architecture decisions, blockers, or anything that can change the next step.
 - Use `orch send` only for independent implementation or verification slices while the lead can work elsewhere.
-- After async dispatch, use `orch jobs --active` and `orch peek <task_id>`/`orch task <task_id>` for progress; do not blind-wait with timeout loops.
+- After async dispatch, use `orch jobs --active` and `orch jobs --live <task_id>` for progress; do not blind-wait with timeout loops.
 - Reconcile worker evidence before marking an AC verified. Do not accept worker output blindly.
 
 Before marking a risky or subjective AC complete, consider whether independent worker evidence is needed. For release-impacting, architectural, or broad cleanup ACs, worker review or audit should be treated as mandatory unless there is a clear reason it would add no value.

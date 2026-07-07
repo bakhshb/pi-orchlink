@@ -13,6 +13,7 @@ def test_generated_ui_extension_is_read_only_tui_monitor():
     assert "ctx.mode === \"tui\"" in ORCHLINK_PI_UI_EXTENSION
     assert "pi.setSessionName(nextName)" in ORCHLINK_PI_UI_EXTENSION
     assert "ctx.ui.setStatus" not in ORCHLINK_PI_UI_EXTENSION
+    assert "footerStatusText" not in ORCHLINK_PI_UI_EXTENSION
     assert "ctx.ui.setWidget" not in ORCHLINK_PI_UI_EXTENSION
     assert "ctx.ui.custom" in ORCHLINK_PI_UI_EXTENSION
     assert "worker - ${row.workerName}" in ORCHLINK_PI_UI_EXTENSION
