@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from orchlink.connector.pi_connector import PiConnector
 from orchlink.project.config import (
     broker_session_heartbeat_interval_seconds,
@@ -41,6 +43,20 @@ def _saved_worker_session_id(config: dict[str, Any], worker_name: str) -> str:
     except (OSError, ValueError):
         return worker_name
     return str(state.get("session_id") or worker_name)
+
+
+def _is_lost_session_error(exc: Exception) -> bool:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    return exc.response.status_code in {404, 409}
+
+
+def _unlink_pid_file_if_self(path: Path, pid: int) -> None:
+    try:
+        if path.read_text(encoding="utf-8").strip() == str(pid):
+            path.unlink(missing_ok=True)
+    except OSError:
+        return
 
 
 def _terminate_process_tree(process: subprocess.Popen[str], timeout: float = 5.0) -> None:
@@ -85,7 +101,13 @@ def _terminate_process_tree(process: subprocess.Popen[str], timeout: float = 5.0
         return
 
 
-def run_supervisor(project_root_path: Path, worker_name: str = "work", model: str | None = None, thinking: str | None = None) -> int:
+def run_supervisor(
+    project_root_path: Path,
+    worker_name: str = "work",
+    model: str | None = None,
+    thinking: str | None = None,
+    oneshot: bool = False,
+) -> int:
     worker_name = normalize_worker_name(worker_name)
     config = load_project_config(project_root_path)
     session_id = _saved_worker_session_id(config, worker_name)
@@ -103,11 +125,13 @@ def run_supervisor(project_root_path: Path, worker_name: str = "work", model: st
     root = project_root(config)
     paths = run_dir(config)
     worker_paths = paths if worker_name == "work" else paths / "workers" / worker_name
+    pid_path = worker_paths / "orch-work.pid"
     child_pid_path = worker_paths / "orch-work-child.pid"
     status_path = worker_paths / "orch-work-status.json"
     supervisor_pid = os.getpid()
     lease_id = ""
     child: subprocess.Popen[str] | None = None
+    session_lost_error = ""
     stop_event = threading.Event()
 
     def status(status: str, **extra: Any) -> None:
@@ -124,12 +148,14 @@ def run_supervisor(project_root_path: Path, worker_name: str = "work", model: st
                 "model": (config.get("work") or {}).get("model"),
                 "thinking": (config.get("work") or {}).get("thinking"),
                 "supervisor_pid": supervisor_pid,
+                "oneshot": bool(oneshot),
                 "updated_at": _now(),
                 **extra,
             },
         )
 
     def heartbeat_loop() -> None:
+        nonlocal session_lost_error
         interval = max(1, broker_session_heartbeat_interval_seconds(config))
         while not stop_event.wait(interval):
             if not lease_id:
@@ -149,6 +175,13 @@ def run_supervisor(project_root_path: Path, worker_name: str = "work", model: st
                 )
             except Exception as exc:
                 print(f"[Orch worker supervisor] heartbeat failed: {exc}", flush=True)
+                if _is_lost_session_error(exc):
+                    session_lost_error = str(exc)
+                    status("session_lost", lease_id=lease_id, error=session_lost_error, lost_at=_now())
+                    stop_event.set()
+                    if child is not None:
+                        _terminate_process_tree(child)
+                    break
 
     def handle_stop(_signum: int, _frame: object) -> None:
         stop_event.set()
@@ -185,6 +218,7 @@ def run_supervisor(project_root_path: Path, worker_name: str = "work", model: st
                 "ORCHLINK_BACKGROUND_BACKEND": "rpc-supervisor",
                 "ORCHLINK_SUPERVISOR_PID": str(supervisor_pid),
                 "ORCHLINK_READY_HEARTBEAT_MS": "5000",
+                "ORCHLINK_ONESHOT": "true" if oneshot else "false",
             },
         )
         creationflags = 0
@@ -215,7 +249,10 @@ def run_supervisor(project_root_path: Path, worker_name: str = "work", model: st
                 if stop_event.is_set():
                     break
         return_code = child.wait()
-        status("exited", lease_id=lease_id, pi_pid=child.pid, exit_code=return_code, exited_at=_now())
+        exit_extra = {}
+        if session_lost_error:
+            exit_extra = {"stopped_reason": "session_lost", "session_lost_error": session_lost_error}
+        status("exited", lease_id=lease_id, pi_pid=child.pid, exit_code=return_code, exited_at=_now(), **exit_extra)
         return int(return_code or 0)
     except Exception as exc:
         print(f"[Orch worker supervisor] failed: {exc}", flush=True)
@@ -228,6 +265,7 @@ def run_supervisor(project_root_path: Path, worker_name: str = "work", model: st
         if lease_id:
             connector._release_session(lease_id, "Background worker supervisor exited.")
         child_pid_path.unlink(missing_ok=True)
+        _unlink_pid_file_if_self(pid_path, supervisor_pid)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -236,8 +274,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--worker-name", default="work")
     parser.add_argument("--model", default=None)
     parser.add_argument("--thinking", default=None)
+    parser.add_argument("--oneshot", action="store_true", help="Exit after one completed task reply.")
     args = parser.parse_args(argv)
-    return run_supervisor(Path(args.project_root), worker_name=args.worker_name, model=args.model, thinking=args.thinking)
+    return run_supervisor(
+        Path(args.project_root),
+        worker_name=args.worker_name,
+        model=args.model,
+        thinking=args.thinking,
+        oneshot=args.oneshot,
+    )
 
 
 if __name__ == "__main__":

@@ -1593,6 +1593,65 @@ def test_work_background_starts_rpc_supervisor_and_waits_for_readiness(monkeypat
     assert calls["popen"][0][1]["cwd"] == tmp_path
 
 
+def test_work_background_oneshot_passes_supervisor_flag(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    calls = {"sessions": 0, "popen": []}
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    class FakeProcess:
+        pid = 4321
+
+    def fake_popen(command, **kwargs):
+        calls["popen"].append((command, kwargs))
+        return FakeProcess()
+
+    def fake_broker_get_sync(config, path):
+        calls["sessions"] += 1
+        if calls["sessions"] == 1:
+            return {"sessions": []}
+        return {
+            "sessions": [
+                {
+                    "role": "work",
+                    "status": "ACTIVE",
+                    "session_id": "work",
+                    "ready": True,
+                    "last_ready_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(lead_command.time, "sleep", lambda seconds: None)
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--oneshot", "--timeout", "1"])
+
+    assert result.exit_code == 0
+    assert "--oneshot" in calls["popen"][0][0]
+
+
+def test_work_oneshot_rejects_visible_worker(tmp_path, monkeypatch):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_main.app, ["work", "--oneshot"])
+
+    assert result.exit_code == 1
+    assert "--oneshot is only supported with --background" in result.output
+
+
 def test_model_lookup_pattern_strips_only_thinking_suffixes():
     from orchlink.cli.commands import lead as lead_command
 

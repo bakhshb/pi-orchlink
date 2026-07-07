@@ -8,7 +8,7 @@ Human daily commands:
 
 - `orch init` creates `.orch/project.yaml`, generated lead/work skills, and reference files for a project.
 - `orch lead` starts or reopens the visible Pi lead session.
-- `orch work` starts or reopens the default visible Pi worker named `work`. Use `orch work --name review` for another configless named worker, `orch work --background --name bg-test --new` for an isolated headless test worker, or `orch work --background --test` as the shortcut. Use `--model` and `--thinking` to pin a worker session's Pi model/default thinking; Orchlink validates model availability with `pi --list-models` before launching.
+- `orch work` starts or reopens the default visible Pi worker named `work`. Use `orch work --name review` for another configless named worker, `orch work --background --name bg-test --new` for an isolated headless test worker, or `orch work --background --test` as the shortcut. Add `--oneshot` to a background worker when it should exit after one completed task reply. Use `--model` and `--thinking` to pin a worker session's Pi model/default thinking; Orchlink validates model availability with `pi --list-models` before launching.
 - `orch doctor` checks project config, broker compatibility, Pi command, and generated skills.
 - `orch sessions` shows registered lead and named worker Pi sessions with worker name, model, reported thinking, runtime, backend, ready state, and lease heartbeat. Use `orch sessions --name review`, `--all`, or `--json` when useful.
 - `orch jobs` browses recent and active work in the current project.

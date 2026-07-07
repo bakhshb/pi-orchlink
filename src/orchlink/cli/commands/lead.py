@@ -267,7 +267,7 @@ def release_work_sessions(config: dict[str, Any], sessions: list[dict[str, Any]]
             continue
 
 
-def launch_work_background(config: dict[str, Any], worker_name: str = DEFAULT_WORKER_NAME) -> int:
+def launch_work_background(config: dict[str, Any], worker_name: str = DEFAULT_WORKER_NAME, oneshot: bool = False) -> int:
     pid_path, log_path = work_background_paths(config, worker_name)
     pid_path.parent.mkdir(parents=True, exist_ok=True)
     command = [
@@ -284,6 +284,8 @@ def launch_work_background(config: dict[str, Any], worker_name: str = DEFAULT_WO
         command.extend(["--model", str(work_config["model"])])
     if work_config.get("thinking"):
         command.extend(["--thinking", str(work_config["thinking"])])
+    if oneshot:
+        command.append("--oneshot")
     env = os.environ.copy()
     python_path = str(Path(sys.executable).parent)
     path_value = env.get("PATH") or env.get("Path") or ""
@@ -460,6 +462,10 @@ def register_lead(app: typer.Typer) -> None:
             bool,
             typer.Option("--test", help="Start a safe fresh background test worker (default name: bg-test)."),
         ] = False,
+        oneshot: Annotated[
+            bool,
+            typer.Option("--oneshot", help="For background workers only: exit after one completed task reply."),
+        ] = False,
         model: Annotated[
             str | None,
             typer.Option("--model", help="Pi model pattern for this worker session, e.g. provider/model or model:thinking."),
@@ -476,11 +482,14 @@ def register_lead(app: typer.Typer) -> None:
                 new = True
                 if worker_name == DEFAULT_WORKER_NAME:
                     worker_name = "bg-test"
+            if oneshot and not background:
+                console.print("[Orch] --oneshot is only supported with --background; visible workers are not auto-terminated.")
+                raise typer.Exit(1)
             worker_name = normalize_worker_name(worker_name)
             thinking = normalize_thinking_level(thinking)
             config, session_id = with_named_worker_session(config, worker_name, new=new)
             config = with_worker_profile(config, model=model, thinking=thinking)
-            profile_override = model is not None or thinking is not None
+            profile_override = model is not None or thinking is not None or oneshot
             named_worker_label = f" worker '{worker_name}'" if worker_name != DEFAULT_WORKER_NAME else " worker"
             auto_refresh_project_skills(config)
             _cli_main.ensure_broker_running(config)
@@ -523,7 +532,7 @@ def register_lead(app: typer.Typer) -> None:
                 if new:
                     console.print(f"[Orch] New Pi{named_worker_label} session: {session_id}")
                 console.print(f"[Orch] Starting headless Pi RPC{named_worker_label}...")
-                pid = launch_work_background(config, worker_name)
+                pid = launch_work_background(config, worker_name, oneshot=oneshot)
                 console.print(f"[Orch] Supervisor PID: {pid} ({pid_path})")
                 console.print(f"[Orch] Log: {log_path}")
                 session = wait_for_background_worker(config, timeout, session_id, worker_name)

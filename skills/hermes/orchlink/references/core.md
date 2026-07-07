@@ -8,7 +8,7 @@ Human daily commands:
 
 - `orch init` creates `.orch/project.yaml` and generated lead/work skills for a project.
 - `orch lead` starts or reopens the visible Pi lead session. Hermes usually does not need this.
-- `orch work` starts or reopens the default visible Pi worker named `work`. Use `orch work --name review` for another configless named worker, `orch work --background --name bg-test --new` for an isolated headless test worker, or `orch work --background --test` as the shortcut. Use `--model` and `--thinking` to pin a worker session's Pi model/default thinking; Orchlink validates model availability with `pi --list-models` before launching.
+- `orch work` starts or reopens the default visible Pi worker named `work`. Use `orch work --name review` for another configless named worker, `orch work --background --name bg-test --new` for an isolated headless test worker, or `orch work --background --test` as the shortcut. Add `--oneshot` to a background worker when it should exit after one completed task reply. Use `--model` and `--thinking` to pin a worker session's Pi model/default thinking; Orchlink validates model availability with `pi --list-models` before launching.
 - `orch doctor` checks project config, broker compatibility, Pi command, and generated skills.
 - `orch sessions` shows registered lead and named worker Pi sessions with worker name, model, reported thinking, runtime, backend, ready state, and lease heartbeat. Use `orch sessions --name review`, `--all`, or `--json` when useful.
 - `orch jobs` browses recent and active work in the current project.
@@ -31,7 +31,7 @@ Lead coordination commands:
 
 If `orch sessions` shows no active `work` session, this is a mandatory branch before any Orchlink task:
 
-1. Background worker, recommended for external agents: run `orch work --background`. It starts the headless Pi RPC worker named `work`, waits for readiness, and returns.
+1. Background worker, recommended for external agents: run `orch work --background`. It starts the headless Pi RPC worker named `work`, waits for readiness, and returns. Use `orch work --background --oneshot` for a task-scoped worker that exits after one completed task reply.
 2. Visible worker terminal, if background start fails or the human prefers it: ask the human to run `orch work --new` in a separate terminal. Visible terminals are more reliable for long sessions.
 
 For background smoke while a visible `work` terminal is already open, do not replace it. Use `orch work --background --name bg-test --new` or `orch work --background --test`, then target that worker explicitly with `orch ask bg-test ...` and stop it with `orch stop --name bg-test`.

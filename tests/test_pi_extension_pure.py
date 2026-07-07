@@ -122,6 +122,14 @@ def test_generated_ts_sends_extension_ready_heartbeat():
     assert "scheduleReadyHeartbeat(ctx)" in ORCHLINK_PI_EXTENSION
 
 
+def test_generated_ts_supports_background_oneshot_after_task_reply():
+    assert "ORCHLINK_ONESHOT" in ORCHLINK_PI_EXTENSION
+    assert "function stopAfterOneshotReply" in ORCHLINK_PI_EXTENSION
+    assert 'backgroundBackend !== "rpc-supervisor"' in ORCHLINK_PI_EXTENSION
+    assert "isChatRequest(task)" in ORCHLINK_PI_EXTENSION
+    assert "process.exit(0)" in ORCHLINK_PI_EXTENSION
+
+
 def test_generated_ts_reconciliation_steer_uses_canonical_notice():
     # Lease loss must steer the standard stop-notice so the worker halts.
     assert "Stop working now. Do not make more edits, do not call more tools" in ORCHLINK_PI_EXTENSION

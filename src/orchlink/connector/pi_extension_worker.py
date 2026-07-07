@@ -270,6 +270,7 @@ export default function (pi: ExtensionAPI) {
   const sessionLeaseId = env("ORCHLINK_SESSION_LEASE_ID");
   const runtimeMode = env("ORCHLINK_RUNTIME_MODE");
   const backgroundBackend = env("ORCHLINK_BACKGROUND_BACKEND");
+  const oneshot = env("ORCHLINK_ONESHOT").toLowerCase() === "true";
   const workerModel = env("ORCHLINK_WORKER_MODEL").trim();
   const workerThinking = normalizeThinking(env("ORCHLINK_WORKER_THINKING"));
   const supervisorPid = Number(env("ORCHLINK_SUPERVISOR_PID", "0")) || undefined;
@@ -371,6 +372,19 @@ export default function (pi: ExtensionAPI) {
     activityTimer = undefined;
   }
 
+  function stopAfterOneshotReply(task: OrchMessage) {
+    if (!oneshot || role !== "work" || backgroundBackend !== "rpc-supervisor" || isChatRequest(task)) return false;
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    if (readyTimer) clearTimeout(readyTimer);
+    clearCancelCheck();
+    clearRecoveryTimer();
+    clearActivityHeartbeat();
+    clearAbortContext();
+    setTimeout(() => process.exit(0), 50);
+    return true;
+  }
+
   function rememberAbortContext(ctx: any) {
     if (typeof ctx?.abort === "function") {
       abortCurrentTurn = () => ctx.abort();
@@ -444,6 +458,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function sendReply(task: OrchMessage, assistantMessage: any, ctx: any) {
+    let sent = false;
     try {
       const reply = replyEnvelope(task, assistantMessage);
       const leaseHeaders: Record<string, string> = currentLeaseEpoch ? {
@@ -452,12 +467,13 @@ export default function (pi: ExtensionAPI) {
       } : {};
       if (sessionLeaseId) leaseHeaders["x-orchlink-session-lease-id"] = sessionLeaseId;
       await postJson(`/v1/messages/${encodeURIComponent(task.message_id)}/reply`, reply, leaseHeaders);
+      sent = true;
       const label = task.task_id || task.conversation_id;
       ctx.ui.notify(`Orchlink reply sent for ${label}`, "info");
     } catch (error: any) {
       ctx.ui.notify(`Orchlink reply failed: ${error?.message || error}`, "error");
     } finally {
-      schedule(0);
+      if (!sent || !stopAfterOneshotReply(task)) schedule(0);
     }
   }
 

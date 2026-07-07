@@ -18,7 +18,7 @@ Treat Orchlink as one local lead/work loop, not as a workflow engine or agent pl
 
 Do not substitute Hermes-native subagents or other Hermes delegation for named Pi workers. Orchlink's own `orch work --background` and `orch work --background --name ...` are the approved background workers; Hermes-native background sessions are not. If the human asks for Orchlink, work must flow through `orch work` plus `orch ask`/`orch send`; otherwise stop and ask whether a non-Orchlink substitute is acceptable.
 
-As an external agent, do not run plain `orch work` yourself; it opens an interactive Pi chat and blocks until the session ends. Use `orch work --background` for the default worker, or `orch work --background --name bg-test --new`/`--test` for isolated background testing while a visible worker is already open.
+As an external agent, do not run plain `orch work` yourself; it opens an interactive Pi chat and blocks until the session ends. Use `orch work --background` for the default worker, add `--oneshot` when the background worker is task-scoped, or use `orch work --background --name bg-test --new`/`--test` for isolated background testing while a visible worker is already open.
 
 ## Reference files
 
@@ -49,7 +49,7 @@ cd /home/debian/projects/orchlink
 
 If the project is not initialized, ask the human to run `orch init`. If no worker session is active, this is a mandatory branch before any Orchlink task:
 
-1. Start the worker in the background, recommended for external agents: run `orch work --background`. It returns only after the headless RPC worker becomes ready or fails with `.orch/run/orch-work.log` diagnostics.
+1. Start the worker in the background, recommended for external agents: run `orch work --background`. Use `orch work --background --oneshot` when it should exit after one completed task reply. It returns only after the headless RPC worker becomes ready or fails with `.orch/run/orch-work.log` diagnostics.
 2. If a visible `work` terminal is already active and you only need to test background mode, use `orch work --background --name bg-test --new` or `orch work --background --test` and target `bg-test` explicitly.
 3. If the background worker fails or the human wants a visible worker terminal instead, ask them to run `orch work --new` in a separate terminal. Visible terminals are more reliable for long sessions.
 

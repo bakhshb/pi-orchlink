@@ -129,7 +129,7 @@ For external agents or background use, start the worker without blocking the cur
 orch work --background
 ```
 
-This starts the headless Pi RPC worker named `work`, writes `.orch/run/orch-work.pid` and `.orch/run/orch-work.log`, waits for readiness, and returns. Use a visible worker terminal (`orch work --new`) if background readiness fails or you want to watch the Pi worker chat.
+This starts the headless Pi RPC worker named `work`, writes `.orch/run/orch-work.pid` and `.orch/run/orch-work.log`, waits for readiness, and returns. Add `--oneshot` when the background worker should exit after one completed task reply. Use a visible worker terminal (`orch work --new`) if background readiness fails or you want to watch the Pi worker chat.
 
 Named workers need no YAML setup. Start another durable worker context with `--name` and target it by that name:
 
