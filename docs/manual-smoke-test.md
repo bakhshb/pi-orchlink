@@ -47,7 +47,7 @@ Pass criteria:
 
 - Every command prints help and exits successfully.
 - Help text distinguishes human commands from debug/agent coordination commands where relevant.
-- `orch jobs --help` documents `--active`, `--idle`, `--live`, `--result`, `--wait`, `--cancel`, `--timeout`, `--progress/--no-progress`, `--poll-seconds`, `--status`, `--kind`, `--id`, and `--json`.
+- `orch jobs --help` documents `--active`, `--idle`, `--live`, `--result`, `--wait`, `--cancel`, `--timeout`, `--no-progress`, `--poll-seconds`, `--status`, `--kind`, `--id`, and `--json`.
 - `orch work --help` documents `--model` and `--thinking`.
 - `orch ask --help`, `orch send --help`, `orch talk --help`, `orch say --help`, and `orch close --help` document clean long-message inputs (`--edit`, `--message-file`, and `-m -`) where applicable.
 - `orch ask --help`, `orch send --help`, `orch talk --help`, and `orch say --help` document per-task/per-turn `--thinking` overrides.

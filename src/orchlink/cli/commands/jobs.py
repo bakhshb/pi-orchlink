@@ -347,22 +347,22 @@ def register_jobs(app: typer.Typer) -> None:
     @app.command(help="Inspect and control tracked work. List jobs by default; pass a job ID or use --live/--result/--wait/--cancel for one job.")
     def jobs(
         item: Annotated[str | None, typer.Argument(help="Optional job ID to inspect, equivalent to --id.")] = None,
-        limit: Annotated[int, typer.Option("--limit", help="Maximum number of recent jobs to show; also caps --live rows.")] = 50,
-        active: Annotated[bool, typer.Option("--active", help="Show only pending/running/open work.")] = False,
-        idle: Annotated[bool, typer.Option("--idle", help="Exit 0 if no active work exists; exit 1 if work is busy.")] = False,
-        status: Annotated[str | None, typer.Option("--status", help="Show only jobs with this status.")] = None,
-        kind: Annotated[str | None, typer.Option("--kind", help="Show only task or talk jobs.")] = None,
-        item_id: Annotated[str | None, typer.Option("--id", help="Show one job's current status/details.")] = None,
-        live_id: Annotated[str | None, typer.Option("--live", help="Show recent worker activity for one job ID.")] = None,
-        result_id: Annotated[str | None, typer.Option("--result", help="Print the completed result for one job ID.")] = None,
-        wait_id: Annotated[str | None, typer.Option("--wait", help="Wait for one job result; timeout does not cancel the job.")] = None,
-        cancel_id: Annotated[str | None, typer.Option("--cancel", help="Cancel one active job ID.")] = None,
-        reason: Annotated[str, typer.Option("--reason", "-m", help="Reason recorded with --cancel.")] = "Cancelled by lead.",
-        worker_name: Annotated[str | None, typer.Option("--name", help="Show/check jobs for one named worker.")] = None,
-        timeout: Annotated[int, typer.Option("--timeout", help="Maximum seconds for --wait.")] = 1800,
-        progress: Annotated[bool, typer.Option("--progress/--no-progress", help="Print worker activity while --wait is pending.")] = True,
-        poll_seconds: Annotated[int, typer.Option("--poll-seconds", min=1, max=60, help="Seconds between --wait progress polls.")] = 5,
-        json_output: Annotated[bool, typer.Option("--json", help="Print raw jobs JSON for list/status views.")] = False,
+        limit: Annotated[int, typer.Option("--limit", metavar="N", help="recent jobs to show; caps --live rows.")] = 50,
+        active: Annotated[bool, typer.Option("--active", help="Show only active/open work.")] = False,
+        idle: Annotated[bool, typer.Option("--idle", help="Exit 0 when no active work; 1 when busy.")] = False,
+        status: Annotated[str | None, typer.Option("--status", metavar="STATUS", help="Filter by status.")] = None,
+        kind: Annotated[str | None, typer.Option("--kind", metavar="KIND", help="Filter by task or talk.")] = None,
+        item_id: Annotated[str | None, typer.Option("--id", metavar="ID", help="Inspect one job.")] = None,
+        live_id: Annotated[str | None, typer.Option("--live", metavar="ID", help="Show recent activity for one job.")] = None,
+        result_id: Annotated[str | None, typer.Option("--result", metavar="ID", help="Print completed result.")] = None,
+        wait_id: Annotated[str | None, typer.Option("--wait", metavar="ID", help="Wait for one result.")] = None,
+        cancel_id: Annotated[str | None, typer.Option("--cancel", metavar="ID", help="Cancel one active job.")] = None,
+        reason: Annotated[str, typer.Option("--reason", "-m", metavar="TEXT", help="Cancel reason.")] = "Cancelled by lead.",
+        worker_name: Annotated[str | None, typer.Option("--name", metavar="NAME", help="Filter by worker name.")] = None,
+        timeout: Annotated[int, typer.Option("--timeout", metavar="SEC", help="Maximum seconds for --wait.")] = 1800,
+        no_progress: Annotated[bool, typer.Option("--no-progress", help="Hide activity while --wait is pending.")] = False,
+        poll_seconds: Annotated[int, typer.Option("--poll-seconds", metavar="SEC", min=1, max=60, help="Seconds between wait polls.")] = 5,
+        json_output: Annotated[bool, typer.Option("--json", help="Print raw jobs JSON.")] = False,
     ) -> None:
         normalized_kind = kind.lower() if kind else None
         if normalized_kind and normalized_kind not in {"task", "talk"}:
@@ -404,7 +404,7 @@ def register_jobs(app: typer.Typer) -> None:
                 _print_result(config, result_id)
                 return
             if wait_id:
-                _wait_for_result(config, wait_id, timeout=timeout, progress=progress, poll_seconds=poll_seconds)
+                _wait_for_result(config, wait_id, timeout=timeout, progress=not no_progress, poll_seconds=poll_seconds)
                 return
             if cancel_id:
                 _cancel_job(config, cancel_id, reason=reason)
