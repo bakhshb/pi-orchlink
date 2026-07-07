@@ -1,7 +1,7 @@
 ---
 name: orchlink
 description: "Use when Hermes is the Orchlink lead for local named Pi workers (`work`, `review`, `bg-test`): coordinate ask/send/talk/goal tasks, review gates, jobs results, cancellation, and stale-state recovery. Must use whenever the user mentions Orchlink, orch commands, Pi workers, background/oneshot workers, review gates, stale sessions, or broker/session recovery."
-version: 1.1.3
+version: 1.1.4
 platforms: [linux, macos, windows]
 metadata:
   hermes:
@@ -59,13 +59,13 @@ Do not start `orch lead` by default. Hermes can act as lead through CLI commands
 
 ## Quick command chooser
 
-1. Need a review, decision, critique, plan, or blocker answer before continuing? Use `orch ask work --wait` or target a specific active worker name such as `review`.
-2. Need long or heavy worker implementation while you stay responsive? Use `orch send <name>`, then continue with independent lead work. Use `orch jobs --result <task_id>` or `orch jobs --wait <task_id>` only when the result actually blocks your next action. Do not use `orch ask --wait` for heavy implementation just to start work; that blocks the lead until the worker finishes.
+1. Need a short review, decision, critique, plan, or blocker answer before continuing safely? Use `orch ask work --wait` or target a specific active worker name such as `review`.
+2. Need long/heavy implementation, broad review, tests, or research? Prefer async `orch send <name>`. Record the task ID, continue only on non-conflicting lead-owned work, then use `orch jobs --result <task_id>` when ready. Use `orch jobs --wait <task_id>` only when the result now blocks your next safe action. Do not use `orch ask --wait` just to make heavy work synchronous; that blocks the lead and encourages rushed conclusions.
 3. Need PRD/plan-driven completion with acceptance criteria? Read `references/goal-mode.md`, then use `orch goal ...`.
 4. Need short peer discussion in a visible lead/work chat? Use Talk Mode.
 5. Need to know whether it is safe to continue? Use `orch jobs --idle`.
 6. Need active work details? Use `orch jobs --active`.
-7. Need final output? Use `orch jobs --wait T002` or `orch jobs --result T002`, not the plain jobs list.
+7. Need final output? Prefer `orch jobs --result T002` once terminal; use `orch jobs --wait T002` only if you must block now. Do not rely on the plain jobs list as the result.
 
 ## Safety rules
 
@@ -74,6 +74,7 @@ Do not start `orch lead` by default. Hermes can act as lead through CLI commands
 - Do not ask the worker to edit outside the allowed scope.
 - Do not stop visible worker terminals from the lead. Stop only tracked background workers; a visible worker should be stopped by the human in its own terminal with Ctrl-C.
 - Do not run dependent full tests while worker work is active.
+- Do not use blocking waits to rush long worker tasks; dispatch async and resolve the task ID at a natural checkpoint.
 - Do not make final claims until blocking reviews and active work are resolved.
 - Do not accept worker output blindly. Name the risk, disagreement, or assumption before deciding.
 - Trust only exact task IDs in the current project.

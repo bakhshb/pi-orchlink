@@ -115,8 +115,10 @@ def test_send_queues_async_task(monkeypatch, tmp_path):
     assert result.exit_code == 0
     assert "Sent T002" in result.output
     assert "Async mode" in result.output
-    assert "orch jobs --wait T002" in result.output
-    assert "orch jobs --result T002" in result.output
+    assert "continue only on non-conflicting" in result.output
+    assert "lead-owned work" in result.output
+    assert "Read result when ready: orch jobs --result T002" in result.output
+    assert "Block only if this now gates you: orch jobs --wait T002" in result.output
 
 
 def test_send_reads_message_from_stdin(monkeypatch, tmp_path):

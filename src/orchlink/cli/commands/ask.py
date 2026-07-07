@@ -69,11 +69,11 @@ def job_activity_line_for(job: dict[str, Any]) -> str:
 
 def print_async_guidance(config: dict[str, Any], worker_id: str, task_id: str) -> None:
     console.print(f"[Orch] Sent {task_id} to {worker_id}.")
-    console.print("[Orch] Async mode: worker scope is pending.")
+    console.print("[Orch] Async mode: keep the task ID and continue only on non-conflicting lead-owned work.")
     console.print("[Orch] Check active work: orch jobs --active")
-    console.print(f"[Orch] Watch activity: orch jobs --live {task_id}")
-    console.print(f"[Orch] Wait: orch jobs --wait {task_id}")
-    console.print(f"[Orch] Read result: orch jobs --result {task_id}")
+    console.print(f"[Orch] Check activity if needed: orch jobs --live {task_id}")
+    console.print(f"[Orch] Read result when ready: orch jobs --result {task_id}")
+    console.print(f"[Orch] Block only if this now gates you: orch jobs --wait {task_id}")
 
 
 def register_ask(app: typer.Typer) -> None:

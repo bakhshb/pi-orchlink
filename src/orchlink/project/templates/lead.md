@@ -34,13 +34,13 @@ Do not use the worker for tiny mechanical edits, unclear requests that need a hu
 ## Command chooser
 
 1. Non-trivial coding or risky change? First decide whether worker review, challenge, verification, or implementation would tighten the loop.
-2. Need a review, decision, critique, plan, or blocker answer before continuing? Use `orch ask work --wait`.
-3. Need long or heavy worker implementation while you work on a separate scope? Use `orch send`, continue independently, and retrieve the result with `orch jobs --result <task_id>` or `orch jobs --wait <task_id>` only when it actually blocks your next step. Do not use `orch ask --wait` for heavy implementation.
+2. Need a short review, decision, critique, plan, or blocker answer before continuing safely? Use `orch ask work --wait`.
+3. Need long/heavy implementation, broad review, tests, or research while you work on a separate scope? Use `orch send`, record the task ID, continue only on non-conflicting lead-owned work, and retrieve the result with `orch jobs --result <task_id>`. Use `orch jobs --wait <task_id>` only when that result now blocks your next safe step. Do not use `orch ask --wait` for heavy implementation.
 4. Need short peer discussion? Use Talk Mode: `orch talk`, `orch say`, `orch close`.
 5. Need a PRD/plan-driven run until acceptance criteria are verified? Use Goal Mode after reading `references/goal-mode.md`.
 6. Need to know whether it is safe to continue? Use `orch jobs --idle`.
 7. Need active work details? Use `orch jobs --active`.
-8. Need final output? Use `orch jobs --wait T002` or `orch jobs --result T002`, not the plain jobs list.
+8. Need final output? Prefer `orch jobs --result T002` once terminal; use `orch jobs --wait T002` only if you must block now. Do not rely on the plain jobs list as the result.
 
 ## Task prompt shape
 

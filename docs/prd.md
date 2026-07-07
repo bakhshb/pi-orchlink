@@ -186,8 +186,8 @@ orch send work -t T002 -m "Implement ..."
 orch talk work -m "one short question" -r 6
 orch say C001 -m "follow-up"
 orch close C001 -m "Decision: ..."
-orch jobs --wait T002
 orch jobs --result T002
+orch jobs --wait T002
 orch jobs --idle
 orch jobs --live T002
 orch jobs --cancel T002 -m "reason"
@@ -195,10 +195,10 @@ orch jobs --cancel T002 -m "reason"
 
 Rules:
 
-- `ask --wait` is for synchronous decisions and review gates.
-- `send` is for async work only when lead can work on a different scope.
+- `ask --wait` is for short synchronous decisions and review gates.
+- `send` is the default for long/heavy implementation, broad review, tests, or research when lead can work on a different scope.
 - `talk` is for visible discussion, not automation glue.
-- `jobs --wait` and `jobs --result` should not both be used routinely.
+- `jobs --result` reads completed async output; `jobs --wait` should be used only when the result now blocks the next safe action.
 - `jobs --idle` is a safety check before dependent tests, final conclusions, or new worker assignment.
 - `jobs --cancel` marks broker work cancelled immediately, but process interruption is best-effort.
 
