@@ -2,39 +2,41 @@
 
 Loop engineering for local Pi coding agents.
 
-Set a goal. Orchlink keeps a **lead Pi** and named **worker Pi** sessions moving through scoped tasks until the acceptance criteria prove the work is done.
+Set a goal. Prove it is done.
 
-Pi Orchlink turns a lead Pi session and named worker Pi sessions into a local goal loop. You give lead a PRD, implementation plan, or plain-English goal. Lead derives acceptance criteria, prompts work for the next slice, checks the evidence, and continues until the goal is done, blocked, or needs your signoff.
+A single Pi chat can propose code. Real project work needs more: a loop that remembers the goal, delegates bounded slices, checks evidence, and stops when judgment needs a human. Orchlink gives Pi users that loop without a hosted platform.
 
-No Redis. No dashboard. No hosted workflow engine. Just local Pi sessions, a small local broker, and durable project files.
-
-Think of it like this:
+The lead Pi orchestrates. Orchlink provides the wiring and accountability layer: a small local broker, generated lead/work skills, and project files under `.orch/`. Named worker Pis like `work`, `review`, and `bg-test` keep separate context and accept one task at a time.
 
 ```text
 you → lead Pi → named worker Pi → lead Pi → you
 ```
 
-## Demo
+No Redis. No dashboard. No hosted workflow engine. Just local Pi sessions, a local broker, and durable project files.
 
-This GIF shows the full demo at 1.5x speed.
-
-![Pi Orchlink demo](media-demo.gif)
-
-## A Pi-to-Pi goal loop
+## The loop
 
 Most agent workflows stop at one prompt. Larger work needs a loop: remember the goal, choose the next slice, verify it, then continue.
 
-Pi Orchlink gives local Pi agents a tight loop:
+Pi Orchlink gives local Pi agents that loop:
 
 1. Capture the source: a PRD, implementation plan, or short goal.
 2. Turn it into concrete acceptance criteria.
 3. Review the plan before work starts.
-4. Send the next bounded slice to the worker.
+4. Send the next bounded slice to a named worker.
 5. Run checks and record evidence.
 6. Repeat until the criteria pass.
 7. Stop for human signoff when judgment is required.
 
 The result is not “the agent said it finished.” The result is a goal with criteria, checks, evidence, blockers, and history.
+
+## What makes Orchlink different
+
+- **Proof over claims.** Goal Mode tracks acceptance criteria, check commands, evidence, blockers, and signoff instead of trusting a final chat message.
+- **Named workers you can see and stop.** `work`, `review`, and `bg-test` are durable Pi contexts, not an anonymous worker pool.
+- **Single-flight by worker name.** Orchlink prevents you from stacking three tasks onto one worker context by accident.
+- **Local and Pi-first.** The broker runs on your machine, the sessions are Pi sessions, and the project state lives under `.orch/`.
+- **Lead-owned decisions.** The lead Pi chooses the next safe slice. Orchlink routes work and records state; it does not become an autonomous scheduler.
 
 ## What you need to know
 
@@ -56,7 +58,7 @@ orch stop      # stop this project's default background worker; add --name for a
 orch update    # update Orchlink
 ```
 
-Commands like `orch ask`, `orch send`, `orch talk`, `orch say`, `orch close`, and `orch jobs --wait/--result/--idle/--live/--cancel` are mostly for the lead agent. Debug commands like `orch broker status`, `orch broker watch`, and `orch broker run` are for troubleshooting.
+Commands like `orch ask`, `orch send`, `orch talk`, `orch say`, `orch close`, `orch jobs --result`, `orch jobs --wait`, `orch jobs --idle`, `orch jobs --live`, and `orch jobs --cancel` are mostly for the lead agent. Debug commands like `orch broker status`, `orch broker watch`, and `orch broker run` are for troubleshooting.
 
 ## Install
 
@@ -156,7 +158,7 @@ orch work --background --name review --model openai/codex-max --thinking xhigh
 
 Before starting a model-pinned worker, Orchlink checks `pi --list-models <model>`. If the model is not registered or available, it stops before launching the worker and prints available models to choose from.
 
-Orchlink applies thinking per task automatically: review, planning, questioning, and Talk Mode default to `xhigh`; implementation work defaults to `medium`. Override one task with `orch ask --thinking <level>` or `orch send --thinking <level>`. `orch sessions` shows the worker model and reported thinking level when Pi reports them.
+Orchlink applies thinking per task automatically: review, planning, questioning, and Talk Mode default to `xhigh`; implementation work defaults to `medium`. Override one task by adding `--thinking <level>` to `orch ask ...` or `orch send ...`. `orch sessions` shows the worker model and reported thinking level when Pi reports them.
 
 Now talk to the lead Pi session. For example:
 
