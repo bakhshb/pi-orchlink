@@ -119,6 +119,9 @@ def test_send_queues_async_task(monkeypatch, tmp_path):
     assert "lead-owned work" in result.output
     assert "Read result when ready: orch jobs --result T002" in result.output
     assert "Block only if this now gates you: orch jobs --wait T002" in result.output
+    assert "Closeout: before a human-facing completion/decision" in result.output
+    assert "read T002" in result.output
+    assert "pending with blocking status and retrieval command" in result.output
 
 
 def test_send_reads_message_from_stdin(monkeypatch, tmp_path):

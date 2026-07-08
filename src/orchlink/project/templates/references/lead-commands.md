@@ -128,12 +128,18 @@ orch jobs --live TDO001
 orch jobs --result TDO001  # use --wait only if the result now gates you
 ```
 
-Progress discipline:
+Async closeout invariant: `orch send` is not fire-and-forget. You own every async task ID until you read the exact result or explicitly hand the pending task back to the human.
 
-- After every async `orch send`, run `orch jobs --active` unless you are immediately doing independent lead-owned work.
+Closeout discipline:
+
+- After every async `orch send`, record the task ID in your working notes/plan and run `orch jobs --active` unless you are immediately doing independent lead-owned work.
+- If your harness has a native TODO/checkpoint/reminder, you may record the task ID there as a secondary nudge. It does not replace resolving the task or handing it off.
+- Do not set up cron or external timers as the Orchlink reporting mechanism.
 - Do not use shell sleep, repeated timeout waits, or blind `orch jobs --wait --timeout ...` as the primary progress check.
 - If the task remains active or may be slow, run `orch jobs --live <task_id>` before deciding it is stuck, blocked, or done.
-- Use `orch jobs --result <task_id>` when `jobs` shows the task is terminal; use `orch jobs --wait <task_id>` only when you intentionally need to block because that result gates the next action.
+- Before any human-facing completion or decision, read terminal async results with `orch jobs --result <task_id>`; use `orch jobs --wait <task_id>` only when you intentionally need to block because that result gates the next action.
+- If an async task is still pending when you must stop or reply, tell the human the task ID, whether it blocks the answer, and the retrieval command.
+- Do not claim dependent work is done while its async task is pending.
 
 Rules:
 
@@ -156,7 +162,7 @@ orch jobs --result T002
 orch jobs --wait T002
 ```
 
-Use `--result` later to reread or debug a completed result. If both CLI output and the lead chat show the same result, treat matching task/project IDs as one result.
+Do not use `orch jobs --idle` as a substitute for reading the exact result; idle only says no active work remains. Use `--result` later to reread or debug a completed result. If both CLI output and the lead chat show the same result, treat matching task/project IDs as one result.
 
 Trust only the exact task ID in the current project. Orchlink refuses cross-project or unscoped task results. If you see a stale-broker or cross-project warning, stop and repair before continuing.
 

@@ -74,6 +74,10 @@ def print_async_guidance(config: dict[str, Any], worker_id: str, task_id: str) -
     console.print(f"[Orch] Check activity if needed: orch jobs --live {task_id}")
     console.print(f"[Orch] Read result when ready: orch jobs --result {task_id}")
     console.print(f"[Orch] Block only if this now gates you: orch jobs --wait {task_id}")
+    console.print(
+        f"[Orch] Closeout: before a human-facing completion/decision, read {task_id} "
+        "or report it pending with blocking status and retrieval command."
+    )
 
 
 def register_ask(app: typer.Typer) -> None:

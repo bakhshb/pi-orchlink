@@ -179,6 +179,8 @@ Objective ACs need check commands for strongest unattended verification. Subject
 
 Each worker name handles one thing at a time. Different names can run independent work. The same name stays single-flight.
 
+Async work is not fire-and-forget. If lead uses `orch send`, it should keep the task ID and, before a completion or decision, either read the exact result or tell you the pending ID, whether it blocks, and how to retrieve it.
+
 ## Recovery and safety
 
 Use `orch resume` first when returning after an interruption, broker restart, cancelled task, or compacted conversation. It prints the active task or goal, lead/work sessions, the last broker checkpoint, drifted leases, and one recommended next command in a single plain-text report.

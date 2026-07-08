@@ -57,7 +57,7 @@ If neither option is available, stop and tell the human Orchlink cannot proceed 
 ## Quick command chooser
 
 1. Need a short review, decision, critique, plan, or blocker answer before continuing safely? Use `orch ask work --wait` or target a specific active worker name such as `review`.
-2. Need long/heavy implementation, broad review, tests, or research? Prefer async `orch send <name>`. Record the task ID, continue only on non-conflicting lead-owned work, then use `orch jobs --result <task_id>` when ready. Use `orch jobs --wait <task_id>` only when the result now blocks your next safe action. Do not use `orch ask --wait` just to make heavy work synchronous; that blocks the lead and encourages rushed conclusions.
+2. Need long/heavy implementation, broad review, tests, or research? Prefer async `orch send <name>`. Record the task ID, continue only on non-conflicting lead-owned work, and keep ownership until you read the exact result with `orch jobs --result <task_id>` or report it pending. Use `orch jobs --wait <task_id>` only when the result now blocks your next safe action. Do not use `orch ask --wait` just to make heavy work synchronous; that blocks the lead and encourages rushed conclusions.
 3. Need PRD/plan-driven completion with acceptance criteria? Read `references/goal-mode.md`, then use `orch goal ...`.
 4. Need short peer discussion in a visible lead/work chat? Use Talk Mode.
 5. Need to know whether it is safe to continue? Use `orch jobs --idle`.
@@ -72,6 +72,7 @@ If neither option is available, stop and tell the human Orchlink cannot proceed 
 - Do not stop visible worker terminals from the lead. Stop only tracked background workers; a visible worker should be stopped by the human in its own terminal with Ctrl-C.
 - Do not run dependent full tests while worker work is active.
 - Do not use blocking waits to rush long worker tasks; dispatch async and resolve the task ID at a natural checkpoint.
+- Async closeout: `orch send` is not fire-and-forget. Before any human-facing completion or decision, read the exact result with `orch jobs --result <task_id>`/`--wait <task_id>`, or state that the task ID is still pending, whether it blocks, and how to retrieve it. Do not claim dependent work is done while it is pending.
 - Do not make final claims until blocking reviews and active work are resolved.
 - Do not accept worker output blindly. Name the risk, disagreement, or assumption before deciding.
 - Trust only exact task IDs in the current project.
