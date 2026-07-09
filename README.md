@@ -1,18 +1,20 @@
 # Pi Orchlink
 
-Loop engineering for local Pi coding agents.
+Orchlink is a local coordination layer for Pi coding agents. It connects one lead Pi session to named worker Pi sessions through a local broker, so a lead agent can delegate work, get reviews, run goals, and manage loops — all on your machine.
 
-A single Pi chat can propose code. Real project work needs a loop that remembers the goal, delegates bounded slices, checks evidence, and stops when judgment needs a human. Orchlink gives Pi users that loop without a hosted platform.
+## What Orchlink does
 
-The lead Pi orchestrates. Orchlink provides the wiring and accountability layer: a small local broker, generated lead/work skills, and project files under `.orch/`. Named worker Pi sessions like `work`, `review`, and `bg-test` keep separate context and accept one task at a time.
+- **Routes tasks between agents.** The lead Pi sends work to named workers (`work`, `review`, `bg-test`) via a local HTTP broker. Each worker is a separate Pi session with its own context.
+- **Tracks work state.** Tasks, talks, sessions, and results are tracked by the broker. The lead reads results, checks whether work is idle, and cancels stale tasks.
+- **Runs Goal Mode.** Create a goal from a PRD, derive acceptance criteria and a plan, dispatch bounded work slices, verify objective checks, record evidence, and sign off subjective criteria.
+- **Runs Loop Mode.** Triage work items, dispatch each to a maker worker in an isolated worktree, verify with a separate verifier worker, run objective checks (tests, lint), and reach `done` only on an accepted verdict.
+- **Schedules loop ticks.** Install a crontab or systemd timer that fires `orch loop tick` on a cadence. Each fire is a fresh bounded process, not a daemon.
+- **Isolates parallel workers.** `orch work --worktree-create` creates a `git worktree` per worker so two makers don't touch the same files.
+- **Connects to external tools.** GitHub and Linear connectors discover pull requests, issues, and CI failures as loop candidates. Tokens are loaded from env or external files, never stored in project state.
+- **Generates project skills.** `orch init` writes lead and worker skills under `.orch/skills/` so agents know the project's conventions, commands, and recovery procedures.
+- **Checks broker security.** `orch doctor` reports whether the broker is loopback-only, whether the API key is default, and whether the running broker accepts the project key.
 
-```text
-you → lead Pi → named worker Pi → lead Pi → you
-```
-
-No Redis. No dashboard. No hosted workflow engine. Just local Pi sessions, a local broker, and durable project files.
-
-## Three ways to work
+## Three modes
 
 ```text
                           ┌─────────────────────┐
@@ -41,22 +43,11 @@ No Redis. No dashboard. No hosted workflow engine. Just local Pi sessions, a loc
                                             no auto-merge
 ```
 
-**Ask/Send** — one task, one result. No lifecycle, no state, no verifier. Use it for quick gates, async implementation, reviews, or anything where you read the result and move on.
+**Ask/Send** — one task, one result. No lifecycle, no state, no verifier.
 
-**Goal Mode** — PRD with acceptance criteria, plan, evidence, and human signoff. Use it when the work needs formal proof of completion before you trust it.
+**Goal Mode** — PRD with acceptance criteria, plan, evidence, and human signoff.
 
-**Loop Mode** — recurring or parallel work with maker/verifier separation, objective checks, and durable state. Use it when work should be triaged, dispatched, verified by a separate agent, and checked against tests before `done`.
-
-## What makes Orchlink different
-
-- **Proof over claims.** Goal Mode tracks acceptance criteria, check commands, evidence, blockers, and signoff. Loop Mode refuses `done` without an accepted verifier verdict and a passed objective check.
-- **Maker ≠ verifier by default.** Loop Mode structurally separates the agent that writes from the agent that checks. A failed required check forces `REJECTED` regardless of what the LLM says.
-- **Named workers you can see and stop.** `work`, `review`, and `bg-test` are durable Pi contexts, not an anonymous worker pool.
-- **Single-flight by worker name.** Orchlink prevents three tasks from landing on one worker context by accident.
-- **Worktree isolation.** `orch work --worktree-create` gives each maker its own `git worktree` so parallel workers don't collide.
-- **No daemon, no cron, no auto-merge.** The loop runs as foreground ticks you control. A schedule fires discrete `orch loop tick` processes, not a long-running daemon.
-- **Local and Pi-first.** The broker runs on your machine, the sessions are Pi sessions, and project state lives under `.orch/`.
-- **Lead-owned decisions.** The lead Pi chooses the next safe slice. Orchlink routes work and records state; it does not become an autonomous scheduler.
+**Loop Mode** — recurring or parallel work with maker/verifier separation, objective checks, and durable state.
 
 ## Install
 
@@ -68,14 +59,6 @@ You need Python 3.11+, `git`, and Pi installed as `pi`.
 curl -fsSL https://raw.githubusercontent.com/bakhshb/pi-orchlink/main/install.sh | bash
 ```
 
-The installer puts Orchlink in `~/.local/share/orchlink`, links `orch` into `~/.local/bin`, and can offer optional Orchlink skills.
-
-If your shell cannot find `orch`:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH"
-```
-
 **Windows PowerShell:**
 
 ```powershell
@@ -83,9 +66,13 @@ Invoke-WebRequest https://raw.githubusercontent.com/bakhshb/pi-orchlink/main/ins
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-Advanced overrides: `ORCHLINK_REPO_URL`, `ORCHLINK_REF`, `ORCHLINK_INSTALL_DIR`, `ORCHLINK_BIN_DIR`, `ORCHLINK_PYTHON`, `ORCHLINK_SOURCE_DIR`. Close running `orch lead` / `orch work` / Pi terminals before uninstalling.
+If your shell cannot find `orch`:
 
-> **Windows support is beta.** Linux/macOS remain the primary tested paths.
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+> **Windows support is beta.** Linux/macOS are the primary tested paths.
 
 ## Start a project
 
@@ -96,7 +83,7 @@ orch lead    # terminal 1
 orch work    # terminal 2
 ```
 
-For background or external-agent use:
+For background use:
 
 ```bash
 orch work --background
@@ -115,14 +102,6 @@ Pin a worker model or thinking level:
 orch work --background --name review --model openai/codex-max --thinking xhigh
 ```
 
-Now talk to lead in plain English:
-
-```text
-Review this repo and ask work for a second opinion before changing anything.
-```
-
-The worker reply appears in the lead chat.
-
 ## Ask and Send
 
 ```bash
@@ -134,11 +113,9 @@ orch send work -t T002 -m "Implement the export endpoint."
 orch jobs --result T002    # read result when ready
 ```
 
-Async work is not fire-and-forget. The lead keeps the task ID and, before any completion or decision, reads the exact result or reports it pending with blocking status and retrieval command.
-
 ## Goal Mode
 
-Goal Mode is for PRD/plan-driven work where lead should not claim done until acceptance criteria are verified.
+Goal Mode is for PRD/plan-driven work where the lead should not claim done until acceptance criteria are verified.
 
 ```bash
 orch goal start "Implement export feature" --prd docs/export-prd.md --derive
@@ -158,8 +135,6 @@ Goal Mode writes durable state under `.orch/goals/Gxxx/`: source, acceptance cri
 | `orch goal work G001 --until done` | Dispatch bounded worker slices until done, gated, blocked, or capped. |
 | `orch goal audit G001` | Ask worker to audit artifacts and evidence without editing. |
 | `orch goal signoff G001 AC-4` | Human-approve a subjective core AC. |
-
-Objective ACs need check commands for strongest unattended verification. Subjective ACs stop at a signoff gate.
 
 ## Loop Mode
 
@@ -190,7 +165,7 @@ An item reaches `done` only through:
 ready → dispatching → running → awaiting_verdict → verifying → done
 ```
 
-…and only on an accepted verifier verdict. No auto-merge. No cron daemon. Each scheduled fire is a fresh bounded `orch loop tick` process.
+A failed required objective check forces `REJECTED` regardless of what the LLM says. No auto-merge. No daemon. Each scheduled fire is a fresh bounded `orch loop tick` process.
 
 Objective checks are configured in `.orch/loop/checks.yaml`:
 
@@ -204,37 +179,27 @@ checks:
     required: false
 ```
 
-A failed **required** check forces `REJECTED` regardless of what the LLM says. Non-required failures are evidence only.
+Loop state lives in `.orch/loop/state.md` as human-readable markdown with a fenced YAML block.
 
-Loop state lives in `.orch/loop/state.md` as human-readable markdown with a fenced YAML block. The human can read it, edit notes, and override any decision.
+## Workers
 
-## Worker modes
+- Each worker name handles one task at a time. Different names run independent work.
+- `orch work --background` starts a headless RPC worker. `--oneshot` exits after one reply.
+- `orch work --worktree-create --base main` creates a `git worktree` for the worker.
+- `orch work --model <model> --thinking <level>` pins a worker's model and thinking.
+- Talk Mode (`orch talk`, `orch say`, `orch close`) is for lead↔worker discussion without file edits.
 
-- **Implementation:** lead sends a scoped task to a worker. Prefer async `orch send` for long work.
-- **Review:** work checks a change before lead runs expensive tests, final summaries, or release steps.
-- **Talk Mode:** lead and work discuss a decision. Work should not edit files in Talk Mode.
-- **Background workers:** external agents can run headless workers with `orch work --background`.
-- **Worktree isolation:** `orch work --worktree-create --base main` gives each maker its own `git worktree` so parallel workers don't collide.
-
-Each worker name handles one thing at a time. Different names can run independent work. The same name stays single-flight.
-
-## Recovery and safety
-
-Use `orch resume` first when returning after an interruption, broker restart, cancelled task, or compacted conversation. It prints active work, sessions, checkpoint drift, and one recommended next command.
+## Recovery
 
 ```bash
-orch resume
-orch jobs --idle       # quick safe/unsafe check
-orch jobs --active     # what is still busy
-orch jobs --live T002  # recent activity for one job
+orch resume          # recovery report after interruption
+orch jobs --idle     # exit 0 if no active work
+orch jobs --active   # what is still busy
 orch jobs --result T002  # read a completed result
+orch jobs --cancel T002 -m "reason"  # cancel stale work
 ```
 
-Cancellation is cooperative. `orch jobs --cancel T002 -m "reason"` marks broker work cancelled and asks Pi to abort the turn.
-
 ## Project files
-
-`orch init` creates:
 
 ```text
 .orch/
@@ -247,37 +212,15 @@ Cancellation is cooperative. `orch jobs --cancel T002 -m "reason"` marks broker 
       lead-commands.md
       recovery.md
       review-gates.md
-  run/
+  loop/
+    state.md            # loop items and lifecycle state
+    checks.yaml         # objective check definitions
+  goals/
+    Gxxx/               # per-goal artifacts
+  run/                  # broker, worker, and session runtime files
 ```
 
-Do not commit `.orch/`. Refresh skills manually:
-
-```bash
-orch init --refresh-skills
-```
-
-## Agent skills
-
-This repo includes a general Orchlink lead skill plus adapter skills for OpenClaw and Hermes.
-
-```text
-skills/general/orchlink/
-skills/openclaw/orchlink/
-skills/hermes/orchlink/
-```
-
-Install skills only:
-
-```bash
-./install.sh --skills-only
-```
-
-Keep adapters synchronized:
-
-```bash
-python3 skills/sync_orchlink_skills.py
-python3 skills/sync_orchlink_skills.py --check
-```
+Do not commit `.orch/`. Refresh skills with `orch init --refresh-skills`.
 
 ## Command reference
 
@@ -287,7 +230,7 @@ python3 skills/sync_orchlink_skills.py --check
 | `orch lead` | Start or reopen the visible lead Pi session. |
 | `orch work` | Start visible or background named workers. |
 | `orch ask work --wait -t T001 -m "..."` | Ask short gates: review, decision, blocker. |
-| `orch send work -t T002 -m "..."` | Dispatch async implementation, broad review, tests, or research. |
+| `orch send work -t T002 -m "..."` | Dispatch async implementation, review, tests, or research. |
 | `orch jobs` | List recent task and Talk jobs. |
 | `orch jobs --active` | Show active/open work. |
 | `orch jobs --idle` | Exit 0 only when no active/blocking worker work remains. |
@@ -321,15 +264,15 @@ broker:
   port: 8788
 ```
 
-One broker can serve multiple projects. Orchlink scopes normal commands by `project_id` so results from another repo are refused.
+One broker can serve multiple projects. Orchlink scopes commands by `project_id` so results from another repo are refused.
 
 ## Security
 
 - `orch init` generates a random per-project broker API key. The broker refuses to start with a missing or default `change-me` key.
-- `orch doctor` reports broker bind exposure (loopback vs network), API key state, and whether the running broker accepts the project key.
+- `orch doctor` reports broker bind exposure, API key state, and whether the running broker accepts the project key.
 - `orch broker run` warns when binding to a non-loopback interface.
 - Orchlink does not sandbox worker shell commands. Scope worker tasks clearly.
-- Worktree isolation (`--worktree`) changes the working directory but is not a security boundary. A worker can still touch absolute paths.
+- Worktree isolation (`--worktree`) changes the working directory but is not a security boundary.
 - Cancellation is best-effort once Pi has started a tool call.
 
 ## Development
