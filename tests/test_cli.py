@@ -9,6 +9,10 @@ from orchlink.cli import main as cli_main
 from orchlink.cli.commands import jobs as jobs_commands
 from orchlink.cli.commands import talk as talk_commands
 from orchlink.cli.message_input import MessageInput, strip_editor_comments
+from orchlink.loop.adapters.state_repo import LoopStateRepo
+from orchlink.loop.domain import LoopItemState, MakerResult
+from orchlink.loop.services import ItemCandidate, LoopService
+from orchlink.loop.services.verifier_service import VerifierHandle
 from orchlink.project.config import load_project_config
 from orchlink.project.init import init_project, load_skill_template
 
@@ -1618,6 +1622,257 @@ def test_work_background_starts_rpc_supervisor_and_waits_for_readiness(monkeypat
     assert calls["popen"][0][1]["cwd"] == tmp_path
 
 
+def test_work_background_worktree_passes_project_dir_to_supervisor(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    monkeypatch.chdir(tmp_path)
+    calls = {"sessions": 0, "popen": []}
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    class FakeProcess:
+        pid = 4321
+
+    def fake_popen(command, **kwargs):
+        calls["popen"].append((command, kwargs))
+        return FakeProcess()
+
+    def fake_broker_get_sync(config, path):
+        calls["sessions"] += 1
+        if calls["sessions"] == 1:
+            return {"sessions": []}
+        return {
+            "sessions": [
+                {
+                    "role": "work",
+                    "status": "ACTIVE",
+                    "session_id": "maker-1-20260621-010203",
+                    "worker_name": "maker-1",
+                    "ready": True,
+                    "last_ready_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(cli_main.time, "strftime", lambda fmt: "20260621-010203")
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(lead_command.time, "sleep", lambda seconds: None)
+
+    result = runner.invoke(
+        cli_main.app,
+        ["work", "--background", "--worktree", str(worktree), "--name", "maker-1", "--new", "--timeout", "1"],
+    )
+
+    command = calls["popen"][0][0]
+    assert result.exit_code == 0
+    assert command[command.index("--project-dir") + 1] == str(worktree.resolve())
+    assert "Worktree:" in result.output
+    assert str(worktree.resolve()) in result.output
+
+
+def test_work_background_without_worktree_does_not_pass_project_dir(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    calls = {"sessions": 0, "popen": []}
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    class FakeProcess:
+        pid = 4321
+
+    def fake_broker_get_sync(config, path):
+        calls["sessions"] += 1
+        if calls["sessions"] == 1:
+            return {"sessions": []}
+        return {
+            "sessions": [
+                {
+                    "role": "work",
+                    "status": "ACTIVE",
+                    "session_id": "work",
+                    "ready": True,
+                    "last_ready_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", lambda command, **kwargs: calls["popen"].append((command, kwargs)) or FakeProcess())
+    monkeypatch.setattr(lead_command.time, "sleep", lambda seconds: None)
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--timeout", "1"])
+
+    assert result.exit_code == 0
+    assert "--project-dir" not in calls["popen"][0][0]
+
+
+def test_work_worktree_missing_path_exits_nonzero(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not start")))
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--worktree", str(tmp_path / "missing")])
+
+    assert result.exit_code == 1
+    assert "--worktree path does not exist" in result.output
+
+
+def test_work_worktree_file_path_exits_nonzero(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    file_path = tmp_path / "not-a-dir"
+    file_path.write_text("x", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not start")))
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--worktree", str(file_path)])
+
+    assert result.exit_code == 1
+    assert "--worktree path is not a directory" in result.output
+
+
+def test_work_background_worktree_override_does_not_return_existing_ready(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    monkeypatch.chdir(tmp_path)
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(
+        cli_main,
+        "broker_get_sync",
+        lambda config, path: {
+            "sessions": [
+                {
+                    "role": "work",
+                    "status": "ACTIVE",
+                    "session_id": "same-name",
+                    "worker_name": "same-name",
+                    "ready": True,
+                    "runtime_mode": "rpc",
+                    "backend": "rpc-supervisor",
+                    "last_ready_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                }
+            ]
+        },
+    )
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--worktree", str(worktree), "--name", "same-name"])
+
+    assert result.exit_code == 1
+    assert "Background worker already ready" not in result.output
+    assert "already active" in result.output
+
+
+def test_work_background_worktree_replace_launches_new_supervisor_with_project_dir(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    monkeypatch.chdir(tmp_path)
+    calls = {"sessions": 0, "popen": [], "released": []}
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    class FakeProcess:
+        pid = 4321
+
+    def fake_broker_get_sync(config, path):
+        calls["sessions"] += 1
+        if calls["sessions"] == 1:
+            return {
+                "sessions": [
+                    {
+                        "role": "work",
+                        "status": "ACTIVE",
+                        "session_id": "same-name",
+                        "worker_name": "same-name",
+                        "lease_id": "lease-old",
+                        "ready": True,
+                        "runtime_mode": "rpc",
+                        "backend": "rpc-supervisor",
+                        "last_ready_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                    }
+                ]
+            }
+        return {
+            "sessions": [
+                {
+                    "role": "work",
+                    "status": "ACTIVE",
+                    "session_id": "same-name",
+                    "worker_name": "same-name",
+                    "ready": True,
+                    "runtime_mode": "rpc",
+                    "backend": "rpc-supervisor",
+                    "last_ready_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(
+        cli_main,
+        "broker_post_sync",
+        lambda config, path, body=None: calls["released"].append((path, body)) or {"status": "released"},
+    )
+    monkeypatch.setattr(lead_command, "stop_pid_file", lambda path, label: False)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", lambda command, **kwargs: calls["popen"].append((command, kwargs)) or FakeProcess())
+    monkeypatch.setattr(lead_command.time, "sleep", lambda seconds: None)
+
+    result = runner.invoke(
+        cli_main.app,
+        ["work", "--background", "--worktree", str(worktree), "--name", "same-name", "--replace", "--timeout", "1"],
+    )
+
+    command = calls["popen"][0][0]
+    assert result.exit_code == 0
+    assert command[command.index("--project-dir") + 1] == str(worktree.resolve())
+    assert calls["released"] == [
+        ("/v1/sessions/lease-old/release", {"project_id": "demo", "reason": "Replaced by orch work --name same-name --replace."})
+    ]
+    assert "Background worker already ready" not in result.output
+
+
 def test_work_background_oneshot_passes_supervisor_flag(monkeypatch, tmp_path):
     from orchlink.cli.commands import lead as lead_command
 
@@ -2245,3 +2500,231 @@ def test_stored_message_wire_shape_cli_send_keeps_dict_return(monkeypatch, tmp_p
     assert isinstance(captured.get("kwargs"), dict)
     # The handler invoked the underlying broker send with a dict-shaped message.
     assert isinstance(captured["kwargs"].get("message"), str)
+
+
+# --- Loop CLI ---
+
+
+def _init_loop_project(tmp_path, monkeypatch):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    from orchlink.loop import cli as loop_cli
+
+    monkeypatch.setattr(loop_cli, "_build_broker_client", lambda config: None)
+    return LoopService({}, LoopStateRepo(tmp_path))
+
+
+def _triaged_loop_item(service: LoopService, item_id: str = "L001"):
+    return service.triage([ItemCandidate(item_id=item_id, title="Loop item")])[0]
+
+
+def test_loop_ls_without_project_prints_clear_error(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(cli_main.app, ["loop", "ls"])
+
+    assert result.exit_code == 1
+    assert "No .orch/project.yaml found" in result.output
+
+
+def test_loop_ls_with_initialized_project_prints_empty_table(monkeypatch, tmp_path):
+    _init_loop_project(tmp_path, monkeypatch)
+
+    result = runner.invoke(cli_main.app, ["loop", "ls"])
+
+    assert result.exit_code == 0
+    assert "Loop Items" in result.output
+    assert "ID" in result.output
+    assert "STATE" in result.output
+
+
+def test_loop_next_missing_item_exits_nonzero(monkeypatch, tmp_path):
+    _init_loop_project(tmp_path, monkeypatch)
+
+    result = runner.invoke(cli_main.app, ["loop", "next", "L001", "--maker", "work"])
+
+    assert result.exit_code == 1
+    assert "Loop item not found: L001" in result.output
+
+
+def test_loop_next_non_ready_item_exits_nonzero(monkeypatch, tmp_path):
+    service = _init_loop_project(tmp_path, monkeypatch)
+    _triaged_loop_item(service)
+
+    result = runner.invoke(cli_main.app, ["loop", "next", "L001", "--maker", "work"])
+
+    assert result.exit_code == 1
+    assert "next requires ready" in result.output
+    assert service.get("L001").state is LoopItemState.TRIAGED
+
+
+def test_loop_ready_moves_triaged_item_to_ready(monkeypatch, tmp_path):
+    service = _init_loop_project(tmp_path, monkeypatch)
+    _triaged_loop_item(service)
+
+    result = runner.invoke(cli_main.app, ["loop", "ready", "L001"])
+
+    assert result.exit_code == 0
+    assert "state=ready" in result.output
+    assert service.get("L001").state is LoopItemState.READY
+
+
+def test_loop_show_ready_item_prints_no_attempts(monkeypatch, tmp_path):
+    service = _init_loop_project(tmp_path, monkeypatch)
+    _triaged_loop_item(service)
+    service.ready("L001")
+
+    result = runner.invoke(cli_main.app, ["loop", "show", "L001"])
+
+    assert result.exit_code == 0
+    assert "L001" in result.output
+    assert "ready" in result.output
+    assert "No attempts" in result.output
+
+
+def test_loop_cancel_ready_item(monkeypatch, tmp_path):
+    service = _init_loop_project(tmp_path, monkeypatch)
+    _triaged_loop_item(service)
+    service.ready("L001")
+
+    result = runner.invoke(cli_main.app, ["loop", "cancel", "L001", "--reason", "test"])
+
+    assert result.exit_code == 0
+    assert "state=cancelled" in result.output
+    assert service.get("L001").state is LoopItemState.CANCELLED
+    assert service.get("L001").cancellation_reason == "test"
+
+
+def test_loop_watch_empty_loop_returns_summary(monkeypatch, tmp_path):
+    _init_loop_project(tmp_path, monkeypatch)
+
+    result = runner.invoke(cli_main.app, ["loop", "watch", "--max-steps", "1", "--interval", "0.01"])
+
+    assert result.exit_code == 0
+    assert "RunSummary" in result.output
+    assert "dispatched=0" in result.output
+    assert "done=0" in result.output
+
+
+def test_loop_watch_ready_item_runs_one_tick_without_broker(monkeypatch, tmp_path):
+    service = _init_loop_project(tmp_path, monkeypatch)
+    _triaged_loop_item(service)
+    service.ready("L001")
+
+    result = runner.invoke(
+        cli_main.app,
+        ["loop", "watch", "--max-steps", "1", "--interval", "0.01", "--allow-active-attempts"],
+    )
+
+    assert result.exit_code == 0
+    assert "RunSummary" in result.output
+    assert service.get("L001").state is not LoopItemState.READY
+
+
+def _awaiting_loop_item(service: LoopService, item_id: str = "L001"):
+    _triaged_loop_item(service, item_id)
+    service.ready(item_id)
+    reservation = service.next_item(item_id, maker_worker="maker", worktree=None)
+    service.mark_dispatched(item_id, attempt_no=reservation.attempt.number, task_id=f"T-{item_id}")
+    service.mark_running(item_id, attempt_no=reservation.attempt.number)
+    return service.collect_maker_result(item_id, attempt_no=reservation.attempt.number, result=MakerResult("done"))
+
+
+class MalformedLoopGateway:
+    async def dispatch_verifier(self, verifier_assignment, prompt):
+        return VerifierHandle(task_id=verifier_assignment.task_id, worker_name=verifier_assignment.worker_name)
+
+    async def await_result(self, handle, timeout_seconds):
+        return MakerResult("not a structured verdict")
+
+
+class TimeoutLoopGateway:
+    async def dispatch_verifier(self, verifier_assignment, prompt):
+        return VerifierHandle(task_id=verifier_assignment.task_id, worker_name=verifier_assignment.worker_name)
+
+    async def await_result(self, handle, timeout_seconds):
+        raise TimeoutError("too slow")
+
+
+def test_loop_verify_without_gateway_does_not_mutate(monkeypatch, tmp_path):
+    service = _init_loop_project(tmp_path, monkeypatch)
+    _awaiting_loop_item(service)
+    from orchlink.loop import cli as loop_cli
+
+    monkeypatch.setattr(loop_cli, "_build_worker_gateway", lambda config: None)
+
+    result = runner.invoke(cli_main.app, ["loop", "verify", "L001", "--verifier", "review"])
+
+    assert result.exit_code == 1
+    assert "no verifier worker gateway" in result.output
+    assert service.get("L001").state is LoopItemState.AWAITING_VERDICT
+
+
+def test_loop_verify_malformed_verdict_is_clean_error(monkeypatch, tmp_path):
+    service = _init_loop_project(tmp_path, monkeypatch)
+    _awaiting_loop_item(service)
+    from orchlink.loop import cli as loop_cli
+
+    monkeypatch.setattr(loop_cli, "_build_worker_gateway", lambda config: MalformedLoopGateway())
+
+    result = runner.invoke(cli_main.app, ["loop", "verify", "L001", "--verifier", "review"])
+
+    assert result.exit_code == 1
+    assert "verifier produced an unparseable verdict" in result.output
+    assert service.get("L001").state is not LoopItemState.DONE
+
+
+def test_loop_verify_timeout_is_clean_error(monkeypatch, tmp_path):
+    service = _init_loop_project(tmp_path, monkeypatch)
+    _awaiting_loop_item(service)
+    from orchlink.loop import cli as loop_cli
+
+    monkeypatch.setattr(loop_cli, "_build_worker_gateway", lambda config: TimeoutLoopGateway())
+
+    result = runner.invoke(cli_main.app, ["loop", "verify", "L001", "--verifier", "review"])
+
+    assert result.exit_code == 1
+    assert "verifier timed out" in result.output
+    assert service.get("L001").state is not LoopItemState.DONE
+
+
+def test_loop_collect_non_running_item_is_clean_error(monkeypatch, tmp_path):
+    service = _init_loop_project(tmp_path, monkeypatch)
+    _triaged_loop_item(service)
+    service.ready("L001")
+
+    result = runner.invoke(cli_main.app, ["loop", "collect", "L001", "--task-id", "T-L001"])
+
+    assert result.exit_code == 1
+    assert "collect requires running" in result.output
+    assert service.get("L001").state is LoopItemState.READY
+
+
+def test_loop_recover_empty_project_exits_zero(monkeypatch, tmp_path):
+    _init_loop_project(tmp_path, monkeypatch)
+
+    result = runner.invoke(cli_main.app, ["loop", "recover"])
+
+    assert result.exit_code == 0
+    assert "changed=0" in result.output
+
+
+def test_loop_cancel_terminal_item_is_clean_error(monkeypatch, tmp_path):
+    service = _init_loop_project(tmp_path, monkeypatch)
+    _triaged_loop_item(service)
+    service.cancel("L001", reason="already done")
+
+    result = runner.invoke(cli_main.app, ["loop", "cancel", "L001", "--reason", "again"])
+
+    assert result.exit_code == 1
+    assert "cancel" in result.output.lower()
+    assert service.get("L001").cancellation_reason == "already done"
+
+
+def test_loop_show_missing_item_is_clean_error(monkeypatch, tmp_path):
+    _init_loop_project(tmp_path, monkeypatch)
+
+    result = runner.invoke(cli_main.app, ["loop", "show", "L001"])
+
+    assert result.exit_code == 1
+    assert "Loop item not found: L001" in result.output

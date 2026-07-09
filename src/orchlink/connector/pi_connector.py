@@ -38,15 +38,26 @@ class PiSessionLease:
     role: str
     pid: int
     lease_id: str = ""
+    metadata: dict[str, Any] | None = None
     stop_event: threading.Event | None = None
     heartbeat_thread: threading.Thread | None = None
 
     def acquire(self) -> "PiSessionLease":
-        self.lease_id = self.connector._acquire_session(self.role, self.pid, lease_id=self.lease_id or None)
+        metadata = dict(self.metadata or {})
+        if "project_dir" not in metadata:
+            project_dir = self.connector._configured_project_dir_metadata(self.role)
+            if project_dir is not None:
+                metadata["project_dir"] = project_dir
+        self.lease_id = self.connector._acquire_session(
+            self.role,
+            self.pid,
+            lease_id=self.lease_id or None,
+            metadata=metadata or None,
+        )
         self.stop_event = threading.Event()
         self.heartbeat_thread = threading.Thread(
             target=self.connector._heartbeat_loop,
-            args=(self.lease_id, self.stop_event),
+            args=(self.lease_id, self.stop_event, metadata or None),
             daemon=True,
         )
         self.heartbeat_thread.start()
@@ -92,12 +103,22 @@ class PiConnector:
             return Path(command).exists()
         return shutil.which(command) is not None
 
-    def _role_project_dir(self, role: str) -> Path:
+    def _role_project_dir(self, role: str, project_dir: str | Path | None = None) -> Path:
+        if project_dir is not None:
+            configured = Path(project_dir)
+            return configured if configured.is_absolute() else project_root(self.config) / configured
         role_config = self.config.get(role) or {}
         configured = Path(str(role_config.get("project_dir") or "."))
         if configured.is_absolute():
             return configured
         return project_root(self.config) / configured
+
+    def _configured_project_dir_metadata(self, role: str) -> str | None:
+        role_key = "work" if role == "work" else "lead"
+        role_config = self.config.get(role_key) or {}
+        if "project_dir" not in role_config:
+            return None
+        return str(self._role_project_dir(role_key))
 
     def _session_args(self, role: str) -> list[str]:
         role_config = self.config.get(role) or {}
@@ -156,7 +177,12 @@ class PiConnector:
             return []
         return ["--no-extensions"]
 
-    def _env(self, role: str, extra: dict[str, str] | None = None) -> dict[str, str]:
+    def _env(
+        self,
+        role: str,
+        extra: dict[str, str] | None = None,
+        project_dir: str | Path | None = None,
+    ) -> dict[str, str]:
         env = os.environ.copy()
         role_key = "work" if role == "work" else "lead"
         role_config = self.config.get(role_key) or {}
@@ -173,6 +199,7 @@ class PiConnector:
                 "ORCHLINK_BROKER_URL": broker_url(self.config),
                 "ORCHLINK_API_KEY": broker_api_key(self.config),
                 "ORCHLINK_POLL_WAIT_SECONDS": str(role_config.get("poll_wait_seconds", 5)),
+                "ORCHLINK_PROJECT_DIR": str(self._role_project_dir(role_key, project_dir)),
             }
         )
         if role_key == "work":
@@ -247,26 +274,33 @@ class PiConnector:
         except Exception:
             return
 
-    def _heartbeat_loop(self, lease_id: str, stop_event: threading.Event) -> None:
+    def _heartbeat_loop(
+        self,
+        lease_id: str,
+        stop_event: threading.Event,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
         interval = max(1, broker_session_heartbeat_interval_seconds(self.config))
         while not stop_event.wait(interval):
             try:
-                self.heartbeat_session(lease_id)
+                self.heartbeat_session(lease_id, metadata)
             except Exception:
                 continue
 
-    def _run_pi_process(self, role: str, argv: list[str]) -> int:
+    def _run_pi_process(self, role: str, argv: list[str], project_dir: str | Path | None = None) -> int:
         if not self.check_available():
             raise PiConnectorError(f"Pi command not found: {self.pi_command()}")
         lease_id = f"lease-{uuid.uuid4()}"
+        child_cwd = self._role_project_dir(role, project_dir)
+        metadata = {"project_dir": str(child_cwd)}
         process = subprocess.Popen(
             argv,
-            cwd=self._role_project_dir(role),
-            env=self._env(role, {"ORCHLINK_SESSION_LEASE_ID": lease_id}),
+            cwd=child_cwd,
+            env=self._env(role, {"ORCHLINK_SESSION_LEASE_ID": lease_id}, project_dir=project_dir),
         )
         try:
             try:
-                lease = PiSessionLease(self, role, process.pid, lease_id=lease_id).acquire()
+                lease = PiSessionLease(self, role, process.pid, lease_id=lease_id, metadata=metadata).acquire()
             except Exception:
                 process.terminate()
                 raise
@@ -317,7 +351,7 @@ class PiConnector:
             *self._extension_args(),
         ]
 
-    def work_interactive_argv(self) -> list[str]:
+    def work_interactive_argv(self, project_dir: str | Path | None = None) -> list[str]:
         pi_config = self.config.get("pi") or {}
         configured_args = pi_config.get("work_args")
         if configured_args:
@@ -341,5 +375,5 @@ class PiConnector:
     def run_lead(self) -> int:
         return self._run_pi_process("lead", self.lead_argv())
 
-    def run_work(self) -> int:
-        return self._run_pi_process("work", self.work_interactive_argv())
+    def run_work(self, project_dir: str | Path | None = None) -> int:
+        return self._run_pi_process("work", self.work_interactive_argv(project_dir), project_dir=project_dir)

@@ -67,6 +67,8 @@ __all__ = [
     "format_event",
     "job_activity_line",
     "load_goal_app",
+    "load_loop_app",
+    "register_loop_app",
     "next_conversation_id",
     "print_orch_exception",
     "project_ask_worker_sync",
@@ -112,7 +114,42 @@ def load_goal_app() -> typer.Typer:
         return fallback
 
 
+def load_loop_app() -> typer.Typer:
+    try:
+        from orchlink.loop.cli import loop_app
+
+        return loop_app
+    except Exception as exc:
+        error_message = str(exc)
+        fallback = typer.Typer(help="Loop Mode is unavailable because its module failed to load.")
+
+        @fallback.callback(invoke_without_command=True)
+        def loop_unavailable() -> None:
+            console.print(f"[Orch] Loop Mode failed to load: {error_message}")
+            raise typer.Exit(1)
+
+        return fallback
+
+
+def register_loop_app(root_app: typer.Typer) -> None:
+    try:
+        from orchlink.loop.cli import register_loop
+
+        register_loop(root_app)
+    except Exception as exc:
+        error_message = str(exc)
+        fallback = typer.Typer(help="Loop Mode is unavailable because its module failed to load.")
+
+        @fallback.callback(invoke_without_command=True)
+        def loop_unavailable() -> None:
+            console.print(f"[Orch] Loop Mode failed to load: {error_message}")
+            raise typer.Exit(1)
+
+        root_app.add_typer(fallback, name="loop")
+
+
 app.add_typer(load_goal_app(), name="goal")
+register_loop_app(app)
 
 
 def print_orch_exception(exc: Exception) -> None:

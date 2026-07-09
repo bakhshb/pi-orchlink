@@ -284,6 +284,8 @@ def launch_work_background(config: dict[str, Any], worker_name: str = DEFAULT_WO
         command.extend(["--model", str(work_config["model"])])
     if work_config.get("thinking"):
         command.extend(["--thinking", str(work_config["thinking"])])
+    if work_config.get("_worktree_project_dir"):
+        command.extend(["--project-dir", str(work_config["_worktree_project_dir"])])
     if oneshot:
         command.append("--oneshot")
     env = os.environ.copy()
@@ -474,6 +476,10 @@ def register_lead(app: typer.Typer) -> None:
             str | None,
             typer.Option("--thinking", help="Default worker thinking: off, minimal, low, medium, high, xhigh."),
         ] = None,
+        worktree: Annotated[
+            Path | None,
+            typer.Option("--worktree", help="Run this worker from PATH while keeping broker identity tied to this project."),
+        ] = None,
     ) -> None:
         config = load_project_or_exit()
         try:
@@ -487,9 +493,25 @@ def register_lead(app: typer.Typer) -> None:
                 raise typer.Exit(1)
             worker_name = normalize_worker_name(worker_name)
             thinking = normalize_thinking_level(thinking)
+            worktree_path: Path | None = None
+            if worktree is not None:
+                worktree_path = worktree.expanduser().resolve()
+                if not worktree_path.exists():
+                    console.print(f"[Orch] --worktree path does not exist: {worktree_path}")
+                    raise typer.Exit(1)
+                if not worktree_path.is_dir():
+                    console.print(f"[Orch] --worktree path is not a directory: {worktree_path}")
+                    raise typer.Exit(1)
             config, session_id = with_named_worker_session(config, worker_name, new=new)
             config = with_worker_profile(config, model=model, thinking=thinking)
-            profile_override = model is not None or thinking is not None or oneshot
+            if worktree_path is not None:
+                updated = dict(config)
+                work_config = dict(config.get("work") or {})
+                work_config["project_dir"] = str(worktree_path)
+                work_config["_worktree_project_dir"] = str(worktree_path)
+                updated["work"] = work_config
+                config = updated
+            profile_override = model is not None or thinking is not None or oneshot or worktree_path is not None
             named_worker_label = f" worker '{worker_name}'" if worker_name != DEFAULT_WORKER_NAME else " worker"
             auto_refresh_project_skills(config)
             _cli_main.ensure_broker_running(config)
@@ -531,6 +553,8 @@ def register_lead(app: typer.Typer) -> None:
             if background:
                 if new:
                     console.print(f"[Orch] New Pi{named_worker_label} session: {session_id}")
+                if worktree_path is not None:
+                    console.print(f"[Orch] Worktree: {worktree_path}")
                 console.print(f"[Orch] Starting headless Pi RPC{named_worker_label}...")
                 pid = launch_work_background(config, worker_name, oneshot=oneshot)
                 console.print(f"[Orch] Supervisor PID: {pid} ({pid_path})")
@@ -555,6 +579,8 @@ def register_lead(app: typer.Typer) -> None:
                 console.print(f"[Orch] New Pi{named_worker_label} session: {session_id}")
                 connector = _cli_main.PiConnector(config)
 
+            if worktree_path is not None:
+                console.print(f"[Orch] Worktree: {worktree_path}")
             console.print(f"[Orch] Starting Pi{named_worker_label} session...")
             console.print("[Orch] Tasks and talk turns will be posted directly into this Pi chat.")
             exit_code = connector.run_work()

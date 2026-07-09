@@ -107,6 +107,7 @@ def run_supervisor(
     model: str | None = None,
     thinking: str | None = None,
     oneshot: bool = False,
+    project_dir: Path | None = None,
 ) -> int:
     worker_name = normalize_worker_name(worker_name)
     config = load_project_config(project_root_path)
@@ -121,8 +122,15 @@ def run_supervisor(
             work_config["thinking"] = thinking
         updated["work"] = work_config
         config = updated
-    connector = PiConnector(config)
     root = project_root(config)
+    child_cwd = Path(project_dir).resolve() if project_dir is not None else root
+    if project_dir is not None:
+        updated = dict(config)
+        work_config = dict(config.get("work") or {})
+        work_config["project_dir"] = str(child_cwd)
+        updated["work"] = work_config
+        config = updated
+    connector = PiConnector(config)
     paths = run_dir(config)
     worker_paths = paths if worker_name == "work" else paths / "workers" / worker_name
     pid_path = worker_paths / "orch-work.pid"
@@ -149,6 +157,7 @@ def run_supervisor(
                 "thinking": (config.get("work") or {}).get("thinking"),
                 "supervisor_pid": supervisor_pid,
                 "oneshot": bool(oneshot),
+                "project_dir": str(child_cwd),
                 "updated_at": _now(),
                 **extra,
             },
@@ -171,6 +180,7 @@ def run_supervisor(
                         "thinking": (config.get("work") or {}).get("thinking"),
                         "supervisor_pid": supervisor_pid,
                         "pi_pid": child.pid if child else None,
+                        "project_dir": str(child_cwd),
                     },
                 )
             except Exception as exc:
@@ -206,6 +216,7 @@ def run_supervisor(
                 "model": (config.get("work") or {}).get("model"),
                 "thinking": (config.get("work") or {}).get("thinking"),
                 "supervisor_pid": supervisor_pid,
+                "project_dir": str(child_cwd),
             },
         )
         heartbeat = threading.Thread(target=heartbeat_loop, daemon=True)
@@ -231,7 +242,7 @@ def run_supervisor(
         print(f"[Orch worker supervisor] starting: {' '.join(argv)}", flush=True)
         child = subprocess.Popen(  # noqa: S603 - launches the configured local Pi command in RPC mode.
             argv,
-            cwd=root,
+            cwd=child_cwd,
             env=env,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
@@ -275,13 +286,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--model", default=None)
     parser.add_argument("--thinking", default=None)
     parser.add_argument("--oneshot", action="store_true", help="Exit after one completed task reply.")
+    parser.add_argument("--project-dir", default=None, help="Working directory for the Pi RPC child process.")
     args = parser.parse_args(argv)
+    if args.project_dir:
+        project_dir = Path(args.project_dir)
+        if not project_dir.exists():
+            parser.error(f"--project-dir path does not exist: {project_dir}")
+        if not project_dir.is_dir():
+            parser.error(f"--project-dir path is not a directory: {project_dir}")
     return run_supervisor(
         Path(args.project_root),
         worker_name=args.worker_name,
         model=args.model,
         thinking=args.thinking,
         oneshot=args.oneshot,
+        project_dir=Path(args.project_dir) if args.project_dir else None,
     )
 
 

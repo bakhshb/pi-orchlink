@@ -291,6 +291,18 @@ def test_goal_work_exposes_until_flag():
 
     assert result.exit_code == 0
     assert "--until" in result.output
+    assert "--maker-worker" in result.output
+    assert "--verifier-worker" in result.output
+
+
+def test_goal_work_rejects_invalid_worker_names():
+    maker = runner.invoke(cli_main.app, ["goal", "work", "G001", "--maker-worker", "bad name!"])
+    verifier = runner.invoke(cli_main.app, ["goal", "work", "G001", "--verifier-worker", "lead"])
+
+    assert maker.exit_code == 1
+    assert "Invalid --maker-worker" in maker.output
+    assert verifier.exit_code == 1
+    assert "Invalid --verifier-worker" in verifier.output
 
 
 def test_goal_signoff_command_is_registered():

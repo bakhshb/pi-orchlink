@@ -9,7 +9,7 @@ from rich.console import Console
 from orchlink.goal.checks import parse_acceptance_criteria
 from orchlink.goal.runner import GoalRunner
 from orchlink.goal.store import GoalStore, GoalStoreError
-from orchlink.project.config import ProjectConfigError, load_project_config
+from orchlink.project.config import ProjectConfigError, load_project_config, normalize_worker_name
 
 
 goal_app = typer.Typer(help="Durable PRD/plan-driven goal tracking.")
@@ -30,6 +30,16 @@ def store_or_exit() -> GoalStore:
 
 def print_goal_error(exc: Exception) -> None:
     console.print(f"[Orch] {exc}")
+
+
+def normalize_goal_worker_option(value: str | None, option_name: str) -> str:
+    if value is None or not str(value).strip():
+        return "work"
+    try:
+        return normalize_worker_name(value)
+    except ValueError as exc:
+        console.print(f"[Orch] Invalid {option_name}: {exc}")
+        raise typer.Exit(1) from exc
 
 
 def read_source(prd: str | None, plan: str | None, text: str | None) -> tuple[str, str]:
@@ -299,12 +309,16 @@ def work(
     max_steps: Annotated[int, typer.Option("--max-steps", min=1, help="Maximum worker iterations before stopping at a cap.")] = 10,
     timeout: Annotated[int, typer.Option("--timeout", help="Seconds to wait for each worker task and check.")] = 1800,
     until: Annotated[str | None, typer.Option("--until", help="Stop target; currently only 'done' is supported and still obeys --max-steps.")] = None,
+    maker_worker: Annotated[str, typer.Option("--maker-worker", help="Worker name for maker tasks.")] = "work",
+    verifier_worker: Annotated[str, typer.Option("--verifier-worker", help="Worker name for verifier/audit tasks.")] = "work",
 ) -> None:
     if until is not None and until != "done":
         console.print("[Orch] --until currently supports only 'done'.")
         raise typer.Exit(1)
+    maker_worker = normalize_goal_worker_option(maker_worker, "--maker-worker")
+    verifier_worker = normalize_goal_worker_option(verifier_worker, "--verifier-worker")
     try:
-        message = GoalRunner(load_config_or_exit()).work(goal_id, max_steps=max_steps, timeout_seconds=timeout)
+        message = GoalRunner(load_config_or_exit(), maker_worker=maker_worker, verifier_worker=verifier_worker).work(goal_id, max_steps=max_steps, timeout_seconds=timeout)
     except GoalStoreError as exc:
         print_goal_error(exc)
         raise typer.Exit(1) from exc
@@ -317,8 +331,10 @@ def resume(
     max_steps: Annotated[int, typer.Option("--max-steps", min=1, help="Maximum worker iterations before stopping at a cap.")] = 10,
     timeout: Annotated[int, typer.Option("--timeout", help="Seconds to wait for each worker task and check.")] = 1800,
     until: Annotated[str | None, typer.Option("--until", help="Stop target; currently only 'done' is supported and still obeys --max-steps.")] = None,
+    maker_worker: Annotated[str, typer.Option("--maker-worker", help="Worker name for maker tasks.")] = "work",
+    verifier_worker: Annotated[str, typer.Option("--verifier-worker", help="Worker name for verifier/audit tasks.")] = "work",
 ) -> None:
-    work(goal_id, max_steps=max_steps, timeout=timeout, until=until)
+    work(goal_id, max_steps=max_steps, timeout=timeout, until=until, maker_worker=maker_worker, verifier_worker=verifier_worker)
 
 
 @goal_app.command(help="Human sign-off for subjective core acceptance criteria.")

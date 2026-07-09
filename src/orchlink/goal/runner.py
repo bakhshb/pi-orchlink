@@ -31,14 +31,41 @@ from orchlink.goal.prompts import audit_prompt, derivation_prompt, worker_prompt
 from orchlink.goal.store import GoalStore, GoalStoreError
 
 
+class GoalEvidenceAdapter:
+    def __init__(self, store: GoalStore) -> None:
+        self.store = store
+
+    def attach_evidence(self, *, goal_id: str, evidence: dict[str, Any]) -> None:
+        self.store.record_evidence(goal_id, evidence)
+
+
 class GoalRunner:
     """MVP goal execution loop over existing Orchlink worker tasks."""
 
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        *,
+        maker_worker: str = "work",
+        verifier_worker: str = "work",
+        maker_model: str | None = None,
+        verifier_model: str | None = None,
+    ) -> None:
         self.config = config
+        self.maker_worker = maker_worker
+        self.verifier_worker = verifier_worker
+        self.maker_model = maker_model
+        self.verifier_model = verifier_model
         self.store = GoalStore(config)
         self.criteria = GoalCriteriaEngine(self.store, config=config)
-        self.dispatcher = GoalDispatcher(config, ask_fn=ask_worker_sync)
+        self.dispatcher = GoalDispatcher(
+            config,
+            ask_fn=ask_worker_sync,
+            maker_worker=maker_worker,
+            verifier_worker=verifier_worker,
+            maker_model=maker_model,
+            verifier_model=verifier_model,
+        )
 
     def resume_status(self, goal_id: str) -> str:
         goal = self.store.load(goal_id)
@@ -92,13 +119,14 @@ class GoalRunner:
                 selected_criterion_text=f"{selected.id} {selected.text}",
                 previous_summary=last_summary,
             )
-            self.store.record_task(goal.id, task_id)
+            self.store.record_task(goal.id, task_id, detail=self._dispatch_detail("maker"))
             try:
                 result = self.dispatcher.dispatch(
-                    worker="work",
+                    role="maker",
                     task_id=task_id,
                     prompt=prompt,
                     timeout_seconds=timeout_seconds,
+                    model=self.maker_model,
                 )
             except (httpx.HTTPError, RuntimeError) as exc:
                 self.store.set_status(goal.id, GoalStatus.BLOCKED.value, GoalEventType.BROKER_BLOCKED.value, {"message": str(exc), "task_id": task_id})
@@ -159,13 +187,14 @@ class GoalRunner:
         source_path = self.store.goal_dir(goal_id) / "source.md"
         source = source_path.read_text(encoding="utf-8") if source_path.is_file() else ""
         task_id = f"{goal.id}-DERIVE-{self._next_derivation_number(goal.id):03d}"
-        self.store.record_task(goal.id, task_id, event_type=GoalEventType.DERIVATION_DISPATCHED.value)
+        self.store.record_task(goal.id, task_id, event_type=GoalEventType.DERIVATION_DISPATCHED.value, detail=self._dispatch_detail("maker"))
         try:
             result = self.dispatcher.dispatch(
-                worker="work",
+                role="maker",
                 task_id=task_id,
                 prompt=derivation_prompt(goal, source),
                 timeout_seconds=timeout_seconds,
+                model=self.maker_model,
             )
         except (httpx.HTTPError, RuntimeError) as exc:
             self.store.set_status(goal.id, GoalStatus.BLOCKED.value, GoalEventType.DERIVATION_BLOCKED.value, {"message": str(exc), "task_id": task_id})
@@ -198,13 +227,14 @@ class GoalRunner:
     def audit(self, goal_id: str, timeout_seconds: int = 1800) -> str:
         goal = self.store.load(goal_id)
         task_id = f"{goal.id}-AUDIT-{self._next_audit_number(goal.id):03d}"
-        self.store.record_task(goal.id, task_id, event_type=GoalEventType.AUDIT_DISPATCHED.value)
+        self.store.record_task(goal.id, task_id, event_type=GoalEventType.AUDIT_DISPATCHED.value, detail=self._dispatch_detail("verifier"))
         try:
             result = self.dispatcher.dispatch(
-                worker="work",
+                role="verifier",
                 task_id=task_id,
                 prompt=audit_prompt(self.store, goal.id),
                 timeout_seconds=timeout_seconds,
+                model=self.verifier_model,
             )
         except (httpx.HTTPError, RuntimeError) as exc:
             self.store.set_status(goal.id, GoalStatus.BLOCKED.value, GoalEventType.AUDIT_BLOCKED.value, {"message": str(exc), "task_id": task_id})
@@ -232,6 +262,19 @@ class GoalRunner:
         self.store.cancel(goal_id, reason=reason)
         return f"Cancelled {goal_id}."
 
+    def _dispatch_detail(self, role: str) -> dict[str, Any]:
+        if role == "verifier":
+            detail: dict[str, Any] = {"worker_role": role, "worker": self.verifier_worker}
+            if self.verifier_model:
+                detail["model"] = self.verifier_model
+            return detail
+        detail = {"worker_role": role, "worker": self.maker_worker, "verifier_worker": self.verifier_worker}
+        if self.maker_model:
+            detail["model"] = self.maker_model
+        if self.verifier_model:
+            detail["verifier_model"] = self.verifier_model
+        return detail
+
     def _next_derivation_number(self, goal_id: str) -> int:
         return self._next_number_for_prefix(goal_id, f"{goal_id}-DERIVE-")
 
@@ -249,4 +292,4 @@ class GoalRunner:
         return highest + 1
 
 
-__all__ = ["GoalRunner"]
+__all__ = ["GoalEvidenceAdapter", "GoalRunner"]

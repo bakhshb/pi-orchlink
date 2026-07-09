@@ -13,6 +13,7 @@ Human daily commands:
 - `orch sessions` shows registered lead and named worker Pi sessions, readiness, runtime, backend, model/thinking, and lease heartbeat.
 - `orch jobs` is the single work console: list, active filter, idle gate, live activity, result retrieval, waiting, and cancellation.
 - `orch goal ...` runs PRD/plan-driven Goal Mode from source to verified completion. Read `goal-mode.md` before using it.
+- `orch loop ...` exposes Loop Mode state and foreground loop execution.
 - `orch stop` stops tracked background workers and, only when safe, broker processes.
 - `orch update` updates Orchlink. Treat it as a human/operator command unless the human asks you to update.
 
@@ -51,6 +52,7 @@ This inventory is here so the lead can recognize every top-level `orch` command 
 | `orch resume` | Show a single recovery report and recommended next action. |
 | `orch update` | Update/reinstall Orchlink; treat as an operator command unless asked. |
 | `orch goal` | Durable PRD/plan-driven goal tracking. Read `goal-mode.md` first. |
+| `orch loop` | Loop Mode item lifecycle, recovery, and foreground watch commands. |
 | `orch broker` | Broker management and raw diagnostics. |
 
 `orch jobs <id>` inspects one job. Options include `--active`, `--idle`, `--id`, `--name`, `--status`, `--kind`, `--live`, `--result`, `--wait`, `--cancel`, `--limit`, and `--json`.

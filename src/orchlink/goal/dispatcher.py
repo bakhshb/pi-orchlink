@@ -28,27 +28,57 @@ class GoalDispatcher:
     reference at construction time).
     """
 
-    def __init__(self, config: dict[str, Any], *, ask_fn: AskFn | None = None) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any],
+        *,
+        ask_fn: AskFn | None = None,
+        maker_worker: str = "work",
+        verifier_worker: str = "work",
+        maker_model: str | None = None,
+        verifier_model: str | None = None,
+    ) -> None:
         self._config = config
         self._ask_fn = ask_fn or _default_ask_worker_sync
+        self.maker_worker = maker_worker
+        self.verifier_worker = verifier_worker
+        self.maker_model = maker_model
+        self.verifier_model = verifier_model
+        self.last_dispatch_metadata: dict[str, Any] | None = None
 
     def dispatch(
         self,
         *,
-        worker: str,
+        worker: str | None = None,
+        role: str = "maker",
         task_id: str,
         prompt: str,
         timeout_seconds: int,
+        model: str | None = None,
     ) -> dict[str, Any]:
         """Send the prompt to the worker and return the raw broker wire dict."""
+        resolved_worker = worker or self._worker_for_role(role)
+        resolved_model = model if model is not None else self._model_for_role(role)
+        self.last_dispatch_metadata = {
+            "worker": resolved_worker,
+            "role": role,
+            "task_id": task_id,
+            "model": resolved_model,
+        }
         return self._ask_fn(
             config=self._config,
-            worker=worker,
+            worker=resolved_worker,
             task_id=task_id,
             message=prompt,
             timeout_seconds=timeout_seconds,
             wait=True,
         )
+
+    def _worker_for_role(self, role: str) -> str:
+        return self.verifier_worker if role == "verifier" else self.maker_worker
+
+    def _model_for_role(self, role: str) -> str | None:
+        return self.verifier_model if role == "verifier" else self.maker_model
 
 
 def reply_kind(result: dict[str, Any]) -> str:

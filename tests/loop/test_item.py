@@ -1,0 +1,263 @@
+from datetime import datetime, timezone
+
+import pytest
+
+from orchlink.loop.domain import (
+    BudgetExhausted,
+    IllegalTransition,
+    LoopAttempt,
+    LoopItem,
+    LoopItemState,
+    LoopPolicy,
+    MakerResult,
+    ReasonCode,
+    RetryPolicy,
+    Verdict,
+    VerifierMismatch,
+    VerifierVerdict,
+    WorkerAssignment,
+)
+
+
+def now():
+    return datetime.now(timezone.utc)
+
+
+def maker(name="maker", *, task_id=None, dispatched_at=None):
+    return WorkerAssignment(
+        worker_name=name,
+        project_dir="/project",
+        task_id=task_id,
+        dispatched_at=dispatched_at,
+    )
+
+
+def verifier(name="review", *, task_id=None, dispatched_at=None):
+    return WorkerAssignment(
+        worker_name=name,
+        project_dir="/project",
+        task_id=task_id,
+        dispatched_at=dispatched_at,
+    )
+
+
+def accepted(worker="review"):
+    return VerifierVerdict(
+        verdict=Verdict.ACCEPTED,
+        reason_code=ReasonCode.ACCEPTED,
+        detail="ok",
+        required_fixes=(),
+        verifier_worker=worker,
+    )
+
+
+def rejected(worker="review"):
+    return VerifierVerdict(
+        verdict=Verdict.REJECTED,
+        reason_code=ReasonCode.REVIEW_FAILED,
+        detail="fix it",
+        required_fixes=("fix",),
+        verifier_worker=worker,
+    )
+
+
+def blocker(worker="review"):
+    return VerifierVerdict(
+        verdict=Verdict.BLOCKER,
+        reason_code=ReasonCode.BLOCKED,
+        detail="blocked",
+        required_fixes=(),
+        verifier_worker=worker,
+    )
+
+
+def reserved_attempt(number=1):
+    return LoopAttempt(number=number, maker=maker(task_id=f"reserved:{number}"))
+
+
+def running_attempt(number=1):
+    return LoopAttempt(number=number, maker=maker(task_id=f"T-{number}", dispatched_at=now()))
+
+
+def awaiting_attempt(number=1):
+    return LoopAttempt(
+        number=number,
+        maker=maker(task_id=f"T-{number}", dispatched_at=now()),
+        maker_result=MakerResult("done"),
+    )
+
+
+def verifying_attempt(number=1, verifier_task="V-1"):
+    return LoopAttempt(
+        number=number,
+        maker=maker(task_id=f"T-{number}", dispatched_at=now()),
+        maker_result=MakerResult("done"),
+        verifier=verifier(task_id=verifier_task),
+    )
+
+
+def completed_attempt(verdict, number=1):
+    return LoopAttempt(
+        number=number,
+        maker=maker(task_id=f"T-{number}", dispatched_at=now()),
+        maker_result=MakerResult("done"),
+        verifier=verifier(task_id=f"V-{number}"),
+        verdict=verdict,
+        finished_at=now(),
+    )
+
+
+def drive_to_awaiting(item=None):
+    item = item or LoopItem(item_id="I-1")
+    return item.ready().dispatch(maker()).broker_sent(task_id="T-1").collect_result("done")
+
+
+def test_legal_success_chain_reaches_done_only_after_accepted_verdict():
+    item = LoopItem(item_id="I-1")
+    assert item.state is LoopItemState.TRIAGED
+
+    item = item.ready()
+    assert item.state is LoopItemState.READY
+    item = item.dispatch(maker())
+    assert item.state is LoopItemState.DISPATCHING
+    assert item.active_attempt is not None
+    item = item.broker_sent(task_id="T-1")
+    assert item.state is LoopItemState.RUNNING
+    item = item.collect_result("result")
+    assert item.state is LoopItemState.AWAITING_VERDICT
+    item = item.start_verification(verifier())
+    assert item.state is LoopItemState.VERIFYING
+    item = item.apply_verdict(accepted())
+    assert item.state is LoopItemState.DONE
+
+
+def test_only_ready_items_can_dispatch():
+    item = LoopItem(item_id="I-1")
+    with pytest.raises(IllegalTransition) as exc:
+        item.dispatch(maker())
+    assert exc.value.state is LoopItemState.TRIAGED
+    assert exc.value.method == "dispatch"
+
+
+def test_broker_send_requires_reserved_attempt_in_state_on_construction():
+    with pytest.raises(IllegalTransition):
+        LoopItem(
+            item_id="I-1",
+            _state=LoopItemState.DISPATCHING,
+            attempts=(LoopAttempt(number=1, maker=maker()),),
+        )
+
+
+def test_no_result_collection_outside_running():
+    item = LoopItem(item_id="I-1").ready().dispatch(maker())
+    with pytest.raises(IllegalTransition):
+        item.collect_result("too early")
+
+
+def test_verify_only_from_awaiting_verdict():
+    item = LoopItem(item_id="I-1").ready().dispatch(maker()).broker_sent()
+    with pytest.raises(IllegalTransition):
+        item.start_verification(verifier())
+
+
+def test_done_unreachable_without_apply_verdict_accepted():
+    item = drive_to_awaiting().start_verification(verifier())
+    with pytest.raises(IllegalTransition):
+        item.ready()
+    item = item.apply_verdict(rejected())
+    assert item.state is LoopItemState.REJECTED
+
+
+def test_verifier_worker_must_differ_by_default():
+    item = drive_to_awaiting()
+    with pytest.raises(VerifierMismatch):
+        item.start_verification(maker("maker"))
+    item = item.start_verification(maker("maker"), allow_same_worker=True)
+    assert item.state is LoopItemState.VERIFYING
+
+
+def test_at_most_one_active_attempt_per_item():
+    with pytest.raises(IllegalTransition):
+        LoopItem(
+            item_id="I-1",
+            _state=LoopItemState.RUNNING,
+            attempts=(reserved_attempt(1), running_attempt(2)),
+        )
+
+
+def test_retry_budget_exhaustion_is_explicit():
+    item = LoopItem(item_id="I-1", retry_policy=RetryPolicy(max_attempts=1))
+    item = drive_to_awaiting(item).start_verification(verifier()).apply_verdict(rejected())
+    with pytest.raises(BudgetExhausted):
+        item.ready()
+
+
+def test_auto_merge_policy_is_rejected_at_construction():
+    with pytest.raises(ValueError):
+        LoopPolicy(auto_merge=True)
+
+
+def test_max_concurrent_attempts_must_equal_one():
+    with pytest.raises(ValueError):
+        LoopPolicy(max_concurrent_attempts=2)
+
+
+@pytest.mark.parametrize(
+    "state,attempts,extra",
+    [
+        (LoopItemState.DONE, (), {}),
+        (LoopItemState.DISPATCHING, (LoopAttempt(number=1, maker=maker()),), {}),
+        (LoopItemState.RUNNING, (reserved_attempt(),), {}),
+        (LoopItemState.AWAITING_VERDICT, (running_attempt(),), {}),
+        (LoopItemState.VERIFYING, (awaiting_attempt(),), {}),
+        (LoopItemState.REJECTED, (completed_attempt(accepted()),), {}),
+        (LoopItemState.BLOCKED, (), {}),
+        (LoopItemState.CANCELLED, (), {}),
+        (LoopItemState.READY, (reserved_attempt(),), {}),
+        (LoopItemState.TRIAGED, (reserved_attempt(),), {}),
+        (LoopItemState.RUNNING, (running_attempt(2),), {}),
+    ],
+)
+def test_illegal_construction_invariants_raise_illegal_transition(state, attempts, extra):
+    with pytest.raises(IllegalTransition):
+        LoopItem(item_id="I-1", _state=state, attempts=attempts, **extra)
+
+
+def test_valid_terminal_and_active_constructions_are_allowed():
+    assert LoopItem(
+        item_id="I-1",
+        _state=LoopItemState.DONE,
+        attempts=(completed_attempt(accepted()),),
+    ).state is LoopItemState.DONE
+    assert LoopItem(
+        item_id="I-2",
+        _state=LoopItemState.BLOCKED,
+        blocker="waiting",
+    ).state is LoopItemState.BLOCKED
+    assert LoopItem(
+        item_id="I-3",
+        _state=LoopItemState.CANCELLED,
+        cancellation_reason="user",
+    ).state is LoopItemState.CANCELLED
+    assert LoopItem(
+        item_id="I-4",
+        _state=LoopItemState.VERIFYING,
+        attempts=(verifying_attempt(),),
+    ).state is LoopItemState.VERIFYING
+    assert LoopItem(
+        item_id="I-5",
+        _state=LoopItemState.DISPATCHING,
+        attempts=(LoopAttempt(number=1, maker=maker(task_id="T-1", dispatched_at=now())),),
+    ).state is LoopItemState.DISPATCHING
+
+
+def test_from_dict_uses_same_invariant_validation():
+    with pytest.raises(IllegalTransition):
+        LoopItem.from_dict({"item_id": "I-1", "state": "done", "attempts": []})
+
+
+def test_valid_roundtrip_through_dict_and_from_dict():
+    item = drive_to_awaiting().start_verification(verifier()).apply_verdict(accepted())
+    restored = LoopItem.from_dict(item.to_dict())
+    assert restored.state is LoopItemState.DONE
+    assert restored.attempts[-1].verdict.verdict is Verdict.ACCEPTED
