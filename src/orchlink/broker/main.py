@@ -65,6 +65,10 @@ BROKER_CAPABILITIES = [
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
+def unsafe_api_key(value: str | None) -> bool:
+    return not str(value or "").strip() or str(value) == "change-me"
+
+
 async def require_api_key(
     request: Request,
     api_key: str | None = Security(api_key_header),
@@ -183,6 +187,11 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app_obj: FastAPI):
+        if unsafe_api_key(settings_obj.api_key):
+            raise RuntimeError(
+                "Refusing to start Orchlink broker with a missing or default API key. "
+                "Start through `orch broker run` in an initialized project or set ORCHLINK_API_KEY."
+            )
         if settings_obj.auto_stop or settings_obj.require_peer_sessions:
             app_obj.state.session_expiry_task = asyncio.create_task(session_expiry_loop())
         try:
@@ -522,8 +531,11 @@ def create_app(
             jobs = [item for item in jobs if str(item.get("task_id") or "") == task_id][-limit:]
             events = [item for item in events if str(item.get("task_id") or "") == task_id][-limit:]
         pending_reply_count = await broker.pending_reply_count()
+        settings: Settings = request.app.state.settings
         return {
             "broker": "ok",
+            "broker_host": settings.host,
+            "broker_port": settings.port,
             "agent_count": len(agents),
             "agents": agents,
             "session_count": len(sessions),

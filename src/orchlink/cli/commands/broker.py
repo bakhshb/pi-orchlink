@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import time
 from typing import Annotated
 
@@ -13,7 +14,7 @@ import uvicorn
 from rich.console import Console
 
 from orchlink.cli import main as _cli_main
-from orchlink.cli.commands._helpers import current_project_id, load_project_or_exit
+from orchlink.cli.commands._helpers import current_project_id, is_loopback_host, load_project_or_exit
 from orchlink.project.config import ProjectConfigError, broker_api_key, broker_url, load_project_config
 
 
@@ -115,8 +116,22 @@ def register_broker(app: typer.Typer) -> None:
             typer.Option("--store-path", help="Path for jsonl store snapshots."),
         ] = ".orch/run/orchlink-journal.jsonl",
     ) -> None:
+        try:
+            config = load_project_config()
+            os.environ["ORCHLINK_API_KEY"] = broker_api_key(config)
+        except ProjectConfigError:
+            os.environ.setdefault("ORCHLINK_API_KEY", secrets.token_urlsafe(32))
+        os.environ["ORCHLINK_HOST"] = host
+        os.environ["ORCHLINK_PORT"] = str(port)
         os.environ["ORCHLINK_STORE_BACKEND"] = store_backend
         os.environ["ORCHLINK_STORE_PATH"] = store_path
+        from orchlink.broker import main as broker_main
+        from orchlink.broker.settings import get_settings
+
+        get_settings.cache_clear()
+        broker_main.app = broker_main.create_app()
         console.print(f"[Orch] Starting broker: http://{host}:{port}")
+        if not is_loopback_host(host):
+            console.print("[Orch] Security warning: broker is not bound to loopback; network peers may reach it if firewall allows.")
         console.print(f"[Orch] Store: {store_backend} ({store_path})")
         uvicorn.run("orchlink.broker.main:app", host=host, port=port, reload=reload)

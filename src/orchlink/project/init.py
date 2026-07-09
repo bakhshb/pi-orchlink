@@ -1,3 +1,4 @@
+import secrets
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,7 @@ def default_project_config(project_dir: Path, project_id: str | None = None) -> 
         "project_id": resolved_project_id,
         "broker": {
             "url": "http://127.0.0.1:8787",
-            "api_key": "change-me",
+            "api_key": secrets.token_urlsafe(32),
             "auto_start": True,
             "host": "127.0.0.1",
             "port": 8787,

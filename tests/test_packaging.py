@@ -364,14 +364,23 @@ def test_pi_extension_keeps_current_task_during_recoverable_transport_error():
     clearActivityHeartbeat();""" in ORCHLINK_PI_EXTENSION
 
 
-def test_broker_run_command_is_registered_without_starting_server(monkeypatch):
-    from orchlink.cli import main as cli_main
+def test_broker_run_command_is_registered_without_starting_server(monkeypatch, tmp_path):
+    import os
 
+    from orchlink.cli import main as cli_main
+    from orchlink.project.config import load_project_config
+    from orchlink.project.init import init_project
+
+    init_project(tmp_path, project_id="demo")
+    config = load_project_config(tmp_path)
+    expected_key = config["broker"]["api_key"]
     called = {}
 
     def fake_run(app_path, host, port, reload):
         called.update({"app_path": app_path, "host": host, "port": port, "reload": reload})
 
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ORCHLINK_API_KEY", raising=False)
     monkeypatch.setattr(cli_main.uvicorn, "run", fake_run)
 
     result = CliRunner().invoke(
@@ -380,12 +389,62 @@ def test_broker_run_command_is_registered_without_starting_server(monkeypatch):
     )
 
     assert result.exit_code == 0
+    assert expected_key != "change-me"
     assert called == {
         "app_path": "orchlink.broker.main:app",
         "host": "127.0.0.1",
         "port": 8788,
         "reload": False,
     }
+    assert os.environ["ORCHLINK_API_KEY"] == expected_key
+
+
+def test_broker_run_without_project_uses_ephemeral_nondefault_key(monkeypatch, tmp_path):
+    import os
+
+    from orchlink.cli import main as cli_main
+
+    called = {}
+
+    def fake_run(app_path, host, port, reload):
+        called.update({"app_path": app_path, "host": host, "port": port, "reload": reload})
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ORCHLINK_API_KEY", raising=False)
+    monkeypatch.setattr(cli_main.uvicorn, "run", fake_run)
+
+    result = CliRunner().invoke(cli_main.app, ["broker", "run"])
+
+    assert result.exit_code == 0
+    assert called["app_path"] == "orchlink.broker.main:app"
+    assert os.environ["ORCHLINK_API_KEY"] != "change-me"
+    assert len(os.environ["ORCHLINK_API_KEY"]) >= 32
+
+
+def test_broker_run_warns_for_non_loopback_bind(monkeypatch, tmp_path):
+    from orchlink.cli import main as cli_main
+    from orchlink.project.init import init_project
+
+    init_project(tmp_path, project_id="demo")
+    called = {}
+
+    def fake_run(app_path, host, port, reload):
+        called.update({"app_path": app_path, "host": host, "port": port, "reload": reload})
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ORCHLINK_API_KEY", raising=False)
+    monkeypatch.setattr(cli_main.uvicorn, "run", fake_run)
+
+    result = CliRunner().invoke(
+        cli_main.app,
+        ["broker", "run", "--host", "0.0.0.0", "--port", "8788"],
+    )
+
+    assert result.exit_code == 0
+    assert called["host"] == "0.0.0.0"
+    assert "Security warning" in result.output
+    assert "network peers may" in result.output
+    assert "reach it" in result.output
 
 
 def test_doctor_reports_project_local_state_and_global_cli_guidance():

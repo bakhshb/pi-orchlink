@@ -8,9 +8,10 @@ commands directly.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 from datetime import datetime, timezone
 from typing import Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 import typer
@@ -33,6 +34,22 @@ def current_project_id(config: dict[str, Any]) -> str:
 
 
 console = Console()
+
+
+def is_loopback_host(host: str | None) -> bool:
+    value = str(host or "").strip().strip("[]").lower()
+    if value == "localhost":
+        return True
+    if not value:
+        return False
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+def host_from_url(url: str) -> str:
+    return str(urlparse(url).hostname or "")
 
 
 async def register_project_role(config: dict[str, Any], role: str) -> dict[str, Any]:

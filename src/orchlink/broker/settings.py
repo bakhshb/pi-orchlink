@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     host: str = Field(default="127.0.0.1", alias="ORCHLINK_HOST")
     port: int = Field(default=8787, alias="ORCHLINK_PORT")
-    api_key: str = Field(default="change-me", alias="ORCHLINK_API_KEY")
+    api_key: str = Field(default="", alias="ORCHLINK_API_KEY")
     log_level: str = Field(default="INFO", alias="ORCHLINK_LOG_LEVEL")
     auto_stop: bool = Field(default=False, alias="ORCHLINK_AUTO_STOP")
     require_peer_sessions: bool = Field(default=False, alias="ORCHLINK_REQUIRE_PEER_SESSIONS")

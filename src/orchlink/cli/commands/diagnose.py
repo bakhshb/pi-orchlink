@@ -19,6 +19,8 @@ from orchlink.broker.checkpoint import (
 from orchlink.cli import main as _cli_main
 from orchlink.cli.commands._helpers import (
     current_project_id,
+    host_from_url,
+    is_loopback_host,
     load_project_or_exit,
     project_query,
 )
@@ -31,6 +33,9 @@ from orchlink.cli.resume import (
 )
 from orchlink.project.config import (
     ProjectConfigError,
+    broker_api_key,
+    broker_host,
+    broker_port,
     broker_store_backend,
     broker_store_path,
     broker_url,
@@ -133,7 +138,16 @@ def register_diagnose(app: typer.Typer) -> None:
             info = _cli_main.broker_info(broker_url(config))
             console.print(f".orch/project.yaml: found ({config.get('_config_path')})")
             console.print(f"Project ID: {current_project_id(config)}")
-            console.print(f"Broker URL: {broker_url(config)}")
+            url = broker_url(config)
+            url_host = host_from_url(url)
+            bind_host = broker_host(config)
+            bind_port = broker_port(config)
+            key = broker_api_key(config)
+            bind_exposure = "loopback only" if is_loopback_host(bind_host) else "network-exposed if broker runs with this host"
+            url_exposure = "loopback" if is_loopback_host(url_host) else "non-loopback"
+            console.print(f"Broker URL: {url}")
+            console.print(f"Broker URL host: {url_host or 'unknown'} ({url_exposure})")
+            console.print(f"Broker bind config: {bind_host}:{bind_port} ({bind_exposure})")
             console.print(f"Broker store: {broker_store_backend(config)} ({broker_store_path(config)})")
             console.print(f"Broker reachable: {'yes' if info else 'no'}")
             if info:
@@ -141,7 +155,25 @@ def register_diagnose(app: typer.Typer) -> None:
                     f"Broker version: {info.get('version', 'unknown')} "
                     f"({'compatible' if _cli_main.broker_compatible(info) else 'stale'})"
                 )
-            console.print("API key configured: yes")
+            console.print(f"API key configured: {'yes' if key else 'no'}")
+            console.print(f"API key default: {'yes (change-me)' if key == 'change-me' else 'no'}")
+            if info:
+                try:
+                    status_body = _cli_main.broker_get_sync(config, f"/v1/status{project_query(config)}")
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 401:
+                        console.print("Broker auth: rejected project API key (different project/key?)")
+                    else:
+                        console.print(f"Broker auth: error ({exc.response.status_code})")
+                except httpx.HTTPError:
+                    console.print("Broker auth: error")
+                else:
+                    runtime_host = str(status_body.get("broker_host") or "")
+                    runtime_port = status_body.get("broker_port")
+                    if runtime_host:
+                        runtime_exposure = "loopback only" if is_loopback_host(runtime_host) else "network-exposed if firewall allows"
+                        console.print(f"Broker runtime bind: {runtime_host}:{runtime_port} ({runtime_exposure})")
+                    console.print("Broker auth: project API key accepted")
             console.print(
                 f"Pi command: {connector.pi_command()} ({'found' if connector.check_available() else 'missing'})"
             )

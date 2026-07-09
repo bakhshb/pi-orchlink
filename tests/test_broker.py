@@ -1,6 +1,7 @@
 import asyncio
 
 import httpx
+import pytest
 
 from orchlink.broker.main import BROKER_CAPABILITIES, VERSION, create_app
 from orchlink.broker.settings import Settings
@@ -50,6 +51,19 @@ def test_v1_endpoint_rejects_missing_api_key():
 
     assert response.status_code == 401
     assert response.json() == {"detail": "Invalid API key"}
+
+
+async def _enter_lifespan(app):
+    async with app.router.lifespan_context(app):
+        pass
+
+
+@pytest.mark.parametrize("api_key", ["", "change-me"])
+def test_broker_startup_rejects_missing_or_default_api_key(api_key):
+    app = create_app(store=MemoryMessageStore(), settings=Settings(api_key=api_key))
+
+    with pytest.raises(RuntimeError, match="missing or default API key"):
+        asyncio.run(_enter_lifespan(app))
 
 
 def test_register_agent():

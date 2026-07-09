@@ -82,6 +82,8 @@ class TaskResultResponse(BrokerResponse):
 
 class BrokerStatusResponse(BrokerResponse):
     broker: str
+    broker_host: str | None = None
+    broker_port: int | None = None
     agent_count: int
     agents: list[dict[str, Any]]
     session_count: int

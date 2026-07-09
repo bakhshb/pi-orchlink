@@ -1,6 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
@@ -1891,7 +1892,7 @@ def test_update_defers_windows_reinstall_to_avoid_locked_launcher(monkeypatch, t
 def test_doctor_reports_stale_project_skills(monkeypatch, tmp_path):
     paths = init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("orchlink.client.process.broker_health", lambda url: False)
+    monkeypatch.setattr(cli_main, "broker_info", lambda url: None)
 
     current = runner.invoke(cli_main.app, ["doctor"])
 
@@ -1908,6 +1909,141 @@ def test_doctor_reports_stale_project_skills(monkeypatch, tmp_path):
     assert "lead.md: stale" in stale.output
     assert "Project .orch files: stale" in stale.output
     assert "Run: orch init --refresh-skills" in stale.output
+
+
+def test_doctor_reports_broker_exposure_and_key_state(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ORCHLINK_API_KEY", raising=False)
+    monkeypatch.delenv("ORCHLINK_BROKER_URL", raising=False)
+    monkeypatch.setattr(cli_main, "broker_info", lambda url: None)
+
+    result = runner.invoke(cli_main.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Broker URL host: 127.0.0.1 (loopback)" in result.output
+    assert "Broker bind config: 127.0.0.1:8787 (loopback only)" in result.output
+    assert "API key default: no" in result.output
+
+
+def test_doctor_reports_runtime_bind_when_broker_auth_succeeds(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ORCHLINK_API_KEY", raising=False)
+    monkeypatch.delenv("ORCHLINK_BROKER_URL", raising=False)
+    monkeypatch.setattr(
+        cli_main,
+        "broker_info",
+        lambda url: {"status": "ok", "service": "orchlink", "version": "0.5.4", "capabilities": []},
+    )
+    monkeypatch.setattr(cli_main, "broker_compatible", lambda info: True)
+    monkeypatch.setattr(cli_main, "broker_get_sync", lambda config, path: {"broker_host": "0.0.0.0", "broker_port": 8787})
+
+    result = runner.invoke(cli_main.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Broker runtime bind: 0.0.0.0:8787 (network-exposed if firewall allows)" in result.output
+    assert "Broker auth: project API key accepted" in result.output
+
+
+def test_doctor_reports_project_key_rejected_by_running_broker(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ORCHLINK_API_KEY", raising=False)
+    monkeypatch.delenv("ORCHLINK_BROKER_URL", raising=False)
+    monkeypatch.setattr(
+        cli_main,
+        "broker_info",
+        lambda url: {"status": "ok", "service": "orchlink", "version": "0.5.4", "capabilities": []},
+    )
+    monkeypatch.setattr(cli_main, "broker_compatible", lambda info: True)
+
+    def reject_key(config, path):
+        request = httpx.Request("GET", "http://127.0.0.1:8787/v1/status")
+        response = httpx.Response(401, request=request)
+        raise httpx.HTTPStatusError("unauthorized", request=request, response=response)
+
+    monkeypatch.setattr(cli_main, "broker_get_sync", reject_key)
+
+    result = runner.invoke(cli_main.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Broker auth: rejected project API key (different project/key?)" in result.output
+
+
+def test_doctor_warns_for_default_key_and_non_loopback_bind(monkeypatch, tmp_path):
+    paths = init_project(tmp_path, project_id="demo")
+    config_text = paths["config"].read_text(encoding="utf-8")
+    paths["config"].write_text(
+        config_text
+        .replace("api_key: ", "api_key: change-me # old: ", 1)
+        .replace("host: 127.0.0.1", "host: 0.0.0.0")
+        .replace("url: http://127.0.0.1:8787", "url: http://0.0.0.0:8787"),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("ORCHLINK_API_KEY", raising=False)
+    monkeypatch.delenv("ORCHLINK_BROKER_URL", raising=False)
+    monkeypatch.setattr(cli_main, "broker_info", lambda url: None)
+
+    result = runner.invoke(cli_main.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "Broker URL host: 0.0.0.0 (non-loopback)" in result.output
+    assert "Broker bind config: 0.0.0.0:8787 (network-exposed if broker runs with this host)" in result.output
+    assert "API key default: yes (change-me)" in result.output
+
+
+@pytest.mark.parametrize(
+    ("host", "expected"),
+    [
+        ("127.0.0.1", True),
+        ("localhost", True),
+        ("::1", True),
+        ("[::1]", True),
+        ("0.0.0.0", False),
+        ("::", False),
+        ("example.local", False),
+        ("", False),
+    ],
+)
+def test_is_loopback_host(host, expected):
+    from orchlink.cli.commands._helpers import is_loopback_host
+
+    assert is_loopback_host(host) is expected
+
+
+def test_start_background_broker_passes_project_api_key(monkeypatch, tmp_path):
+    from orchlink.client import process as process_helpers
+    from orchlink.broker.main import BROKER_CAPABILITIES, VERSION
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.delenv("ORCHLINK_API_KEY", raising=False)
+    config = load_project_config(tmp_path)
+    expected_key = config["broker"]["api_key"]
+    captured = {}
+
+    class FakeProcess:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+    def fake_popen(command, **kwargs):
+        captured.update(kwargs)
+        return FakeProcess()
+
+    monkeypatch.setattr(process_helpers.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        process_helpers,
+        "broker_info",
+        lambda url: {"status": "ok", "service": "orchlink", "version": VERSION, "capabilities": BROKER_CAPABILITIES},
+    )
+
+    process_helpers.start_background_broker(config)
+
+    assert expected_key != "change-me"
+    assert captured["env"]["ORCHLINK_API_KEY"] == expected_key
 
 
 def test_status_command_prints_status(monkeypatch):

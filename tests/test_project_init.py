@@ -7,7 +7,7 @@ from orchlink.cli.main import app
 from orchlink.core.prompt_policy import TaskPromptPolicy
 from orchlink.connector.pi_connector import PiConnector
 from orchlink.project.config import load_project_config
-from orchlink.project.init import init_project, load_skill_reference_template
+from orchlink.project.init import default_project_config, init_project, load_skill_reference_template
 
 
 runner = CliRunner()
@@ -301,3 +301,30 @@ def test_project_ask_envelope_resolves_work_alias(tmp_path):
     assert do_envelope["payload"]["mode"] == "DO"
     assert do_envelope["payload"]["thinking"] == "medium"
     assert explicit_envelope["payload"]["thinking"] == "low"
+
+
+def test_default_project_config_generates_random_nondefault_api_key(tmp_path):
+    config = default_project_config(tmp_path, project_id="demo")
+
+    api_key = config["broker"]["api_key"]
+    assert isinstance(api_key, str)
+    assert api_key != "change-me"
+    assert len(api_key) >= 32
+
+
+def test_default_project_config_generates_unique_api_keys(tmp_path):
+    first = default_project_config(tmp_path, project_id="demo")["broker"]["api_key"]
+    second = default_project_config(tmp_path, project_id="demo")["broker"]["api_key"]
+
+    assert first != second
+    assert first != "change-me"
+    assert second != "change-me"
+
+
+def test_init_project_persists_generated_api_key(tmp_path):
+    paths = init_project(tmp_path, project_id="demo")
+
+    data = yaml.safe_load(paths["config"].read_text(encoding="utf-8"))
+    persisted_key = data["broker"]["api_key"]
+    assert persisted_key != "change-me"
+    assert len(persisted_key) >= 32
