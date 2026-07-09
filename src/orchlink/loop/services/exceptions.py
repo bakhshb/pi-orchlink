@@ -13,6 +13,7 @@ from orchlink.loop.services.verifier_service import (
     VerifierTimeoutError,
     WorkerGatewayUnavailable,
 )
+from orchlink.loop.services.worker_service import MakerDispatchError, MakerTimeoutError, MakerUnreachable
 
 __all__ = [
     "BudgetExhausted",
@@ -20,6 +21,9 @@ __all__ = [
     "LockHeldError",
     "StateCorrupt",
     "VerifierMismatch",
+    "MakerDispatchError",
+    "MakerTimeoutError",
+    "MakerUnreachable",
     "VerdictParseError",
     "VerifierDispatchError",
     "VerifierTimeoutError",

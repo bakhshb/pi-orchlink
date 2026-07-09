@@ -15,12 +15,16 @@ from orchlink.loop.services.loop_service import (
     VerificationReservation,
 )
 from orchlink.loop.services.exceptions import (
+    MakerDispatchError,
+    MakerTimeoutError,
+    MakerUnreachable,
     VerdictParseError,
     VerifierDispatchError,
     VerifierTimeoutError,
     WorkerGatewayUnavailable,
 )
 from orchlink.loop.services.triage_service import ItemCandidate, Priority, SkillRef, TriageService
+from orchlink.loop.services.worker_service import WorkerService
 from orchlink.loop.services.verifier_service import (
     VerifierHandle,
     VerifierService,
@@ -35,6 +39,9 @@ __all__ = [
     "ItemId",
     "LoopEngine",
     "LoopService",
+    "MakerDispatchError",
+    "MakerTimeoutError",
+    "MakerUnreachable",
     "Priority",
     "RecoverableBroker",
     "RecoveryReport",
@@ -52,5 +59,6 @@ __all__ = [
     "VerifierService",
     "VerifierTimeoutError",
     "WorkerGateway",
+    "WorkerService",
     "WorkerGatewayUnavailable",
 ]

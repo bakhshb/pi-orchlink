@@ -1,6 +1,15 @@
 """Loop engineering package."""
 
-from orchlink.loop.adapters import Connector, GitHubConnector, LinearConnector, LocalGitConnector
+from orchlink.loop.adapters import (
+    Connector,
+    ConnectorConfig,
+    ConnectorSecretGateway,
+    ConnectorSecretMissing,
+    GitHubConnector,
+    SECRET_KEY_NAMES,
+    LinearConnector,
+    LocalGitConnector,
+)
 from orchlink.loop.domain import (
     BudgetExhausted,
     IllegalTransition,
@@ -29,6 +38,9 @@ from orchlink.loop.services import (
     ItemId,
     LoopEngine,
     LoopService,
+    MakerDispatchError,
+    MakerTimeoutError,
+    MakerUnreachable,
     Priority,
     RecoverableBroker,
     RecoveryReport,
@@ -43,6 +55,7 @@ from orchlink.loop.services import (
     VerifierHandle,
     VerifierService,
     WorkerGateway,
+    WorkerService,
 )
 from orchlink.loop.services.exceptions import (
     VerdictParseError,
@@ -53,6 +66,10 @@ from orchlink.loop.services.exceptions import (
 
 __all__ = [
     "Connector",
+    "ConnectorConfig",
+    "ConnectorSecretGateway",
+    "ConnectorSecretMissing",
+    "SECRET_KEY_NAMES",
     "GitHubConnector",
     "LinearConnector",
     "LocalGitConnector",
@@ -81,6 +98,9 @@ __all__ = [
     "ItemId",
     "LoopEngine",
     "LoopService",
+    "MakerDispatchError",
+    "MakerTimeoutError",
+    "MakerUnreachable",
     "Priority",
     "RecoverableBroker",
     "RecoveryReport",
@@ -98,5 +118,6 @@ __all__ = [
     "VerifierService",
     "VerifierTimeoutError",
     "WorkerGateway",
+    "WorkerService",
     "WorkerGatewayUnavailable",
 ]

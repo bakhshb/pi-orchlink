@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from orchlink.loop.adapters.connectors.base import Connector
@@ -98,6 +99,64 @@ class ItemCandidate:
         if not self.source_ref:
             return None
         return f"{self.source_type}:{self.source_ref}"
+
+
+def build_project_connectors(
+    config: dict[str, Any] | None,
+    project_dir: Path | str,
+    *,
+    secrets: object | None = None,
+    github_http_client: object | None = None,
+    linear_http_client: object | None = None,
+) -> list["Connector"]:
+    """Build read-only project connectors for CLI triage.
+
+    Missing connector config falls back to local git. Invalid configured
+    connectors are skipped rather than failing foreground watch.
+    """
+    from orchlink.loop.adapters.connectors import ConnectorSecretGateway, GitHubConnector, LinearConnector, LocalGitConnector
+
+    raw_configs = _configured_connector_dicts(config or {})
+    if not raw_configs:
+        return [LocalGitConnector(Path(project_dir))]
+
+    secret_gateway = secrets or ConnectorSecretGateway()
+    connectors: list["Connector"] = []
+    for raw in raw_configs:
+        name = str(raw.get("name") or "").strip().lower()
+        try:
+            if name == "github":
+                connectors.append(GitHubConnector(raw, secrets=secret_gateway, http_client=github_http_client))
+            elif name == "linear":
+                connectors.append(LinearConnector(raw, secrets=secret_gateway, http_client=linear_http_client))
+        except Exception as exc:
+            log.warning("loop triage connector %s config skipped: %s", name or "unknown", exc)
+    return connectors
+
+
+def _configured_connector_dicts(config: dict[str, Any]) -> list[dict[str, Any]]:
+    loop_config = config.get("loop") if isinstance(config.get("loop"), dict) else {}
+    raw = loop_config.get("connectors") if isinstance(loop_config, dict) else None
+    if raw is None:
+        raw = config.get("connectors")
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [dict(item) for item in raw if isinstance(item, dict) and item.get("name") in {"github", "linear"}]
+    if isinstance(raw, dict):
+        configs: list[dict[str, Any]] = []
+        for name in ("github", "linear"):
+            value = raw.get(name)
+            if value is None or value is False:
+                continue
+            if isinstance(value, dict):
+                data = dict(value)
+            else:
+                data = {}
+            data.setdefault("name", name)
+            configs.append(data)
+        return configs
+    return []
 
 
 class TriageService:

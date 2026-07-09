@@ -9,6 +9,13 @@ if TYPE_CHECKING:
 
 
 class Connector(Protocol):
+    """Read-only triage source.
+
+    Real connectors are constructed with non-secret ConnectorConfig and obtain
+    tokens only through ConnectorSecretGateway. Secrets must not be stored in
+    project state or emitted in ItemCandidate values.
+    """
+
     name: str
 
     async def discover(self) -> Iterable["ItemCandidate"]:

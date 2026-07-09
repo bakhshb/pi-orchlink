@@ -11,11 +11,12 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Protocol
 
 from orchlink.loop.domain.errors import IllegalTransition
-from orchlink.loop.domain.item import LoopItemState, MakerResult
+from orchlink.loop.domain.item import LoopAttempt, LoopItem, LoopItemState, MakerResult
 from orchlink.loop.domain.verdict import ReasonCode, Verdict, VerifierVerdict
 from orchlink.loop.services.loop_service import LoopService
 from orchlink.loop.services.triage_service import TriageService
-from orchlink.loop.services.verifier_service import VerifierService, WorkerGateway
+from orchlink.loop.services.verifier_service import VerifierHandle, VerifierService, WorkerGateway, WorkerGatewayUnavailable
+from orchlink.loop.services.worker_service import MakerDispatchError, MakerTimeoutError, MakerUnreachable, WorkerService
 
 log = logging.getLogger(__name__)
 
@@ -78,6 +79,7 @@ class LoopEngine:
         triage_service: TriageService | None = None,
         verifier_service: VerifierService | None = None,
         worker_gateway: WorkerGateway | None = None,
+        worker_service: WorkerService | None = None,
         broker_client: BrokerClient | None = None,
         goal_service: object | None = None,
         clock: Callable[[], datetime] | None = None,
@@ -88,6 +90,7 @@ class LoopEngine:
         self.triage_service = triage_service
         self.verifier_service = verifier_service
         self.worker_gateway = worker_gateway
+        self.worker_service = worker_service or (WorkerService(self.config, worker_gateway) if worker_gateway is not None else None)
         self.broker_client = broker_client
         self.goal_service = goal_service
         self.clock = clock or (lambda: datetime.now(timezone.utc))
@@ -199,6 +202,11 @@ class LoopEngine:
         self.stopped = True
 
     def _recover_once(self) -> int:
+        # If no maker service is configured, active maker states should be
+        # handled by the foreground advance path as maker_unavailable instead of
+        # being preemptively converted to broker_unavailable by recovery.
+        if self.worker_service is None and self.broker_client is None:
+            return 0
         report = self.loop_service.recover(broker_client=self.broker_client)
         self._tick_items_blocked += report.items_blocked
         for note in report.notes:
@@ -221,13 +229,7 @@ class LoopEngine:
             if item.state is not LoopItemState.READY:
                 continue
             try:
-                reservation = self.loop_service.next_item(item.item_id, maker_worker=maker_worker, worktree=item.worktree)
-                task_id = self._maker_task_id(reservation.item.item_id, reservation.attempt.number)
-                self.loop_service.mark_dispatched(
-                    reservation.item.item_id,
-                    attempt_no=reservation.attempt.number,
-                    task_id=task_id,
-                )
+                self.loop_service.next_item(item.item_id, maker_worker=maker_worker, worktree=item.worktree)
             except IllegalTransition:
                 continue
             dispatched += 1
@@ -254,52 +256,16 @@ class LoopEngine:
             attempt = item.attempts[-1]
 
             if item.state is LoopItemState.DISPATCHING:
-                if self.broker_client is None:
-                    self.loop_service.block(item.item_id, reason="broker_unavailable", reason_code=ReasonCode.BLOCKED)
-                    self._tick_items_blocked += 1
-                    self._note_once("broker_unavailable")
+                if self._dispatch_maker(item, attempt):
                     advanced += 1
                     continue
-                raw = self.broker_client.get_task_status(attempt.maker.task_id or "")
-                status = self._status_name(raw)
-                if status in {"queued", "pending", "dispatching", None}:
-                    return advanced
-                if status in {"cancelled", "failed", "timeout", "timed_out"}:
-                    self.loop_service.block(item.item_id, reason=status or "broker_unavailable", reason_code=ReasonCode.BLOCKED)
-                    self._tick_items_blocked += 1
-                    if status is None:
-                        self._note_once("broker_unavailable")
-                    advanced += 1
-                    continue
-                self.loop_service.mark_running(item.item_id, attempt_no=attempt.number)
-                advanced += 1
-                continue
+                return advanced + 1
 
             if item.state is LoopItemState.RUNNING:
-                if self.broker_client is None:
-                    self.loop_service.block(item.item_id, reason="broker_unavailable", reason_code=ReasonCode.BLOCKED)
-                    self._tick_items_blocked += 1
-                    self._note_once("broker_unavailable")
+                if self._collect_maker_result(item, attempt):
                     advanced += 1
                     continue
-                raw = self.broker_client.get_task_status(attempt.maker.task_id or "")
-                status = self._status_name(raw)
-                if status in {"queued", "pending", "running", None}:
-                    return advanced
-                if status in {"cancelled", "failed", "timeout", "timed_out"}:
-                    self.loop_service.block(item.item_id, reason=status or "broker_unavailable", reason_code=ReasonCode.BLOCKED)
-                    self._tick_items_blocked += 1
-                    if status is None:
-                        self._note_once("broker_unavailable")
-                    advanced += 1
-                    continue
-                self.loop_service.collect_maker_result(
-                    item.item_id,
-                    attempt_no=attempt.number,
-                    result=self._maker_result(raw),
-                )
-                advanced += 1
-                continue
+                return advanced + 1
 
             if item.state is LoopItemState.AWAITING_VERDICT:
                 if self.verifier_service is None:
@@ -363,6 +329,51 @@ class LoopEngine:
                 continue
 
             return advanced
+
+    def _dispatch_maker(self, item: LoopItem, attempt: LoopAttempt) -> bool:
+        if self.worker_service is None:
+            self._block_maker_failure(item, "maker_unavailable")
+            return False
+        try:
+            handle = self._await_if_needed(
+                self.worker_service.start_maker(
+                    item,
+                    attempt,
+                    worktree=item.worktree,
+                )
+            )
+            self.loop_service.mark_dispatched(item.item_id, attempt_no=attempt.number, task_id=handle.task_id)
+            self.loop_service.mark_running(item.item_id, attempt_no=attempt.number)
+            return True
+        except (MakerUnreachable, WorkerGatewayUnavailable):
+            self._block_maker_failure(item, "maker_unavailable")
+        except MakerTimeoutError:
+            self._block_maker_failure(item, "maker_timeout")
+        except MakerDispatchError:
+            self._block_maker_failure(item, "maker_dispatch_error")
+        return False
+
+    def _collect_maker_result(self, item: LoopItem, attempt: LoopAttempt) -> bool:
+        if self.worker_service is None:
+            self._block_maker_failure(item, "maker_unavailable")
+            return False
+        try:
+            handle = VerifierHandle(task_id=attempt.maker.task_id or "", worker_name=attempt.maker.worker_name)
+            result = self._await_if_needed(self.worker_service.await_maker_result(handle, timeout_seconds=1800))
+            self.loop_service.collect_maker_result(item.item_id, attempt_no=attempt.number, result=result)
+            return True
+        except (MakerUnreachable, WorkerGatewayUnavailable):
+            self._block_maker_failure(item, "maker_unavailable")
+        except MakerTimeoutError:
+            self._block_maker_failure(item, "maker_timeout")
+        except MakerDispatchError:
+            self._block_maker_failure(item, "maker_dispatch_error")
+        return False
+
+    def _block_maker_failure(self, item: LoopItem, reason: str) -> None:
+        self.loop_service.block(item.item_id, reason=reason, reason_code=ReasonCode.BLOCKED)
+        self._tick_items_blocked += 1
+        self._note_once(f"{item.item_id}: {reason}")
 
     def _has_active_attempts(self) -> bool:
         return any(item.state in self._ACTIVE_STATES for item in self.loop_service.ls())

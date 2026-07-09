@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 
+from orchlink.loop.adapters.connectors import ConnectorSecretGateway, LocalGitConnector
 from orchlink.loop.adapters.state_repo import LoopStateRepo
 from orchlink.loop.domain import LoopItemState
 from orchlink.loop.services import ItemCandidate, LoopService, SkillRef, TriageService
+from orchlink.loop.services.triage_service import build_project_connectors
 
 
 class FakeConnector:
@@ -161,3 +163,66 @@ def test_triage_service_wires_real_loop_service_and_repo(tmp_path):
 
     assert len(created) == 1
     assert LoopStateRepo(tmp_path).read_only().item("C-1").state is LoopItemState.TRIAGED
+
+
+class RecordingHttp:
+    def __init__(self, responses):
+        self.responses = responses
+        self.calls = []
+
+    def __call__(self, method, url, headers, params):
+        self.calls.append({"method": method, "url": url, "headers": dict(headers), "params": dict(params)})
+        for key, response in self.responses.items():
+            if key in url or (key == "linear-recent" and params.get("recent")):
+                return response
+        return {"status": 200, "json": []}
+
+
+def test_build_project_connectors_wires_real_github_and_linear(tmp_path):
+    secrets_dir = tmp_path / "secrets"
+    secrets_dir.mkdir()
+    (secrets_dir / "github.token").write_text("github-token", encoding="utf-8")
+    (secrets_dir / "linear.token").write_text("linear-token", encoding="utf-8")
+    github_http = RecordingHttp(
+        {
+            "/pulls": {"status": 200, "json": [{"number": 7, "title": "Review me", "html_url": "https://github.test/pull/7"}]},
+        }
+    )
+    linear_http = RecordingHttp(
+        {
+            "api.linear.app": {
+                "status": 200,
+                "json": {"data": {"issues": {"nodes": [{"identifier": "ENG-1", "title": "Fix", "url": "https://linear.test/ENG-1"}]}}},
+            }
+        }
+    )
+    config = {
+        "loop": {
+            "connectors": {
+                "github": {"repo": "owner/repo", "limit": 1},
+                "linear": {"team": "ENG", "limit": 1},
+            }
+        }
+    }
+    loop_service = LoopService({}, LoopStateRepo(tmp_path / "project"))
+    connectors = build_project_connectors(
+        config,
+        tmp_path / "project",
+        secrets=ConnectorSecretGateway(secrets_dir),
+        github_http_client=github_http,
+        linear_http_client=linear_http,
+    )
+    triage = TriageService(config, loop_service, connectors)
+
+    created = asyncio.run(triage.run_once())
+
+    assert [item.item_id for item in created] == ["pr-7", "issue-ENG-1"]
+    assert github_http.calls
+    assert linear_http.calls
+
+
+def test_build_project_connectors_without_project_connectors_falls_back_to_local_git(tmp_path):
+    connectors = build_project_connectors({}, tmp_path)
+
+    assert len(connectors) == 1
+    assert isinstance(connectors[0], LocalGitConnector)

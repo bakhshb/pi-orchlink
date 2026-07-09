@@ -35,6 +35,9 @@ class VerifierHandle:
 
 
 class WorkerGateway(Protocol):
+    async def dispatch_maker(self, maker_assignment: WorkerAssignment, prompt: str) -> VerifierHandle:
+        ...
+
     async def dispatch_verifier(self, verifier_assignment: WorkerAssignment, prompt: str) -> VerifierHandle:
         ...
 

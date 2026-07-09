@@ -16,13 +16,13 @@ from rich.table import Table
 from orchlink.cli.commands._helpers import console, current_project_id, load_project_or_exit
 from orchlink.goal.runner import GoalEvidenceAdapter
 from orchlink.goal.store import GoalStore
-from orchlink.loop.adapters.connectors import LocalGitConnector
 from orchlink.loop.adapters.state_repo import LoopStateRepo
 from orchlink.loop.domain.errors import BudgetExhausted, IllegalTransition, VerifierMismatch
 from orchlink.loop.domain.item import LoopItem, LoopItemState, MakerResult, WorkerAssignment
 from orchlink.loop.domain.verdict import ReasonCode
 from orchlink.loop.domain.worktree import Worktree
-from orchlink.loop.services import LoopEngine, LoopService, TriageService, VerifierService
+from orchlink.loop.services import LoopEngine, LoopService, TriageService, VerifierService, WorkerService
+from orchlink.loop.services.triage_service import build_project_connectors
 from orchlink.loop.services.verifier_service import (
     VerdictParseError,
     VerifierDispatchError,
@@ -57,16 +57,27 @@ class LoopWorkerGateway:
         self.headers = {"X-API-Key": broker_api_key(config)}
         self.project_id = current_project_id(config)
 
+    async def dispatch_maker(self, maker_assignment: WorkerAssignment, prompt: str) -> VerifierHandle:
+        if maker_assignment.task_id is None:
+            raise VerifierDispatchError("maker assignment is missing a task id")
+        task_id = maker_assignment.task_id
+        if task_id.startswith("reserved:"):
+            task_id = f"loop:maker:{task_id.removeprefix('reserved:')}"
+        return await self._dispatch(maker_assignment.worker_name, task_id, prompt)
+
     async def dispatch_verifier(self, verifier_assignment: WorkerAssignment, prompt: str) -> VerifierHandle:
+        if verifier_assignment.task_id is None:
+            raise VerifierDispatchError("verifier assignment is missing a task id")
+        return await self._dispatch(verifier_assignment.worker_name, verifier_assignment.task_id, prompt)
+
+    async def _dispatch(self, worker_name: str, task_id: str, prompt: str) -> VerifierHandle:
         from orchlink.client.ask import build_task_envelope
         from orchlink.core.envelope import envelope_to_dict
 
-        if verifier_assignment.task_id is None:
-            raise VerifierDispatchError("verifier assignment is missing a task id")
         envelope = build_task_envelope(
             config=self.config,
-            worker=verifier_assignment.worker_name,
-            task_id=verifier_assignment.task_id,
+            worker=worker_name,
+            task_id=task_id,
             message=prompt,
             timeout_seconds=1800,
             delivery="async",
@@ -74,7 +85,7 @@ class LoopWorkerGateway:
         async with httpx.AsyncClient(base_url=self.base_url, timeout=None) as client:
             response = await client.post("/v1/messages/send", headers=self.headers, json=envelope_to_dict(envelope))
             response.raise_for_status()
-        return VerifierHandle(task_id=verifier_assignment.task_id, worker_name=verifier_assignment.worker_name)
+        return VerifierHandle(task_id=task_id, worker_name=worker_name)
 
     async def await_result(self, handle: VerifierHandle, timeout_seconds: int) -> MakerResult:
         params = urlencode({"timeout_seconds": str(timeout_seconds), "project_id": self.project_id})
@@ -135,7 +146,7 @@ def _repo(config: dict[str, Any]) -> LoopStateRepo:
 
 def _build_services(config: dict[str, Any]) -> tuple[LoopService, TriageService, VerifierService, LoopEngine, GoalEvidenceAdapter | None]:
     loop_service = LoopService(config, _repo(config))
-    triage_service = TriageService(config, loop_service, [LocalGitConnector(project_root(config))])
+    triage_service = TriageService(config, loop_service, build_project_connectors(config, project_root(config)))
     verifier_service = VerifierService(config)
     try:
         goal_adapter: GoalEvidenceAdapter | None = GoalEvidenceAdapter(GoalStore(config))
@@ -175,6 +186,22 @@ def _build_broker_client(config: dict[str, Any]) -> object | None:
 
 def _build_worker_gateway(config: dict[str, Any]) -> LoopWorkerGateway | None:
     return LoopWorkerGateway(config) if _broker_reachable(config) else None
+
+
+def _build_worker_runtime(config: dict[str, Any]) -> tuple[LoopWorkerGateway | None, WorkerService | None]:
+    """Build foreground worker dispatch, falling back to no WorkerService.
+
+    Broker or gateway construction failures are intentionally non-fatal: watch
+    then follows LoopEngine's existing broker_unavailable/maker_unavailable
+    paths instead of crashing during composition.
+    """
+    try:
+        gateway = _build_worker_gateway(config)
+    except Exception:
+        return None, None
+    if gateway is None:
+        return None, None
+    return gateway, WorkerService(config, gateway)
 
 
 def _error(message: str) -> None:
@@ -369,6 +396,11 @@ def watch(
 ) -> None:
     config = _project_config()
     service, _, _, engine, _ = _build_services(config)
+    gateway, worker_service = _build_worker_runtime(config)
+    if worker_service is not None:
+        engine.worker_service = worker_service
+    if gateway is not None:
+        engine.verifier_service = VerifierService(config, gateway=gateway)
     engine.broker_client = _build_broker_client(config)
     if not allow_active_attempts and any(item.state in ACTIVE_STATES for item in service.ls()):
         _error("Active loop attempts exist; pass --allow-active-attempts to continue.")
