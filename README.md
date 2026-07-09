@@ -89,14 +89,29 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## Start a project
 
+As the human user, you usually run only setup and the lead Pi session:
+
 ```bash
 cd /path/to/your/project
 orch init
-orch lead    # terminal 1
-orch work    # terminal 2
+orch lead
 ```
 
-For background use without blocking the current terminal:
+Then talk to the lead Pi in that session. For example:
+
+```text
+Start a background worker for this project, then ask it to review the auth module without editing files.
+```
+
+The lead Pi can run `orch work --background`, `orch ask`, `orch send`, `orch jobs`, `orch goal ...`, and `orch loop ...` as tools. You can still run those commands yourself for debugging or recovery, but normal use is prompt-first.
+
+If you prefer visible worker terminals, open another terminal and run:
+
+```bash
+orch work
+```
+
+For background workers without blocking the current terminal, the lead or a human can run:
 
 ```bash
 orch work --background
@@ -108,17 +123,10 @@ This starts the headless Pi RPC worker named `work`, writes `.orch/run/orch-work
 orch work --background --new --replace --oneshot
 ```
 
-Named workers need no YAML setup:
+Named workers need no YAML setup. Ask the lead Pi for them by name:
 
-```bash
-orch work --name review
-orch send review -t R001 -m "Review only, no edits."
-```
-
-Pin a worker model or thinking level:
-
-```bash
-orch work --background --name review --model openai/codex-max --thinking xhigh
+```text
+Start a background worker named review with model openai/codex-max and thinking xhigh. Use it for review-only tasks.
 ```
 
 ## Ask and Send
@@ -133,7 +141,7 @@ Ask work to review this function before I change it. Keep it short and do not ed
 Send work an async task to implement the export endpoint. While it works, inspect the API tests yourself. Read the exact worker result before telling me it is done.
 ```
 
-The lead Pi turns those prompts into `orch ask`, `orch send`, and `orch jobs --result` calls. The commands are shown in the command reference for agents, debugging, and manual recovery.
+The lead Pi turns those prompts into `orch ask`, `orch send`, and `orch jobs --result` calls. You do not need to type those commands unless you are debugging, scripting, or recovering from an interruption.
 
 ## Goal Mode
 
@@ -155,7 +163,7 @@ Review the goal gate with me. If the acceptance criteria and plan are complete, 
 Work this goal until the acceptance criteria are done or blocked. Verify evidence before saying it is complete.
 ```
 
-Goal Mode writes durable state under `.orch/goals/Gxxx/`: source, acceptance criteria, plan, coverage, goal status, evidence, blockers, and history. The lead Pi uses `orch goal ...` commands internally; the command reference is for agents, debugging, and manual recovery.
+Goal Mode writes durable state under `.orch/goals/Gxxx/`: source, acceptance criteria, plan, coverage, goal status, evidence, blockers, and history. The lead Pi uses `orch goal ...` commands as tools. Use the table for debugging, scripting, or manual recovery.
 
 | Agent/manual command | What it does |
 | --- | --- |
@@ -180,18 +188,18 @@ Set up Loop Mode for this repo. Use a maker worker and a separate review worker.
 Run the loop for ready GitHub issues. Use the maker/reviewer split, run required checks, and stop if anything is rejected or blocked. Do not merge automatically.
 ```
 
-The lead Pi turns those prompts into `orch loop ...`, `orch work ...`, and file edits under `.orch/`. The steps below explain what the lead sets up and what state to expect.
+The lead Pi turns those prompts into `orch loop ...`, `orch work ...`, and file edits under `.orch/`. The steps below explain what the lead sets up and what state to expect; you can ask the lead to do them instead of typing the commands yourself.
 
 ### Loop Mode setup
 
-1. Start a maker worker and a verifier worker. Loop Mode defaults to `maker` for implementation and `review` for verification.
+1. Start a maker worker and a verifier worker. Loop Mode defaults to `maker` for implementation and `review` for verification. The lead can start them as background workers with:
 
 ```bash
 orch work --background --name maker
 orch work --background --name review
 ```
 
-Visible workers are also valid; run the same commands without `--background` in separate terminals.
+Visible workers are also valid if you want separate terminals; run the same commands without `--background`.
 
 2. Configure objective checks in `.orch/loop/checks.yaml`.
 
@@ -326,7 +334,7 @@ Do not commit `.orch/`. Refresh skills with `orch init --refresh-skills`.
 
 ## Command reference
 
-Most users prompt the lead Pi instead of typing these during normal work. This reference is for agents, debugging, setup scripts, and manual recovery.
+Most users prompt the lead Pi instead of typing these during normal work. The lead can call these commands as tools. This reference is for agents, debugging, setup scripts, and manual recovery.
 
 | Command | Use |
 | --- | --- |
