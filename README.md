@@ -35,19 +35,19 @@ Orchlink is a local coordination layer for Pi coding agents. It connects one lea
              or async       plan → work →  verifier → checks
              dispatch       signoff        → done
 
-             no state        .orch/goals/  .orch/loop/
-             no lifecycle    Gxxx/         state.md
+             job/result      .orch/goals/  .orch/loop/
+             only            Gxxx/         state.md
              no verifier     evidence +     maker ≠ verifier
                              signoff       by default
                                             objective checks
                                             no auto-merge
 ```
 
-**Ask/Send** — one task, one result. No lifecycle, no state, no verifier.
+**Ask/Send** — use this for one question, one review, or one implementation task. The broker records the job and result, but Orchlink does not create a goal, lifecycle state, or verifier step.
 
-**Goal Mode** — PRD with acceptance criteria, plan, evidence, and human signoff.
+**Goal Mode** — use this for PRD-driven work. Orchlink stores acceptance criteria, a plan, evidence, blockers, and signoff under `.orch/goals/Gxxx/`.
 
-**Loop Mode** — recurring or parallel work with maker/verifier separation, objective checks, and durable state.
+**Loop Mode** — use this for recurring or parallel work. Orchlink stores loop items in `.orch/loop/state.md`, sends ready items to maker workers, requires a verifier by default, and can run objective checks before `done`.
 
 ## Install
 
@@ -144,15 +144,13 @@ Loop Mode is for recurring or parallel work that needs a maker, a separate verif
 # See loop state
 orch loop ls
 
-# Move a triaged item to ready, dispatch it, verify it
+# Move a triaged item to ready
 orch loop ready L001
-orch loop next L001 --maker work --worktree-create --base main
-orch loop verify L001 --verifier review --run-checks
 
 # Run one bounded tick (recover, triage, dispatch, advance, verify, exit)
 orch loop tick --run-checks
 
-# Run a foreground watch loop
+# Run a foreground watch loop for a capped number of steps
 orch loop watch --run-checks --interval 60 --max-steps 10
 
 # Install a crontab that fires orch loop tick every 30 minutes
@@ -243,9 +241,9 @@ Do not commit `.orch/`. Refresh skills with `orch init --refresh-skills`.
 | `orch resume` | Show recovery state and recommended next action. |
 | `orch goal ...` | Run Goal Mode. |
 | `orch loop ls` | List loop items and their states. |
-| `orch loop next ITEM --maker NAME` | Dispatch a ready item to a maker worker. |
-| `orch loop verify ITEM --verifier NAME --run-checks` | Verify with a separate worker; run objective checks. |
-| `orch loop tick` | Run one bounded loop tick and exit. |
+| `orch loop next ITEM --maker NAME` | Reserve a ready item for a maker and mark it dispatched. |
+| `orch loop verify ITEM --verifier NAME` | Verify with a separate worker. Use `tick --run-checks` or `watch --run-checks` for objective checks. |
+| `orch loop tick` | Run one bounded loop invocation and exit. |
 | `orch loop watch` | Run a foreground loop watch. |
 | `orch loop schedule --every 30m --install` | Install a crontab/systemd timer that fires `orch loop tick`. |
 | `orch broker status`, `orch broker watch`, `orch broker run` | Raw broker diagnostics and foreground broker run. |
