@@ -17,6 +17,7 @@ No Redis. No dashboard. No hosted workflow engine. Just local Pi sessions, a loc
 ## What makes Orchlink different
 
 - **Proof over claims.** Goal Mode tracks acceptance criteria, check commands, evidence, blockers, and signoff instead of trusting a final chat message.
+- **Real loop engineering.** Loop Mode dispatches work to a maker, verifies with a separate verifier, runs objective checks, and refuses `done` without an accepted verdict. No auto-merge, no daemon, no cron — just foreground ticks you control.
 - **Named workers you can see and stop.** `work`, `review`, and `bg-test` are durable Pi contexts, not an anonymous worker pool.
 - **Single-flight by worker name.** Orchlink prevents three tasks from landing on one worker context by accident.
 - **Local and Pi-first.** The broker runs on your machine, the sessions are Pi sessions, and project state lives under `.orch/`.
@@ -170,6 +171,82 @@ Useful commands:
 
 Objective ACs need check commands for strongest unattended verification. Subjective ACs stop at a signoff gate.
 
+## Loop Mode
+
+Loop Mode is for recurring or parallel work that needs a maker, a separate verifier, and objective checks before `done`.
+
+```bash
+# Create loop state and triage candidates
+orch loop ls
+
+# Move a triaged item to ready, dispatch it, verify it
+orch loop ready L001
+orch loop next L001 --maker work --worktree-create --base main
+orch loop verify L001 --verifier review --run-checks
+
+# Run one bounded tick (recover, triage, dispatch, advance, verify, exit)
+orch loop tick --run-checks
+
+# Run a foreground watch loop
+orch loop watch --run-checks --interval 60 --max-steps 10
+
+# Install a crontab that fires orch loop tick every 30 minutes
+orch loop schedule --every 30m --install
+```
+
+Loop state lives in `.orch/loop/state.md` as human-readable markdown with a fenced YAML block. An item reaches `done` only through:
+
+```text
+ready → dispatching → running → awaiting_verdict → verifying → done
+```
+
+…and only on an accepted verifier verdict. A failed required objective check forces `REJECTED` regardless of what the LLM says. No auto-merge. No cron daemon. Each scheduled fire is a fresh bounded `orch loop tick` process.
+
+Objective checks are configured in `.orch/loop/checks.yaml`:
+
+```yaml
+checks:
+  - id: pytest
+    command: "python3 -m pytest tests/ -q"
+    required: true
+  - id: ruff
+    command: "ruff check src/orchlink"
+    required: false
+```
+
+## When to use what
+
+```text
+                          ┌─────────────────────┐
+                          │   What do you need?  │
+                          └─────────┬───────────┘
+                                    │
+                    ┌───────────────┼───────────────┐
+                    ▼               ▼               ▼
+             one task         formal PRD      recurring or
+             one answer       with ACs         parallel work
+                    │               │               │
+                    ▼               ▼               ▼
+             ┌──────────┐  ┌────────────┐  ┌──────────────┐
+             │orch ask  │  │orch goal   │  │orch loop     │
+             │orch send │  │            │  │              │
+             └──────────┘  └────────────┘  └──────────────┘
+             quick gate     PRD → AC →     triage → maker →
+             or async       plan → work →  verifier → checks
+             dispatch       signoff        → done
+
+             no state        .orch/goals/  .orch/loop/
+             no lifecycle    Gxxx/         state.md
+             no verifier     evidence +     maker ≠ verifier
+                             signoff       by default
+                                            objective checks
+                                            no auto-merge
+```
+
+- **Ask/Send** — one task, one result. No lifecycle, no state, no verifier.
+- **Goal Mode** — PRD with acceptance criteria, plan, evidence, and human signoff.
+- **Loop Mode** — recurring or parallel work with maker/verifier separation, objective checks, and durable state.
+
 ## Worker modes
 
 - **Implementation:** lead sends a scoped task to a worker. Prefer async `orch send` for long work.
@@ -288,6 +365,12 @@ python3 skills/sync_orchlink_skills.py --check
 | `orch resume` | Show recovery state and recommended next action. |
 | `orch update` | Update Orchlink and print restart guidance. |
 | `orch goal ...` | Run Goal Mode. |
+| `orch loop ls` | List loop items and their states. |
+| `orch loop next ITEM --maker NAME` | Dispatch a ready item to a maker worker. |
+| `orch loop verify ITEM --verifier NAME --run-checks` | Verify with a separate worker; run objective checks. |
+| `orch loop tick` | Run one bounded loop tick and exit. |
+| `orch loop watch` | Run a foreground loop watch. |
+| `orch loop schedule --every 30m --install` | Install a crontab/systemd timer that fires `orch loop tick`. |
 | `orch broker status`, `orch broker watch`, `orch broker run` | Raw broker diagnostics and foreground broker run. |
 
 `orch jobs --result` and `orch jobs --wait` refuse cross-project or unscoped task results. If you see a stale-broker error, check no other project needs the broker, then restart fresh sessions:
@@ -315,9 +398,12 @@ One broker can serve multiple projects. Orchlink scopes normal commands by `proj
 
 ## Security
 
-- The local broker uses an API key. The default `change-me` value is for local development only.
+- `orch init` generates a random per-project broker API key. The broker refuses to start with a missing or default `change-me` key.
+- `orch doctor` reports broker bind exposure (loopback vs network), API key state, and whether the running broker accepts the project key.
+- `orch broker run` warns when binding to a non-loopback interface.
 - Orchlink does not sandbox worker shell commands. Scope worker tasks clearly.
 - Scope guardrails are prompt and skill guidance, not an OS sandbox.
+- Worktree isolation (`--worktree`) changes the working directory but is not a security boundary. A worker can still touch absolute paths.
 - Cancellation is best-effort once Pi has started a tool call.
 
 ## Development
