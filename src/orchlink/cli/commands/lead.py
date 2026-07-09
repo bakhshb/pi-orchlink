@@ -27,6 +27,8 @@ from orchlink.cli.commands._helpers import auto_refresh_project_skills, load_pro
 from orchlink.client import THINKING_LEVELS, normalize_thinking_level
 from orchlink.client.process import broker_pid_path
 from orchlink.connector.pi_connector import PiConnectorError
+from orchlink.loop.adapters.worktree_service import WorktreeCreateError, WorktreeService
+from orchlink.loop.domain.worktree import Worktree
 from orchlink.project.config import DEFAULT_WORKER_NAME, normalize_worker_name, project_root, role_agent_id, save_project_config, with_worker_name, worker_agent_id
 
 
@@ -61,25 +63,44 @@ def saved_worker_session_id(config: dict[str, Any], worker_name: str) -> str:
     return str(state.get("session_id") or worker_name)
 
 
-def save_worker_runtime_state(config: dict[str, Any], worker_name: str, session_id: str) -> None:
+def save_worker_runtime_state(config: dict[str, Any], worker_name: str, session_id: str, worktree: Worktree | None = None) -> None:
     if worker_name == DEFAULT_WORKER_NAME:
         return
     path = worker_runtime_state_path(config, worker_name)
     path.parent.mkdir(parents=True, exist_ok=True)
+    state = {
+        "name": worker_name,
+        "agent_id": worker_agent_id(config, worker_name),
+        "session_id": session_id,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if worktree is not None:
+        state["worktree"] = worktree.to_dict()
     path.write_text(
-        json.dumps(
-            {
-                "name": worker_name,
-                "agent_id": worker_agent_id(config, worker_name),
-                "session_id": session_id,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
+        json.dumps(state, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def worker_runtime_worktree(config: dict[str, Any], worker_name: str) -> Worktree | None:
+    path = worker_runtime_state_path(config, worker_name)
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    raw = state.get("worktree")
+    return Worktree.from_dict(raw) if isinstance(raw, dict) else None
+
+
+def remove_worker_worktree_if_recorded(config: dict[str, Any], worker_name: str) -> None:
+    worktree = worker_runtime_worktree(config, worker_name)
+    if worktree is None:
+        return
+    try:
+        WorktreeService(project_root(config)).remove(worktree)
+        console.print(f"[Orch] Removed worktree: {worktree.path}")
+    except Exception as exc:
+        console.print(f"[Orch] Could not remove worktree {worktree.path}: {exc}")
 
 
 def with_named_worker_session(config: dict[str, Any], worker_name: str, new: bool = False) -> tuple[dict[str, Any], str]:
@@ -480,6 +501,14 @@ def register_lead(app: typer.Typer) -> None:
             Path | None,
             typer.Option("--worktree", help="Run this worker from PATH while keeping broker identity tied to this project."),
         ] = None,
+        worktree_create: Annotated[
+            bool,
+            typer.Option("--worktree-create", help="Create a git worktree for this worker before starting."),
+        ] = False,
+        base_ref: Annotated[
+            str,
+            typer.Option("--base", help="Base ref for --worktree-create."),
+        ] = "main",
     ) -> None:
         config = load_project_or_exit()
         try:
@@ -494,6 +523,10 @@ def register_lead(app: typer.Typer) -> None:
             worker_name = normalize_worker_name(worker_name)
             thinking = normalize_thinking_level(thinking)
             worktree_path: Path | None = None
+            created_worktree: Worktree | None = None
+            if worktree_create and worktree is not None:
+                console.print("[Orch] Use either --worktree-create or --worktree, not both.")
+                raise typer.Exit(1)
             if worktree is not None:
                 worktree_path = worktree.expanduser().resolve()
                 if not worktree_path.exists():
@@ -511,7 +544,7 @@ def register_lead(app: typer.Typer) -> None:
                 work_config["_worktree_project_dir"] = str(worktree_path)
                 updated["work"] = work_config
                 config = updated
-            profile_override = model is not None or thinking is not None or oneshot or worktree_path is not None
+            profile_override = model is not None or thinking is not None or oneshot or worktree_path is not None or worktree_create
             named_worker_label = f" worker '{worker_name}'" if worker_name != DEFAULT_WORKER_NAME else " worker"
             auto_refresh_project_skills(config)
             _cli_main.ensure_broker_running(config)
@@ -549,6 +582,18 @@ def register_lead(app: typer.Typer) -> None:
                     console.print(f"[Orch] Fenced existing worker '{worker_name}' session lease(s).")
             elif background and new and tracked_pid is not None:
                 stop_pid_file(pid_path, f"worker '{worker_name}'")
+
+            if worktree_create:
+                created_worktree = WorktreeService(project_root(config)).create(worker_name, base_ref=base_ref)
+                worktree_path = Path(created_worktree.path).resolve()
+                save_worker_runtime_state(config, worker_name, session_id, worktree=created_worktree)
+                updated = dict(config)
+                work_config = dict(config.get("work") or {})
+                work_config["project_dir"] = str(worktree_path)
+                work_config["_worktree_project_dir"] = str(worktree_path)
+                updated["work"] = work_config
+                config = updated
+                console.print(f"[Orch] Created worktree: {worktree_path} branch={created_worktree.branch}")
 
             if background:
                 if new:
@@ -605,6 +650,10 @@ def register_lead(app: typer.Typer) -> None:
             str | None,
             typer.Option("--name", help="Stop/release one named worker, default: work."),
         ] = None,
+        remove_worktree: Annotated[
+            bool,
+            typer.Option("--remove-worktree", help="Best-effort remove the worker git worktree recorded in runtime metadata."),
+        ] = False,
     ) -> None:
         if broker and all_:
             console.print("[Orch] Use either --broker or --all, not both.")
@@ -619,6 +668,8 @@ def register_lead(app: typer.Typer) -> None:
                 stopped_any = False
                 for name, pid_path in worker_pid_files(config):
                     stopped_any = stop_pid_file(pid_path, f"worker '{name}'") or stopped_any
+                    if remove_worktree:
+                        remove_worker_worktree_if_recorded(config, name)
                 try:
                     release_work_sessions(config, active_work_sessions(config), "Stopped by orch stop --all.")
                 except httpx.HTTPError:
@@ -634,6 +685,8 @@ def register_lead(app: typer.Typer) -> None:
                 background_sessions = background_work_sessions(sessions)
                 if stop_pid_file(worker_pid_path, f"worker '{target_worker_name}'"):
                     release_work_sessions(config, background_sessions, f"Stopped by orch stop --name {target_worker_name}.")
+                    if remove_worktree:
+                        remove_worker_worktree_if_recorded(config, target_worker_name)
                 elif sessions and explicit_worker_name:
                     release_work_sessions(config, sessions, f"Stopped by orch stop --name {target_worker_name}.")
                     console.print(f"[Orch] Fenced active worker '{target_worker_name}' session lease(s).")

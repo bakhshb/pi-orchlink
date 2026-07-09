@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import shlex
+import subprocess
 from pathlib import Path
 from typing import Annotated, Any, Protocol
 from urllib.parse import urlencode
@@ -204,6 +207,27 @@ def _build_worker_runtime(config: dict[str, Any]) -> tuple[LoopWorkerGateway | N
     return gateway, WorkerService(config, gateway)
 
 
+def _configure_engine_runtime(config: dict[str, Any], engine: LoopEngine, *, run_checks: bool) -> None:
+    engine.config["run_checks"] = run_checks
+    gateway, worker_service = _build_worker_runtime(config)
+    if worker_service is not None:
+        engine.worker_service = worker_service
+    if gateway is not None:
+        engine.verifier_service = VerifierService(config, gateway=gateway)
+    engine.broker_client = _build_broker_client(config)
+
+
+def _print_run_summary(summary) -> None:
+    console.print(
+        f"[Orch] RunSummary steps={summary.steps} ticks={summary.ticks} dispatched={summary.items_dispatched} "
+        f"verified={summary.items_verified} blocked={summary.items_blocked} done={summary.items_done}"
+    )
+    for note in summary.notes:
+        console.print(f"- {note}")
+    for error in summary.errors:
+        console.print(f"ERROR: {error}")
+
+
 def _error(message: str) -> None:
     console.print(f"[Orch] {message}")
     raise typer.Exit(1)
@@ -388,31 +412,238 @@ def recover() -> None:
         console.print(f"- {note}")
 
 
+@loop_app.command(help="Run one bounded loop invocation and exit.")
+def tick(
+    run_checks: Annotated[bool, typer.Option("--run-checks", help="Run configured objective checks before verifier dispatch.")] = False,
+    max_steps: Annotated[int, typer.Option("--max-steps", min=1, help="Maximum foreground ticks.")] = 1,
+    allow_active_attempts: Annotated[bool, typer.Option("--allow-active-attempts", help="Continue even if active attempts already exist.")] = False,
+) -> None:
+    config = _project_config()
+    try:
+        _, _, _, engine, _ = _build_services(config)
+        _configure_engine_runtime(config, engine, run_checks=run_checks)
+        summary = engine.run(max_steps=max_steps, interval_seconds=0, allow_active_attempts=allow_active_attempts)
+    except Exception as exc:
+        console.print(f"ERROR: {exc}")
+        raise typer.Exit(1) from exc
+    _print_run_summary(summary)
+    if summary.errors:
+        raise typer.Exit(1)
+
+
+_SCHEDULE_TAG = "# orchlink-loop"
+_SYSTEMD_ENV = "ORCHLINK_LOOP_SYSTEMD_DIR"
+
+
+def _parse_schedule_interval(value: str) -> tuple[str, str]:
+    normalized = str(value or "").strip().lower()
+    if normalized == "30m":
+        return "*/30 * * * *", "*:0/30:00"
+    if normalized == "1h":
+        return "0 * * * *", "hourly"
+    if normalized == "6h":
+        return "0 */6 * * *", "*-*-* 0/6:00:00"
+    if normalized == "daily":
+        return "0 0 * * *", "daily"
+    raise ValueError("invalid schedule interval; use 30m, 1h, 6h, or daily")
+
+
+def _tick_command(config: dict[str, Any], *, max_steps: int, run_checks: bool) -> str:
+    args = f"orch loop tick --max-steps {max_steps}"
+    if run_checks:
+        args += " --run-checks"
+    return f"cd {shlex.quote(str(project_root(config)))} && {args}"
+
+
+def _crontab_line(config: dict[str, Any], *, every: str, max_steps: int, run_checks: bool) -> str:
+    cron, _ = _parse_schedule_interval(every)
+    return f"{cron} {_tick_command(config, max_steps=max_steps, run_checks=run_checks)}"
+
+
+def _read_crontab() -> str:
+    result = subprocess.run(["crontab", "-l"], capture_output=True, text=True, check=False)  # noqa: S603 - user crontab CLI.
+    return result.stdout if result.returncode == 0 else ""
+
+
+def _write_crontab(text: str) -> None:
+    subprocess.run(["crontab", "-"], input=text, text=True, check=True)  # noqa: S603 - user crontab CLI.
+
+
+def _crontab_lines_without_schedule(current: str) -> list[str]:
+    lines: list[str] = []
+    in_schedule_block = False
+    for existing in current.splitlines():
+        if _SCHEDULE_TAG in existing:
+            lowered = existing.lower()
+            if "begin" in lowered:
+                in_schedule_block = True
+            elif "end" in lowered:
+                in_schedule_block = False
+            continue
+        if not in_schedule_block:
+            lines.append(existing)
+    return lines
+
+
+def _replace_schedule_line(current: str, line: str | None) -> str:
+    lines = _crontab_lines_without_schedule(current)
+    if line is not None:
+        lines.append(f"{line} {_SCHEDULE_TAG}")
+    return "\n".join(lines).rstrip() + ("\n" if lines else "")
+
+
+def _systemd_dir() -> Path:
+    override = os.environ.get(_SYSTEMD_ENV)
+    return Path(override).expanduser() if override else Path("~/.config/systemd/user").expanduser()
+
+
+def _systemd_text(config: dict[str, Any], *, every: str, max_steps: int, run_checks: bool) -> tuple[str, str]:
+    _, calendar = _parse_schedule_interval(every)
+    command = f"orch loop tick --max-steps {max_steps}" + (" --run-checks" if run_checks else "")
+    service = "\n".join(
+        [
+            "[Unit]",
+            "Description=Orchlink loop tick",
+            "",
+            "[Service]",
+            "Type=oneshot",
+            f"WorkingDirectory={project_root(config)}",
+            f"ExecStart={command}",
+            "",
+            "[Install]",
+            "WantedBy=timers.target",
+            "",
+        ]
+    )
+    timer = "\n".join(
+        [
+            "[Unit]",
+            "Description=Run Orchlink loop tick on schedule",
+            "",
+            "[Timer]",
+            f"OnCalendar={calendar}",
+            "Persistent=true",
+            "",
+            "[Install]",
+            "WantedBy=timers.target",
+            "",
+        ]
+    )
+    return service, timer
+
+
+def _show_crontab_schedule() -> None:
+    installed = [line for line in _read_crontab().splitlines() if _SCHEDULE_TAG in line]
+    if not installed:
+        console.print("No schedule installed.")
+        return
+    for line in installed:
+        console.print(line)
+
+
+def _install_crontab_schedule(line: str) -> None:
+    _write_crontab(_replace_schedule_line(_read_crontab(), line))
+    console.print(line)
+
+
+def _remove_crontab_schedule() -> None:
+    current = _read_crontab()
+    updated = _replace_schedule_line(current, None)
+    if updated == (current if current.endswith("\n") or not current else current + "\n"):
+        console.print("No schedule installed.")
+    else:
+        _write_crontab(updated)
+        console.print("Removed orchlink loop schedule.")
+
+
+def _show_systemd_schedule() -> None:
+    directory = _systemd_dir()
+    service_path = directory / "orchlink-loop.service"
+    timer_path = directory / "orchlink-loop.timer"
+    if not service_path.exists() and not timer_path.exists():
+        console.print("No schedule installed.")
+        return
+    if service_path.exists():
+        console.print(service_path.read_text(encoding="utf-8"))
+    if timer_path.exists():
+        console.print(timer_path.read_text(encoding="utf-8"))
+
+
+def _install_systemd_schedule(config: dict[str, Any], *, every: str, max_steps: int, run_checks: bool) -> None:
+    service, timer = _systemd_text(config, every=every, max_steps=max_steps, run_checks=run_checks)
+    directory = _systemd_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "orchlink-loop.service").write_text(service, encoding="utf-8")
+    (directory / "orchlink-loop.timer").write_text(timer, encoding="utf-8")
+    console.print("systemctl --user daemon-reload && systemctl --user enable --now orchlink-loop.timer")
+
+
+def _remove_systemd_schedule() -> None:
+    directory = _systemd_dir()
+    service_path = directory / "orchlink-loop.service"
+    timer_path = directory / "orchlink-loop.timer"
+    existed = service_path.exists() or timer_path.exists()
+    service_path.unlink(missing_ok=True)
+    timer_path.unlink(missing_ok=True)
+    if not existed:
+        console.print("No schedule installed.")
+        return
+    console.print("systemctl --user disable --now orchlink-loop.timer")
+
+
+@loop_app.command(help="Print or install a discrete orch loop tick schedule.")
+def schedule(
+    every: Annotated[str | None, typer.Option("--every", help="Interval: 30m, 1h, 6h, or daily.")] = None,
+    max_steps: Annotated[int, typer.Option("--max-steps", min=1, help="Max steps passed to orch loop tick.")] = 1,
+    run_checks: Annotated[bool, typer.Option("--run-checks", help="Include --run-checks in scheduled ticks.")] = False,
+    systemd: Annotated[bool, typer.Option("--systemd", help="Use a systemd user timer instead of crontab.")] = False,
+    install: Annotated[bool, typer.Option("--install", help="Install the schedule explicitly.")] = False,
+    show: Annotated[bool, typer.Option("--show", help="Show the installed schedule.")] = False,
+    remove: Annotated[bool, typer.Option("--remove", help="Remove the installed schedule.")] = False,
+) -> None:
+    config = _project_config()
+    try:
+        if sum(bool(flag) for flag in (install, show, remove)) > 1:
+            _error("Use only one of --install, --show, or --remove.")
+        if show:
+            _show_systemd_schedule() if systemd else _show_crontab_schedule()
+            return
+        if remove:
+            _remove_systemd_schedule() if systemd else _remove_crontab_schedule()
+            return
+        if every is None:
+            _error("--every is required unless --show or --remove is used.")
+        if systemd:
+            if install:
+                _install_systemd_schedule(config, every=every, max_steps=max_steps, run_checks=run_checks)
+            else:
+                service, timer = _systemd_text(config, every=every, max_steps=max_steps, run_checks=run_checks)
+                console.print(service)
+                console.print(timer)
+            return
+        line = _crontab_line(config, every=every, max_steps=max_steps, run_checks=run_checks)
+        if install:
+            _install_crontab_schedule(line)
+        else:
+            console.print(line)
+    except ValueError as exc:
+        _error(str(exc))
+
+
 @loop_app.command(help="Run the foreground loop engine.")
 def watch(
     interval: Annotated[float, typer.Option("--interval", min=0.0, help="Seconds between loop ticks.")] = 5.0,
     max_steps: Annotated[int, typer.Option("--max-steps", min=1, help="Maximum foreground ticks.")] = 10,
     allow_active_attempts: Annotated[bool, typer.Option("--allow-active-attempts", help="Continue even if active attempts already exist.")] = False,
+    run_checks: Annotated[bool, typer.Option("--run-checks", help="Run configured objective checks before verifier dispatch.")] = False,
 ) -> None:
     config = _project_config()
     service, _, _, engine, _ = _build_services(config)
-    gateway, worker_service = _build_worker_runtime(config)
-    if worker_service is not None:
-        engine.worker_service = worker_service
-    if gateway is not None:
-        engine.verifier_service = VerifierService(config, gateway=gateway)
-    engine.broker_client = _build_broker_client(config)
+    _configure_engine_runtime(config, engine, run_checks=run_checks)
     if not allow_active_attempts and any(item.state in ACTIVE_STATES for item in service.ls()):
         _error("Active loop attempts exist; pass --allow-active-attempts to continue.")
     summary = engine.run(max_steps=max_steps, interval_seconds=interval, allow_active_attempts=allow_active_attempts)
-    console.print(
-        f"[Orch] RunSummary steps={summary.steps} ticks={summary.ticks} dispatched={summary.items_dispatched} "
-        f"verified={summary.items_verified} blocked={summary.items_blocked} done={summary.items_done}"
-    )
-    for note in summary.notes:
-        console.print(f"- {note}")
-    for error in summary.errors:
-        console.print(f"ERROR: {error}")
+    _print_run_summary(summary)
 
 
 __all__ = ["loop_app", "register_loop"]

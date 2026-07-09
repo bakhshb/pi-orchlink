@@ -89,6 +89,21 @@ class FakeGoalService:
         self.calls.append({"goal_id": goal_id, "evidence": evidence})
 
 
+class RecordingVerifierService:
+    def __init__(self):
+        self.calls = []
+
+    async def dispatch_and_collect(self, item, attempt, *, worktree=None, run_checks=False, check_service=None):
+        self.calls.append({"run_checks": run_checks, "check_service": check_service})
+        return VerifierVerdict(
+            verdict=Verdict.ACCEPTED,
+            reason_code=ReasonCode.ACCEPTED,
+            detail="ok",
+            required_fixes=(),
+            verifier_worker=attempt.verifier.worker_name,
+        )
+
+
 def fake_clock():
     return datetime(2026, 1, 1, tzinfo=timezone.utc)
 
@@ -338,6 +353,20 @@ def test_tick_real_worker_service_collect_timeout_blocks_item(tmp_path):
     assert result.items_blocked == 1
     assert "I-1: maker_timeout" in result.notes
     assert loop_service.get("I-1").blocker == "maker_timeout"
+
+
+def test_tick_passes_run_checks_to_verifier_path(tmp_path):
+    loop_service = make_loop(tmp_path)
+    add_verifying(loop_service)
+    verifier = RecordingVerifierService()
+    engine = LoopEngine({"run_checks": True}, loop_service, verifier_service=verifier, broker_client=FakeBrokerClient("completed"))
+
+    result = engine.tick(allow_active_attempts=True)
+
+    assert result.items_verified == 1
+    assert verifier.calls[0]["run_checks"] is True
+    assert verifier.calls[0]["check_service"] is not None
+    assert loop_service.get("I-1").state is LoopItemState.DONE
 
 
 def test_tick_with_no_broker_blocks_open_broker_states(tmp_path):

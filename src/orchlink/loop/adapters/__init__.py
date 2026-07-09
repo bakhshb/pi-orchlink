@@ -12,6 +12,7 @@ from orchlink.loop.adapters.connectors import (
 )
 from orchlink.loop.adapters.markdown_codec import decode_markdown, encode_markdown
 from orchlink.loop.adapters.state_repo import LoopStateRepo
+from orchlink.loop.adapters.worktree_service import WorktreeCreateError, WorktreeService
 
 __all__ = [
     "Connector",
@@ -23,6 +24,8 @@ __all__ = [
     "LinearConnector",
     "LocalGitConnector",
     "LoopStateRepo",
+    "WorktreeCreateError",
+    "WorktreeService",
     "decode_markdown",
     "encode_markdown",
 ]

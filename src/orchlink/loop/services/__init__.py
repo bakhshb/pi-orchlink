@@ -1,6 +1,7 @@
 """Loop application services."""
 
 from orchlink.loop.services.loop_engine import LoopEngine, RunSummary, TickResult
+from orchlink.loop.services.objective_check_service import CheckDefinition, CheckReport, CheckResult, ObjectiveCheckService
 from orchlink.loop.services.loop_service import (
     DEFAULT_RESERVATION_GRACE,
     BrokerTaskStatus,
@@ -33,6 +34,9 @@ from orchlink.loop.services.verifier_service import (
 
 __all__ = [
     "BrokerTaskStatus",
+    "CheckDefinition",
+    "CheckReport",
+    "CheckResult",
     "DEFAULT_RESERVATION_GRACE",
     "DispatchReservation",
     "ItemCandidate",
@@ -42,6 +46,7 @@ __all__ = [
     "MakerDispatchError",
     "MakerTimeoutError",
     "MakerUnreachable",
+    "ObjectiveCheckService",
     "Priority",
     "RecoverableBroker",
     "RecoveryReport",

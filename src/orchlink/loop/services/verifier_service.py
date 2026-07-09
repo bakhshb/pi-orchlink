@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol
 
 from orchlink.loop.domain.errors import VerifierMismatch
 from orchlink.loop.domain.item import LoopAttempt, LoopItem, MakerResult, WorkerAssignment
 from orchlink.loop.domain.verdict import ReasonCode, Verdict, VerifierVerdict
 from orchlink.loop.domain.worktree import Worktree
+from orchlink.loop.services.objective_check_service import CheckReport, ObjectiveCheckService
 
 
 class VerdictParseError(ValueError):
@@ -50,7 +52,13 @@ class VerifierService:
         self.config = dict(config or {})
         self.gateway = gateway
 
-    def build_prompt(self, item: LoopItem, attempt: LoopAttempt, worktree: Worktree | None) -> str:
+    def build_prompt(
+        self,
+        item: LoopItem,
+        attempt: LoopAttempt,
+        worktree: Worktree | None,
+        check_report: CheckReport | None = None,
+    ) -> str:
         objective = item.title or item.source or item.item_id
         verifier_worker = attempt.verifier.worker_name if attempt.verifier else "<unassigned>"
         same_worker = attempt.verifier is not None and attempt.verifier.same_worker(attempt.maker)
@@ -64,6 +72,13 @@ class VerifierService:
         if worktree is not None:
             worktree_line = f"WORKTREE: {worktree.path}"
             files_line = "FILES_CHANGED: unavailable (diff collection is handled by an adapter; no git I/O here)"
+        check_lines = []
+        if check_report is not None and check_report.results:
+            check_lines = [
+                "",
+                check_report.prompt_section(),
+                "If a required objective check failed, your verdict MUST be REJECTED with reason checks_failed.",
+            ]
         policy = item.verify_policy
         return "\n".join(
             [
@@ -79,11 +94,12 @@ class VerifierService:
                 f"- require_verifier: {str(policy.require_verifier).lower()}",
                 f"- require_separate_verifier_worker: {str(policy.require_separate_verifier_worker).lower()}",
                 f"- {separation}",
+                *check_lines,
                 "",
                 "Review the maker result and objective checks. LLM judgment is evidence, not proof.",
                 "End with exactly this structured verdict block. Use exact lowercase reason codes:",
                 "VERDICT: ACCEPTED | REJECTED | BLOCKER",
-                "REASON: accepted | tests_failed | review_failed | objective_check_failed | blocked | policy | user_request | unknown",
+                "REASON: accepted | checks_failed | tests_failed | review_failed | objective_check_failed | blocked | policy | user_request | unknown",
                 "DETAIL: <text>",
                 "FIXES: <comma-separated fixes, or none>",
                 "VERIFIER_WORKER: <worker name>",
@@ -105,8 +121,11 @@ class VerifierService:
             raise VerdictParseError("REASON is required for REJECTED verdicts")
         if not raw_reason:
             raw_reason = ReasonCode.UNKNOWN.value
+        normalized_reason = raw_reason.lower()
+        if normalized_reason == "checks_failed":
+            normalized_reason = ReasonCode.OBJECTIVE_CHECK_FAILED.value
         try:
-            reason = ReasonCode(raw_reason.lower())
+            reason = ReasonCode(normalized_reason)
         except ValueError as exc:
             raise VerdictParseError(f"unknown reason code: {raw_reason}") from exc
 
@@ -134,12 +153,15 @@ class VerifierService:
         *,
         worktree: Worktree | None = None,
         timeout_seconds: int = 1800,
+        run_checks: bool = False,
+        check_service: ObjectiveCheckService | None = None,
     ) -> VerifierVerdict:
         if self.gateway is None:
             raise WorkerGatewayUnavailable("VerifierService requires a WorkerGateway to dispatch verifier work")
         if attempt.verifier is None:
             raise VerifierDispatchError("attempt has no verifier assignment")
-        prompt = self.build_prompt(item, attempt, worktree)
+        check_report = check_service.run_checks(Path(worktree.path) if worktree is not None else None) if run_checks and check_service is not None else None
+        prompt = self.build_prompt(item, attempt, worktree, check_report=check_report)
         try:
             handle = await self.gateway.dispatch_verifier(attempt.verifier, prompt)
             try:
@@ -154,7 +176,26 @@ class VerifierService:
             raise
         except Exception as exc:
             raise VerifierDispatchError(str(exc)) from exc
-        return self.parse_verdict(result.result)
+        verdict = self.parse_verdict(result.result)
+        return self._apply_objective_check_override(verdict, check_report)
+
+    def _apply_objective_check_override(
+        self,
+        verdict: VerifierVerdict,
+        check_report: CheckReport | None,
+    ) -> VerifierVerdict:
+        if check_report is None or not check_report.any_required_failed:
+            return verdict
+        original = f"Original LLM verdict: {verdict.verdict.value}; reason={verdict.reason_code.value}; detail={verdict.detail}"
+        detail = f"Required objective checks failed. {original}"
+        return VerifierVerdict(
+            verdict=Verdict.REJECTED,
+            reason_code=ReasonCode.OBJECTIVE_CHECK_FAILED,
+            detail=detail,
+            required_fixes=verdict.required_fixes,
+            verifier_worker=verdict.verifier_worker,
+            task_id=verdict.task_id,
+        )
 
     def validate_separation(
         self,

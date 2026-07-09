@@ -1681,6 +1681,143 @@ def test_work_background_worktree_passes_project_dir_to_supervisor(monkeypatch, 
     assert str(worktree.resolve()) in result.output
 
 
+def test_work_background_worktree_create_passes_project_dir_to_supervisor(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+    from orchlink.loop.domain import Worktree
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    created_path = tmp_path.parent / "demo-maker-1"
+    calls = {"sessions": 0, "popen": [], "created": []}
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    class FakeWorktreeService:
+        def __init__(self, project_root):
+            self.project_root = project_root
+
+        def create(self, name, base_ref="main", path=None):
+            calls["created"].append({"name": name, "base_ref": base_ref, "path": path, "project_root": self.project_root})
+            return Worktree(path=str(created_path), branch=f"loop/{name}", base_ref=base_ref)
+
+    class FakeProcess:
+        pid = 4321
+
+    def fake_broker_get_sync(config, path):
+        calls["sessions"] += 1
+        if calls["sessions"] == 1:
+            return {"sessions": []}
+        return {
+            "sessions": [
+                {
+                    "role": "work",
+                    "status": "ACTIVE",
+                    "session_id": "maker-1-20260621-010203",
+                    "worker_name": "maker-1",
+                    "ready": True,
+                    "last_ready_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(cli_main.time, "strftime", lambda fmt: "20260621-010203")
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(lead_command, "WorktreeService", FakeWorktreeService)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", lambda command, **kwargs: calls["popen"].append((command, kwargs)) or FakeProcess())
+    monkeypatch.setattr(lead_command.time, "sleep", lambda seconds: None)
+
+    result = runner.invoke(
+        cli_main.app,
+        ["work", "--background", "--name", "maker-1", "--worktree-create", "--base", "main", "--new", "--timeout", "1"],
+    )
+
+    command = calls["popen"][0][0]
+    assert result.exit_code == 0
+    assert calls["created"][0]["name"] == "maker-1"
+    assert calls["created"][0]["base_ref"] == "main"
+    assert command[command.index("--project-dir") + 1] == str(created_path)
+    assert str(created_path) in result.output
+    assert "loop/maker-1" in result.output
+
+
+def test_worktree_create_and_worktree_are_mutually_exclusive(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+
+    init_project(tmp_path, project_id="demo")
+    worktree = tmp_path / "wt"
+    worktree.mkdir()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not start")))
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--worktree-create", "--worktree", str(worktree)])
+
+    assert result.exit_code == 1
+    assert "Use either --worktree-create or --worktree" in result.output
+
+
+def test_worktree_create_without_base_defaults_to_main(monkeypatch, tmp_path):
+    from orchlink.cli.commands import lead as lead_command
+    from orchlink.loop.domain import Worktree
+
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    calls = {"sessions": 0, "base_refs": [], "popen": []}
+
+    class FakePiConnector:
+        def __init__(self, config):
+            self.config = config
+
+        def check_available(self):
+            return True
+
+    class FakeWorktreeService:
+        def __init__(self, project_root):
+            pass
+
+        def create(self, name, base_ref="main", path=None):
+            calls["base_refs"].append(base_ref)
+            return Worktree(path=str(tmp_path.parent / "demo-maker-1"), branch=f"loop/{name}", base_ref=base_ref)
+
+    class FakeProcess:
+        pid = 4321
+
+    def fake_broker_get_sync(config, path):
+        calls["sessions"] += 1
+        if calls["sessions"] == 1:
+            return {"sessions": []}
+        return {
+            "sessions": [
+                {
+                    "role": "work",
+                    "status": "ACTIVE",
+                    "session_id": "maker-1",
+                    "worker_name": "maker-1",
+                    "ready": True,
+                    "last_ready_heartbeat_at": "2999-01-01T00:00:00+00:00",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+    monkeypatch.setattr(cli_main, "PiConnector", FakePiConnector)
+    monkeypatch.setattr(cli_main, "broker_get_sync", fake_broker_get_sync)
+    monkeypatch.setattr(lead_command, "WorktreeService", FakeWorktreeService)
+    monkeypatch.setattr(lead_command.subprocess, "Popen", lambda command, **kwargs: calls["popen"].append((command, kwargs)) or FakeProcess())
+    monkeypatch.setattr(lead_command.time, "sleep", lambda seconds: None)
+
+    result = runner.invoke(cli_main.app, ["work", "--background", "--name", "maker-1", "--worktree-create", "--timeout", "1"])
+
+    assert result.exit_code == 0
+    assert calls["base_refs"] == ["main"]
+
+
 def test_work_background_without_worktree_does_not_pass_project_dir(monkeypatch, tmp_path):
     from orchlink.cli.commands import lead as lead_command
 

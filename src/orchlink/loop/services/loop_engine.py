@@ -14,6 +14,7 @@ from orchlink.loop.domain.errors import IllegalTransition
 from orchlink.loop.domain.item import LoopAttempt, LoopItem, LoopItemState, MakerResult
 from orchlink.loop.domain.verdict import ReasonCode, Verdict, VerifierVerdict
 from orchlink.loop.services.loop_service import LoopService
+from orchlink.loop.services.objective_check_service import ObjectiveCheckService
 from orchlink.loop.services.triage_service import TriageService
 from orchlink.loop.services.verifier_service import VerifierHandle, VerifierService, WorkerGateway, WorkerGatewayUnavailable
 from orchlink.loop.services.worker_service import MakerDispatchError, MakerTimeoutError, MakerUnreachable, WorkerService
@@ -302,13 +303,25 @@ class LoopEngine:
                     self._note_once("verifier_unavailable")
                     advanced += 1
                     continue
-                verdict = self._await_if_needed(
-                    self.verifier_service.dispatch_and_collect(
-                        item,
-                        attempt,
-                        worktree=item.worktree,
+                run_checks = bool(self.config.get("run_checks", False))
+                if run_checks:
+                    verdict = self._await_if_needed(
+                        self.verifier_service.dispatch_and_collect(
+                            item,
+                            attempt,
+                            worktree=item.worktree,
+                            run_checks=True,
+                            check_service=ObjectiveCheckService(self.config),
+                        )
                     )
-                )
+                else:
+                    verdict = self._await_if_needed(
+                        self.verifier_service.dispatch_and_collect(
+                            item,
+                            attempt,
+                            worktree=item.worktree,
+                        )
+                    )
                 application = self.loop_service.apply_verdict(
                     item.item_id,
                     attempt_no=attempt.number,

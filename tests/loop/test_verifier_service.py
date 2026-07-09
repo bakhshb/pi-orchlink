@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +16,8 @@ from orchlink.loop.domain import (
     Worktree,
 )
 from orchlink.loop.services import (
+    CheckReport,
+    CheckResult,
     VerdictParseError,
     VerifierDispatchError,
     VerifierHandle,
@@ -58,7 +61,7 @@ def test_build_prompt_is_deterministic_snapshot():
         "Review the maker result and objective checks. LLM judgment is evidence, not proof.\n"
         "End with exactly this structured verdict block. Use exact lowercase reason codes:\n"
         "VERDICT: ACCEPTED | REJECTED | BLOCKER\n"
-        "REASON: accepted | tests_failed | review_failed | objective_check_failed | blocked | policy | user_request | unknown\n"
+        "REASON: accepted | checks_failed | tests_failed | review_failed | objective_check_failed | blocked | policy | user_request | unknown\n"
         "DETAIL: <text>\n"
         "FIXES: <comma-separated fixes, or none>\n"
         "VERIFIER_WORKER: <worker name>"
@@ -71,6 +74,71 @@ def test_build_prompt_includes_same_worker_override_marker():
 
     assert "ALLOW_SAME_WORKER: true (explicit override required; lower confidence)" in prompt
     assert "WORKTREE: none" in prompt
+
+
+def failed_required_report():
+    return CheckReport.from_results(
+        [
+            CheckResult(
+                id="pytest",
+                required=True,
+                status="fail",
+                exit_code=1,
+                stdout="",
+                stderr="failed",
+                duration_seconds=0.01,
+            ),
+        ]
+    )
+
+
+def failed_optional_report():
+    return CheckReport.from_results(
+        [
+            CheckResult(
+                id="ruff",
+                required=False,
+                status="fail",
+                exit_code=1,
+                stdout="",
+                stderr="lint",
+                duration_seconds=0.01,
+            ),
+        ]
+    )
+
+
+def passing_report():
+    return CheckReport.from_results(
+        [
+            CheckResult(
+                id="pytest",
+                required=True,
+                status="pass",
+                exit_code=0,
+                stdout="ok",
+                stderr="",
+                duration_seconds=0.01,
+            ),
+        ]
+    )
+
+
+def test_build_prompt_includes_objective_check_report():
+    prompt = VerifierService({}).build_prompt(item(), attempt(), None, check_report=failed_required_report())
+
+    assert "Objective checks:" in prompt
+    assert "OVERALL: fail" in prompt
+    assert "- pytest (required): fail exit=1" in prompt
+    assert "stderr: failed" in prompt
+    assert "verdict MUST be REJECTED with reason checks_failed" in prompt
+
+
+def test_build_prompt_without_check_report_omits_objective_check_section():
+    prompt = VerifierService({}).build_prompt(item(), attempt(), None)
+
+    assert "Objective checks:" not in prompt
+    assert "checks_failed" in prompt
 
 
 @pytest.mark.parametrize(
@@ -107,6 +175,12 @@ def test_parse_verdict_unknown_reason_raises():
 def test_parse_verdict_rejected_missing_reason_raises():
     with pytest.raises(VerdictParseError):
         VerifierService({}).parse_verdict("VERDICT: REJECTED\nDETAIL: bad\nFIXES: fix")
+
+
+def test_parse_verdict_accepts_checks_failed_alias():
+    parsed = VerifierService({}).parse_verdict("VERDICT: REJECTED\nREASON: checks_failed\nDETAIL: bad\nFIXES: fix")
+
+    assert parsed.reason_code is ReasonCode.OBJECTIVE_CHECK_FAILED
 
 
 def test_parse_verdict_ignores_template_before_final_verdict():
@@ -189,9 +263,9 @@ class SpyVerifierService(VerifierService):
         super().__init__(config, gateway)
         self.build_calls = []
 
-    def build_prompt(self, item_arg, attempt_arg, worktree_arg):
-        self.build_calls.append((item_arg, attempt_arg, worktree_arg))
-        return super().build_prompt(item_arg, attempt_arg, worktree_arg)
+    def build_prompt(self, item_arg, attempt_arg, worktree_arg, check_report=None):
+        self.build_calls.append((item_arg, attempt_arg, worktree_arg, check_report))
+        return super().build_prompt(item_arg, attempt_arg, worktree_arg, check_report=check_report)
 
 
 def test_dispatch_and_collect_uses_gateway_and_parses_result():
@@ -203,13 +277,98 @@ def test_dispatch_and_collect_uses_gateway_and_parses_result():
 
     result = asyncio.run(service.dispatch_and_collect(loop_item, loop_attempt, worktree=worktree, timeout_seconds=12))
 
-    assert service.build_calls == [(loop_item, loop_attempt, worktree)]
+    assert service.build_calls == [(loop_item, loop_attempt, worktree, None)]
     assert gateway.dispatched[0][0] == loop_attempt.verifier
     assert "ITEM_ID: I-1" in gateway.dispatched[0][1]
     assert gateway.awaited == [(VerifierHandle(task_id="V-1", worker_name="review"), 12)]
     assert result.verdict is Verdict.REJECTED
     assert result.reason_code is ReasonCode.REVIEW_FAILED
     assert result.required_fixes == ("add test",)
+
+
+class FakeObjectiveCheckService:
+    def __init__(self, report):
+        self.report = report
+        self.calls = []
+
+    def run_checks(self, worktree=None):
+        self.calls.append(worktree)
+        return self.report
+
+
+def test_dispatch_and_collect_run_checks_required_failure_overrides_accepted():
+    checker = FakeObjectiveCheckService(failed_required_report())
+    service = VerifierService({}, FakeGateway())
+
+    result = asyncio.run(
+        service.dispatch_and_collect(item(), attempt(), worktree=Worktree("/tmp/wt"), run_checks=True, check_service=checker)
+    )
+
+    assert checker.calls == [Path("/tmp/wt")]
+    assert result.verdict is Verdict.REJECTED
+    assert result.reason_code is ReasonCode.OBJECTIVE_CHECK_FAILED
+    assert "Required objective checks failed." in result.detail
+    assert "Original LLM verdict: accepted" in result.detail
+
+
+def test_dispatch_and_collect_run_checks_required_failure_overrides_blocker():
+    checker = FakeObjectiveCheckService(failed_required_report())
+    service = VerifierService(
+        {},
+        FakeGateway(result_text="VERDICT: BLOCKER\nREASON: blocked\nDETAIL: waiting\nFIXES: none"),
+    )
+
+    result = asyncio.run(service.dispatch_and_collect(item(), attempt(), run_checks=True, check_service=checker))
+
+    assert result.verdict is Verdict.REJECTED
+    assert result.reason_code is ReasonCode.OBJECTIVE_CHECK_FAILED
+    assert "Original LLM verdict: blocker" in result.detail
+
+
+def test_dispatch_and_collect_run_checks_required_failure_overrides_other_rejection_reason():
+    checker = FakeObjectiveCheckService(failed_required_report())
+    service = VerifierService(
+        {},
+        FakeGateway(result_text="VERDICT: REJECTED\nREASON: review_failed\nDETAIL: nope\nFIXES: add test"),
+    )
+
+    result = asyncio.run(service.dispatch_and_collect(item(), attempt(), run_checks=True, check_service=checker))
+
+    assert result.verdict is Verdict.REJECTED
+    assert result.reason_code is ReasonCode.OBJECTIVE_CHECK_FAILED
+    assert "Original LLM verdict: rejected" in result.detail
+
+
+def test_dispatch_and_collect_run_checks_passing_check_keeps_accepted():
+    checker = FakeObjectiveCheckService(passing_report())
+    service = VerifierService({}, FakeGateway())
+
+    result = asyncio.run(service.dispatch_and_collect(item(), attempt(), run_checks=True, check_service=checker))
+
+    assert checker.calls == [None]
+    assert result.verdict is Verdict.ACCEPTED
+    assert result.reason_code is ReasonCode.ACCEPTED
+
+
+def test_dispatch_and_collect_optional_check_failure_does_not_override_accepted():
+    checker = FakeObjectiveCheckService(failed_optional_report())
+    service = VerifierService({}, FakeGateway())
+
+    result = asyncio.run(service.dispatch_and_collect(item(), attempt(), run_checks=True, check_service=checker))
+
+    assert checker.calls == [None]
+    assert result.verdict is Verdict.ACCEPTED
+    assert result.reason_code is ReasonCode.ACCEPTED
+
+
+def test_dispatch_and_collect_run_checks_false_does_not_call_check_service():
+    checker = FakeObjectiveCheckService(failed_required_report())
+    service = VerifierService({}, FakeGateway())
+
+    result = asyncio.run(service.dispatch_and_collect(item(), attempt(), run_checks=False, check_service=checker))
+
+    assert checker.calls == []
+    assert result.verdict is Verdict.ACCEPTED
 
 
 def test_dispatch_and_collect_timeout_raises():
