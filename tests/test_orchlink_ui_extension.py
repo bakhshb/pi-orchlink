@@ -17,7 +17,7 @@ def test_generated_ui_extension_is_read_only_tui_monitor():
     assert "ctx.ui.setWidget" not in ORCHLINK_PI_UI_EXTENSION
     assert "ctx.ui.custom" in ORCHLINK_PI_UI_EXTENSION
     assert "worker - ${row.workerName}" in ORCHLINK_PI_UI_EXTENSION
-    assert "Orchlink Lead · ${rows.length} ${label}" in ORCHLINK_PI_UI_EXTENSION
+    assert "Orchlink Lead · ${active} active · ${idle} idle" in ORCHLINK_PI_UI_EXTENSION
     assert "LEGACY_STATUS_KEYS" not in ORCHLINK_PI_UI_EXTENSION
     assert "\\u001b[90m${value}\\u001b[0m" not in ORCHLINK_PI_UI_EXTENSION
     assert "activityByItem" in ORCHLINK_PI_UI_EXTENSION

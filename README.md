@@ -59,12 +59,25 @@ You need Python 3.11+, `git`, and Pi installed as `pi`.
 curl -fsSL https://raw.githubusercontent.com/bakhshb/pi-orchlink/main/install.sh | bash
 ```
 
-**Windows PowerShell:**
+Install Pi Orchlink on Windows PowerShell:
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/bakhshb/pi-orchlink/main/install.ps1 -OutFile install.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
+
+Windows options:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Ref main -Force
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -SkillsOnly
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -NoSkills
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall
+```
+
+Windows installs into `%LOCALAPPDATA%\orchlink`, creates `%LOCALAPPDATA%\orchlink\bin\orch.cmd`, and can install the general skill at `%USERPROFILE%\.agents\skills\orchlink`.
+
+Advanced overrides: `ORCHLINK_REPO_URL`, `ORCHLINK_REF`, `ORCHLINK_INSTALL_DIR`, `ORCHLINK_BIN_DIR`, `ORCHLINK_PYTHON`, `ORCHLINK_SOURCE_DIR`. Close running `orch lead` / `orch work` / Pi terminals before uninstalling.
 
 If your shell cannot find `orch`:
 
@@ -72,7 +85,7 @@ If your shell cannot find `orch`:
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-> **Windows support is beta.** Linux/macOS are the primary tested paths.
+> **Windows support is currently beta.** The installer supports basic install, update, uninstall, and command shims, but shell/PATH behavior can vary between PowerShell, CMD, Git Bash, and Pi's tool shell. Linux/macOS remain the primary tested paths.
 
 ## Start a project
 
@@ -83,10 +96,16 @@ orch lead    # terminal 1
 orch work    # terminal 2
 ```
 
-For background use:
+For background use without blocking the current terminal:
 
 ```bash
 orch work --background
+```
+
+This starts the headless Pi RPC worker named `work`, writes `.orch/run/orch-work.pid` and `.orch/run/orch-work.log`, waits for readiness, and returns. For a fresh task-scoped background worker that exits after one completed task reply, use:
+
+```bash
+orch work --background --new --replace --oneshot
 ```
 
 Named workers need no YAML setup:
@@ -189,13 +208,18 @@ Loop state lives in `.orch/loop/state.md` as human-readable markdown with a fenc
 
 ## Recovery
 
+Use `orch resume` first when returning after an interruption, broker restart, cancelled task, or compacted conversation. It prints the active task or goal, lead/work sessions, the last broker checkpoint, drifted leases, and one recommended next command in a single plain-text report.
+
 ```bash
 orch resume          # recovery report after interruption
 orch jobs --idle     # exit 0 if no active work
 orch jobs --active   # what is still busy
 orch jobs --result T002  # read a completed result
 orch jobs --cancel T002 -m "reason"  # cancel stale work
+orch goal show Gxxx  # check a specific goal's acceptance evidence
 ```
+
+Use narrower commands when you already know what you need: `orch jobs --idle` for a quick safe/unsafe check, `orch jobs` for recent task/talk rows, `orch sessions` for lead/work session leases, and `orch goal show Gxxx` for a specific goal's acceptance evidence.
 
 ## Project files
 

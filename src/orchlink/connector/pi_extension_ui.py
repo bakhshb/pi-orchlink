@@ -128,8 +128,10 @@ function rowInlineText(row: WorkerRow): string {
 
 function sessionNameText(rows: WorkerRow[], offline = false): string {
   if (offline) return "Orchlink Lead · workers offline";
-  const label = rows.length === 1 ? "worker" : "workers";
-  return `Orchlink Lead · ${rows.length} ${label}`;
+  if (!rows.length) return "Orchlink Lead · no workers";
+  const active = rows.filter((r) => r.job).length;
+  const idle = rows.length - active;
+  return `Orchlink Lead · ${active} active · ${idle} idle`;
 }
 
 function formatActivityRecord(record: JsonObject): string {
