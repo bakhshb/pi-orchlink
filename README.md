@@ -159,32 +159,18 @@ Goal Mode writes durable state under `.orch/goals/Gxxx/`: source, acceptance cri
 
 Loop Mode is for recurring or parallel work that needs a maker, a separate verifier, and objective checks before `done`.
 
+### Loop Mode setup
+
+1. Start a maker worker and a verifier worker. Loop Mode defaults to `maker` for implementation and `review` for verification.
+
 ```bash
-# See loop state
-orch loop ls
-
-# Move a triaged item to ready
-orch loop ready L001
-
-# Run one bounded tick (recover, triage, dispatch, advance, verify, exit)
-orch loop tick --run-checks
-
-# Run a foreground watch loop for a capped number of steps
-orch loop watch --run-checks --interval 60 --max-steps 10
-
-# Install a crontab that fires orch loop tick every 30 minutes
-orch loop schedule --every 30m --install
+orch work --background --name maker
+orch work --background --name review
 ```
 
-An item reaches `done` only through:
+Visible workers are also valid; run the same commands without `--background` in separate terminals.
 
-```text
-ready → dispatching → running → awaiting_verdict → verifying → done
-```
-
-A failed required objective check forces `REJECTED` regardless of what the LLM says. No auto-merge. No daemon. Each scheduled fire is a fresh bounded `orch loop tick` process.
-
-Objective checks are configured in `.orch/loop/checks.yaml`:
+2. Configure objective checks in `.orch/loop/checks.yaml`.
 
 ```yaml
 checks:
@@ -195,6 +181,85 @@ checks:
     command: "ruff check src/"
     required: false
 ```
+
+A failed required check forces `REJECTED` regardless of the verifier text.
+
+3. Optional: configure a GitHub connector in `.orch/project.yaml`.
+
+```yaml
+loop:
+  connectors:
+    github:
+      repo: owner/repo
+      limit: 10
+      default_branch: main
+```
+
+GitHub connector behavior:
+
+- open pull requests become candidates
+- open issues become candidates only when labeled `bug`, `enhancement`, `good first issue`, or `help wanted`
+- failing commit status on the default branch becomes a CI-failure candidate
+
+4. Put the GitHub token outside `.orch`.
+
+```bash
+export ORCHLINK_GITHUB_TOKEN="ghp_..."
+```
+
+Or use the external secrets directory:
+
+```bash
+mkdir -p ~/.config/orchlink/secrets
+printf '%s' 'ghp_...' > ~/.config/orchlink/secrets/github.token
+chmod 600 ~/.config/orchlink/secrets/github.token
+```
+
+Do not put tokens in `.orch/project.yaml`.
+
+5. Run one triage tick and inspect the result.
+
+```bash
+orch loop tick
+orch loop ls
+orch loop show issue-123
+```
+
+New GitHub candidates are stored in `.orch/loop/state.md` as `triaged`. They are not dispatched until you mark them ready.
+
+6. Approve a loop item for work.
+
+```bash
+orch loop ready issue-123
+```
+
+7. Run the bounded loop with checks.
+
+```bash
+orch loop tick --run-checks
+```
+
+The tick recovers stale state, triages new candidates, dispatches ready items to the maker, collects maker results, sends work to the verifier, runs objective checks when enabled, and exits.
+
+For a foreground repeated run:
+
+```bash
+orch loop watch --run-checks --interval 60 --max-steps 10
+```
+
+For a scheduled run that fires one bounded process every 30 minutes:
+
+```bash
+orch loop schedule --every 30m --install
+```
+
+An item reaches `done` only through:
+
+```text
+ready → dispatching → running → awaiting_verdict → verifying → done
+```
+
+No auto-merge. No daemon. Each scheduled fire is a fresh bounded `orch loop tick` process.
 
 Loop state lives in `.orch/loop/state.md` as human-readable markdown with a fenced YAML block.
 
