@@ -49,6 +49,8 @@ class RunSummary:
     items_verified: int = 0
     items_blocked: int = 0
     items_done: int = 0
+    stopped: bool = False
+    stop_reason: str = ""
     errors: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -108,7 +110,15 @@ class LoopEngine:
             try:
                 result = self.tick(allow_active_attempts=allow_active_attempts)
             except KeyboardInterrupt:
+                summary.stopped = True
+                summary.stop_reason = "keyboard_interrupt"
                 summary.notes.append("stopped by KeyboardInterrupt")
+                self.stop()
+                break
+            except Exception as exc:
+                summary.stopped = True
+                summary.stop_reason = "error"
+                summary.errors.append(f"tick failed: {exc}")
                 self.stop()
                 break
             summary.steps += 1
@@ -119,13 +129,26 @@ class LoopEngine:
             summary.items_done += result.items_done
             summary.errors.extend(result.errors)
             summary.notes.extend(result.notes)
-            if any("active attempts present" in note for note in result.notes) and not allow_active_attempts:
+            if result.errors:
+                summary.stopped = True
+                summary.stop_reason = "error"
+                self.stop()
                 break
-            if self.stopped or summary.steps >= max_steps:
+            if any("active attempts present" in note for note in result.notes) and not allow_active_attempts:
+                summary.stopped = True
+                summary.stop_reason = "active_attempts"
+                break
+            if self.stopped:
+                summary.stopped = True
+                summary.stop_reason = "stopped"
+                break
+            if summary.steps >= max_steps:
                 break
             try:
                 self.sleeper(interval_seconds)
             except KeyboardInterrupt:
+                summary.stopped = True
+                summary.stop_reason = "keyboard_interrupt"
                 summary.notes.append("stopped by KeyboardInterrupt")
                 self.stop()
                 break

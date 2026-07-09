@@ -276,6 +276,25 @@ def test_run_respects_stop_from_sleeper(tmp_path):
     assert engine.stopped is True
 
 
+def test_run_stops_on_first_tick_error(tmp_path):
+    loop_service = make_loop(tmp_path)
+    engine = LoopEngine(
+        {},
+        loop_service,
+        triage_service=RaisingTriageService(),
+        clock=fake_clock,
+        sleeper=lambda seconds: (_ for _ in ()).throw(AssertionError("sleep should not run after an error")),
+    )
+
+    summary = engine.run(max_steps=5, interval_seconds=0)
+
+    assert summary.steps == 1
+    assert summary.ticks == 1
+    assert summary.stopped is True
+    assert summary.stop_reason == "error"
+    assert summary.errors == ["triage failed: triage boom"]
+
+
 def test_tick_records_triage_errors_and_continues(tmp_path):
     loop_service = make_loop(tmp_path)
     add_ready(loop_service)
