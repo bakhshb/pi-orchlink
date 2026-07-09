@@ -28,8 +28,8 @@ Orchlink is a local coordination layer for Pi coding agents. It connects one lea
                     │               │               │
                     ▼               ▼               ▼
              ┌──────────┐  ┌────────────┐  ┌──────────────┐
-             │orch ask  │  │orch goal   │  │orch loop     │
-             │orch send │  │            │  │              │
+             │Ask/Send  │  │Goal Mode   │  │Loop Mode     │
+             │prompt    │  │prompt      │  │prompt        │
              └──────────┘  └────────────┘  └──────────────┘
              quick gate     PRD → AC →     triage → maker →
              or async       plan → work →  verifier → checks
@@ -123,30 +123,41 @@ orch work --background --name review --model openai/codex-max --thinking xhigh
 
 ## Ask and Send
 
-```bash
-# Blocking: short review, decision, or blocker
-orch ask work --wait -t T001 -m "Is this function safe to merge?"
+You normally use Ask/Send by prompting the lead Pi:
 
-# Async: long implementation, broad review, tests, or research
-orch send work -t T002 -m "Implement the export endpoint."
-orch jobs --result T002    # read result when ready
+```text
+Ask work to review this function before I change it. Keep it short and do not edit files.
 ```
+
+```text
+Send work an async task to implement the export endpoint. While it works, inspect the API tests yourself. Read the exact worker result before telling me it is done.
+```
+
+The lead Pi turns those prompts into `orch ask`, `orch send`, and `orch jobs --result` calls. The commands are shown in the command reference for agents, debugging, and manual recovery.
 
 ## Goal Mode
 
 Goal Mode is for PRD/plan-driven work where the lead should not claim done until acceptance criteria are verified.
 
-```bash
-orch goal start "Implement export feature" --prd docs/export-prd.md --derive
-orch goal review G001
-orch goal gate G001 approve
-orch goal work G001 --until done --max-steps 20
-orch goal show G001
+You normally start it by prompting the lead Pi:
+
+```text
+Start a goal from docs/export-prd.md. Derive acceptance criteria and a plan, then stop for my approval before implementation.
 ```
 
-Goal Mode writes durable state under `.orch/goals/Gxxx/`: source, acceptance criteria, plan, coverage, goal status, evidence, blockers, and history.
+Then continue with prompts such as:
 
-| Command | What it does |
+```text
+Review the goal gate with me. If the acceptance criteria and plan are complete, approve the gate and start bounded work.
+```
+
+```text
+Work this goal until the acceptance criteria are done or blocked. Verify evidence before saying it is complete.
+```
+
+Goal Mode writes durable state under `.orch/goals/Gxxx/`: source, acceptance criteria, plan, coverage, goal status, evidence, blockers, and history. The lead Pi uses `orch goal ...` commands internally; the command reference is for agents, debugging, and manual recovery.
+
+| Agent/manual command | What it does |
 | --- | --- |
 | `orch goal review G001` | Show source, ACs, plan, coverage, and warnings before approval. |
 | `orch goal derive G001` | Ask worker to derive acceptance criteria and a plan. |
@@ -158,6 +169,18 @@ Goal Mode writes durable state under `.orch/goals/Gxxx/`: source, acceptance cri
 ## Loop Mode
 
 Loop Mode is for recurring or parallel work that needs a maker, a separate verifier, and objective checks before `done`.
+
+You normally use it by prompting the lead Pi:
+
+```text
+Set up Loop Mode for this repo. Use a maker worker and a separate review worker. Configure pytest as a required objective check. Then do one triage tick and show me the loop items before dispatching anything.
+```
+
+```text
+Run the loop for ready GitHub issues. Use the maker/reviewer split, run required checks, and stop if anything is rejected or blocked. Do not merge automatically.
+```
+
+The lead Pi turns those prompts into `orch loop ...`, `orch work ...`, and file edits under `.orch/`. The steps below explain what the lead sets up and what state to expect.
 
 ### Loop Mode setup
 
@@ -217,40 +240,32 @@ chmod 600 ~/.config/orchlink/secrets/github.token
 
 Do not put tokens in `.orch/project.yaml`.
 
-5. Run one triage tick and inspect the result.
+5. Ask the lead Pi to do one triage tick and show the result before dispatching.
 
-```bash
-orch loop tick
-orch loop ls
-orch loop show issue-123
+```text
+Do one Loop Mode triage tick, then show me the loop items. Do not mark anything ready yet.
 ```
 
-New GitHub candidates are stored in `.orch/loop/state.md` as `triaged`. They are not dispatched until you mark them ready.
+New GitHub candidates are stored in `.orch/loop/state.md` as `triaged`. They are not dispatched until you or the lead marks them ready.
 
 6. Approve a loop item for work.
 
-```bash
-orch loop ready issue-123
+```text
+Mark issue-123 ready, then run one checked loop tick. Stop and show me the result before any merge or release.
 ```
 
-7. Run the bounded loop with checks.
+The checked tick recovers stale state, triages new candidates, dispatches ready items to the maker, collects maker results, sends work to the verifier, runs objective checks, and exits.
 
-```bash
-orch loop tick --run-checks
+For a repeated foreground run, prompt the lead Pi with a cap:
+
+```text
+Run Loop Mode with checks every 60 seconds, at most 10 steps. Stop on blocked or rejected work.
 ```
 
-The tick recovers stale state, triages new candidates, dispatches ready items to the maker, collects maker results, sends work to the verifier, runs objective checks when enabled, and exits.
+For scheduled use, prompt the lead Pi to install a schedule:
 
-For a foreground repeated run:
-
-```bash
-orch loop watch --run-checks --interval 60 --max-steps 10
-```
-
-For a scheduled run that fires one bounded process every 30 minutes:
-
-```bash
-orch loop schedule --every 30m --install
+```text
+Install a Loop Mode schedule that runs one checked tick every 30 minutes. Show me the exact schedule before installing it.
 ```
 
 An item reaches `done` only through:
@@ -310,6 +325,8 @@ Use narrower commands when you already know what you need: `orch jobs --idle` fo
 Do not commit `.orch/`. Refresh skills with `orch init --refresh-skills`.
 
 ## Command reference
+
+Most users prompt the lead Pi instead of typing these during normal work. This reference is for agents, debugging, setup scripts, and manual recovery.
 
 | Command | Use |
 | --- | --- |
