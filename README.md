@@ -16,32 +16,7 @@ Orchlink is a local coordination layer for Pi coding agents. It connects one lea
 
 ## Three modes
 
-```text
-                          ┌─────────────────────┐
-                          │   What do you need?  │
-                          └─────────┬───────────┘
-                                    │
-                    ┌───────────────┼───────────────┐
-                    ▼               ▼               ▼
-             one task         formal PRD      recurring or
-             one answer       with ACs         parallel work
-                    │               │               │
-                    ▼               ▼               ▼
-             ┌──────────┐  ┌────────────┐  ┌──────────────┐
-             │Ask/Send  │  │Goal Mode   │  │Loop Mode     │
-             │prompt    │  │prompt      │  │prompt        │
-             └──────────┘  └────────────┘  └──────────────┘
-             quick gate     PRD → AC →     triage → maker →
-             or async       plan → work →  verifier → checks
-             dispatch       signoff        → done
-
-             job/result      .orch/goals/  .orch/loop/
-             only            Gxxx/         state.md
-             no verifier     evidence +     maker ≠ verifier
-                             signoff       by default
-                                            objective checks
-                                            no auto-merge
-```
+![Orchlink modes: Ask/Send, Goal Mode, and Loop Mode](docs/assets/orchlink-modes.svg)
 
 **Ask/Send** — use this for one question, one review, or one implementation task. The broker records the job and result, but Orchlink does not create a goal, lifecycle state, or verifier step.
 
