@@ -89,7 +89,10 @@ export PATH="$HOME/.local/bin:$PATH"
 
 ## Start a project
 
-As the human user, you usually run only setup and the lead Pi session:
+Normal use has two phases:
+
+1. Start the project and the lead Pi session from a shell.
+2. Talk to the lead Pi in natural language.
 
 ```bash
 cd /path/to/your/project
@@ -97,37 +100,32 @@ orch init
 orch lead
 ```
 
-Then talk to the lead Pi in that session. For example:
+After `orch lead` opens, prompt the lead Pi. Examples:
 
 ```text
 Start a background worker for this project, then ask it to review the auth module without editing files.
 ```
 
-The lead Pi can run `orch work --background`, `orch ask`, `orch send`, `orch jobs`, `orch goal ...`, and `orch loop ...` as tools. You can still run those commands yourself for debugging or recovery, but normal use is prompt-first.
-
-If you prefer visible worker terminals, open another terminal and run:
-
-```bash
-orch work
-```
-
-For background workers without blocking the current terminal, the lead or a human can run:
-
-```bash
-orch work --background
-```
-
-This starts the headless Pi RPC worker named `work`, writes `.orch/run/orch-work.pid` and `.orch/run/orch-work.log`, waits for readiness, and returns. For a fresh task-scoped background worker that exits after one completed task reply, use:
-
-```bash
-orch work --background --new --replace --oneshot
-```
-
-Named workers need no YAML setup. Ask the lead Pi for them by name:
-
 ```text
 Start a background worker named review with model openai/codex-max and thinking xhigh. Use it for review-only tasks.
 ```
+
+The lead Pi can call `orch work --background`, `orch ask`, `orch send`, `orch jobs`, `orch goal ...`, and `orch loop ...` as tools. You normally do not type those commands during agent work.
+
+Manual equivalents are useful for visible worker terminals, debugging, scripting, and recovery:
+
+```bash
+# visible worker in another terminal
+orch work
+
+# background worker without blocking the current terminal
+orch work --background
+
+# fresh task-scoped background worker that exits after one completed reply
+orch work --background --new --replace --oneshot
+```
+
+`orch work --background` starts the headless Pi RPC worker named `work`, writes `.orch/run/orch-work.pid` and `.orch/run/orch-work.log`, waits for readiness, and returns. Named workers need no YAML setup; ask the lead Pi for them by name.
 
 ## Ask and Send
 
@@ -188,20 +186,32 @@ Set up Loop Mode for this repo. Use a maker worker and a separate review worker.
 Run the loop for ready GitHub issues. Use the maker/reviewer split, run required checks, and stop if anything is rejected or blocked. Do not merge automatically.
 ```
 
-The lead Pi turns those prompts into `orch loop ...`, `orch work ...`, and file edits under `.orch/`. The steps below explain what the lead sets up and what state to expect; you can ask the lead to do them instead of typing the commands yourself.
+The lead Pi turns those prompts into `orch loop ...`, `orch work ...`, and file edits under `.orch/`. The setup below is written as human prompts first, with manual equivalents shown only to make the state and files clear.
 
 ### Loop Mode setup
 
-1. Start a maker worker and a verifier worker. Loop Mode defaults to `maker` for implementation and `review` for verification. The lead can start them as background workers with:
+1. Ask the lead Pi to start the loop workers.
+
+```text
+Start the default Loop Mode workers in the background: maker for implementation and review for verification.
+```
+
+Manual equivalent:
 
 ```bash
 orch work --background --name maker
 orch work --background --name review
 ```
 
-Visible workers are also valid if you want separate terminals; run the same commands without `--background`.
+Visible workers are also valid if you want separate terminals; use the same worker names without `--background`.
 
-2. Configure objective checks in `.orch/loop/checks.yaml`.
+2. Ask the lead Pi to configure objective checks.
+
+```text
+Configure Loop Mode checks. Make pytest required and ruff optional.
+```
+
+The lead writes `.orch/loop/checks.yaml`:
 
 ```yaml
 checks:
@@ -215,7 +225,13 @@ checks:
 
 A failed required check forces `REJECTED` regardless of the verifier text.
 
-3. Optional: configure a GitHub connector in `.orch/project.yaml`.
+3. Optional: ask the lead Pi to configure the GitHub connector.
+
+```text
+Configure Loop Mode to read GitHub candidates from owner/repo, limit 10, default branch main. Do not store any token in .orch.
+```
+
+The lead edits `.orch/project.yaml`:
 
 ```yaml
 loop:
@@ -232,7 +248,7 @@ GitHub connector behavior:
 - open issues become candidates only when labeled `bug`, `enhancement`, `good first issue`, or `help wanted`
 - failing commit status on the default branch becomes a CI-failure candidate
 
-4. Put the GitHub token outside `.orch`.
+4. Provide the GitHub token outside `.orch`. This is a human/admin step, not a prompt to store secrets in the repo.
 
 ```bash
 export ORCHLINK_GITHUB_TOKEN="ghp_..."
@@ -248,7 +264,7 @@ chmod 600 ~/.config/orchlink/secrets/github.token
 
 Do not put tokens in `.orch/project.yaml`.
 
-5. Ask the lead Pi to do one triage tick and show the result before dispatching.
+5. Ask the lead Pi to triage once and show the result before dispatching.
 
 ```text
 Do one Loop Mode triage tick, then show me the loop items. Do not mark anything ready yet.
@@ -286,7 +302,9 @@ No auto-merge. No daemon. Each scheduled fire is a fresh bounded `orch loop tick
 
 Loop state lives in `.orch/loop/state.md` as human-readable markdown with a fenced YAML block.
 
-## Workers
+## Worker reference
+
+Most users ask the lead Pi to start or target workers. These details are for visible worker terminals, debugging, scripting, and agent/manual recovery.
 
 - Each worker name handles one task at a time. Different names run independent work.
 - `orch work --background` starts a headless RPC worker. `--oneshot` exits after one reply.
@@ -296,7 +314,15 @@ Loop state lives in `.orch/loop/state.md` as human-readable markdown with a fenc
 
 ## Recovery
 
-Use `orch resume` first when returning after an interruption, broker restart, cancelled task, or compacted conversation. It prints the active task or goal, lead/work sessions, the last broker checkpoint, drifted leases, and one recommended next command in a single plain-text report.
+For normal use, prompt the lead Pi to recover context:
+
+```text
+Use `orch resume` first. Tell me the active task or goal, lead/work sessions, last broker checkpoint, drifted leases, and the one recommended next command.
+```
+
+`orch resume` is the first manual command to use when returning after an interruption, broker restart, cancelled task, or compacted conversation. It prints the active task or goal, lead/work sessions, the last broker checkpoint, drifted leases, and one recommended next command in a single plain-text report.
+
+Manual recovery commands:
 
 ```bash
 orch resume          # recovery report after interruption
