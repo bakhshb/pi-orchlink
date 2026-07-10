@@ -41,8 +41,8 @@ def config(**kwargs) -> ConnectorConfig:
     return ConnectorConfig(name="linear", repo=kwargs.pop("repo", None), extra=extra, **kwargs)
 
 
-def issue(identifier="ENG-123", title="Fix bug", url="https://linear.test/ENG-123"):
-    return {"identifier": identifier, "title": title, "url": url}
+def issue(identifier="ENG-123", title="Fix bug", url="https://linear.test/ENG-123", description="Bug details"):
+    return {"identifier": identifier, "title": title, "url": url, "description": description, "updatedAt": "2026-01-01T00:00:00Z"}
 
 
 def test_linear_discover_issue_candidates():
@@ -56,6 +56,9 @@ def test_linear_discover_issue_candidates():
     assert candidates[0].source_ref == "https://linear.test/ENG-123"
     assert candidates[0].title == "Fix bug"
     assert candidates[0].objective == "Address Linear issue ENG-123: Fix bug"
+    assert candidates[0].source_url == "https://linear.test/ENG-123"
+    assert candidates[0].source_context == "Bug details"
+    assert candidates[0].source_metadata == {"kind": "issue", "identifier": "ENG-123", "updated_at": "2026-01-01T00:00:00Z"}
 
 
 def test_linear_empty_issues_emits_recent_activity_candidate():
@@ -165,6 +168,10 @@ def test_linear_discover_does_not_serialize_token_to_loop_state(tmp_path):
                 title=candidate.title,
                 source_type=candidate.source_type,
                 source_ref=candidate.source_ref,
+                objective=candidate.objective,
+                source_url=candidate.source_url,
+                source_context=candidate.source_context,
+                source_metadata=candidate.source_metadata,
             )
             for candidate in candidates
         ]

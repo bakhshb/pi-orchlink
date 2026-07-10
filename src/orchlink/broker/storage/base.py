@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Any, Union
+from typing import Any, Callable, Union
 
 from orchlink.core.envelope import AgentRegistration, MessageEnvelope
 from orchlink.core.models import Agent, SessionAcquire, SessionHeartbeat, StoredMessage, WorkerActivityInput
@@ -53,7 +53,17 @@ class MessageStore(ABC):
         wait_seconds: int,
         lease_id: str | None = None,
         project_id: str | None = None,
+        on_delivered: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any] | None:
+        """Return the next deliverable message for ``agent_id``.
+
+        The store must perform any blocking wait without holding its mutation
+        lock. Once a message is actually delivered, the store must invoke
+        ``on_delivered`` synchronously while still holding the mutation lock
+        (and after any durable append has completed), so a caller can record
+        the delivery atomically before releasing the lock. Callback failures
+        must not roll back the delivery.
+        """
         raise NotImplementedError
 
     @abstractmethod

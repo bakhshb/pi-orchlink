@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from orchlink.broker.main import BROKER_CAPABILITIES, VERSION as BROKER_VERSION
+from orchlink.core.broker_metadata import BROKER_CAPABILITIES, BROKER_VERSION
 from orchlink.project.config import (
     broker_api_key,
     broker_auto_stop,

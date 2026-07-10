@@ -5,6 +5,7 @@ import asyncio
 from fastapi import HTTPException
 
 from orchlink.broker.route_adapter import BrokerRouteAdapter
+from orchlink.broker.service import BrokerService
 from orchlink.broker.storage import MemoryMessageStore, MessageStoreBusy
 from orchlink.broker.storage.base import LeaseConflictError
 
@@ -27,6 +28,12 @@ def _adapter() -> BrokerRouteAdapter:
     adapter = BrokerRouteAdapter(MemoryMessageStore())
     adapter.service = _RaisingService()  # type: ignore[assignment]
     return adapter
+
+
+def test_route_adapter_wraps_raw_message_store_for_compatibility() -> None:
+    adapter = BrokerRouteAdapter(MemoryMessageStore())
+
+    assert isinstance(adapter.service, BrokerService)
 
 
 def test_route_adapter_maps_busy_store_to_409() -> None:

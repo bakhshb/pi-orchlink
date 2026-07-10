@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Sequence
 
 from orchlink.loop.domain.errors import VerifierMismatch
-from orchlink.loop.domain.item import LoopAttempt, LoopItem, MakerResult, WorkerAssignment
-from orchlink.loop.domain.verdict import ReasonCode, Verdict, VerifierVerdict
+from orchlink.loop.domain.item import LoopAttempt, LoopItem
+from orchlink.loop.domain.verdict import ReasonCode, Verdict, VerifierVerdict, parse_verdict_text
 from orchlink.loop.domain.worktree import Worktree
+from orchlink.loop.ports import WorktreeEvidence, WorktreeEvidencePort, WorkerGateway
 from orchlink.loop.services.objective_check_service import CheckReport, ObjectiveCheckService
 
 
@@ -36,21 +37,16 @@ class VerifierHandle:
     worker_name: str
 
 
-class WorkerGateway(Protocol):
-    async def dispatch_maker(self, maker_assignment: WorkerAssignment, prompt: str) -> VerifierHandle:
-        ...
-
-    async def dispatch_verifier(self, verifier_assignment: WorkerAssignment, prompt: str) -> VerifierHandle:
-        ...
-
-    async def await_result(self, handle: VerifierHandle, timeout_seconds: int) -> MakerResult:
-        ...
-
-
 class VerifierService:
-    def __init__(self, config: dict[str, Any] | None, gateway: WorkerGateway | None = None) -> None:
+    def __init__(
+        self,
+        config: dict[str, Any] | None,
+        gateway: WorkerGateway | None = None,
+        evidence_collector: WorktreeEvidencePort | None = None,
+    ) -> None:
         self.config = dict(config or {})
         self.gateway = gateway
+        self.evidence_collector = evidence_collector
 
     def build_prompt(
         self,
@@ -58,8 +54,12 @@ class VerifierService:
         attempt: LoopAttempt,
         worktree: Worktree | None,
         check_report: CheckReport | None = None,
+        *,
+        changed_files: Sequence[str] | None = None,
+        diff_evidence: str | None = None,
+        evidence_unavailable_reason: str | None = None,
     ) -> str:
-        objective = item.title or item.source or item.item_id
+        objective = item.objective or item.title or item.source or item.item_id
         verifier_worker = attempt.verifier.worker_name if attempt.verifier else "<unassigned>"
         same_worker = attempt.verifier is not None and attempt.verifier.same_worker(attempt.maker)
         separation = (
@@ -68,14 +68,27 @@ class VerifierService:
             else "ALLOW_SAME_WORKER: false (verifier must differ from maker)"
         )
         worktree_line = "WORKTREE: none"
-        files_line = "FILES_CHANGED: unavailable (no worktree provided; no git I/O in verifier service)"
+        unavailable_reason = evidence_unavailable_reason or "no worktree provided"
+        files_line = f"FILES_CHANGED: unavailable ({unavailable_reason})"
         if worktree is not None:
             worktree_line = f"WORKTREE: {worktree.path}"
-            files_line = "FILES_CHANGED: unavailable (diff collection is handled by an adapter; no git I/O here)"
-        check_lines = []
-        if check_report is not None and check_report.results:
+            files_line = f"FILES_CHANGED: unavailable ({evidence_unavailable_reason or 'diff collection was not provided'})"
+        if changed_files is not None:
+            files_line = "FILES_CHANGED:\n" + ("\n".join(f"- {path}" for path in changed_files) if changed_files else "none")
+        diff_line = f"DIFF_EVIDENCE: unavailable ({unavailable_reason})"
+        if worktree is not None:
+            diff_line = f"DIFF_EVIDENCE: unavailable ({evidence_unavailable_reason or 'diff collection was not provided'})"
+        if diff_evidence is not None:
+            evidence = diff_evidence.strip() or "none"
+            diff_line = "DIFF_EVIDENCE:\n" + _truncate_prompt_evidence(evidence) + "\nEND_DIFF_EVIDENCE"
+        maker_result = (
+            attempt.maker_result.result.strip()
+            if attempt.maker_result is not None and attempt.maker_result.result.strip()
+            else "unavailable (no maker result attached to attempt)"
+        )
+        check_lines = ["OBJECTIVE_CHECK_REPORT: unavailable (objective checks were not run)"]
+        if check_report is not None:
             check_lines = [
-                "",
                 check_report.prompt_section(),
                 "If a required objective check failed, your verdict MUST be REJECTED with reason checks_failed.",
             ]
@@ -88,13 +101,19 @@ class VerifierService:
                 f"MAKER_WORKER: {attempt.maker.worker_name}",
                 f"VERIFIER_WORKER: {verifier_worker}",
                 f"OBJECTIVE: {objective}",
+                f"SOURCE_REF: {item.source or 'none'}",
+                f"SOURCE_URL: {item.source_url or 'none'}",
+                "MAKER_RESULT:",
+                maker_result,
+                "END_MAKER_RESULT",
                 worktree_line,
                 files_line,
+                diff_line,
+                *check_lines,
                 "VERIFY_POLICY:",
                 f"- require_verifier: {str(policy.require_verifier).lower()}",
                 f"- require_separate_verifier_worker: {str(policy.require_separate_verifier_worker).lower()}",
                 f"- {separation}",
-                *check_lines,
                 "",
                 "Review the maker result and objective checks. LLM judgment is evidence, not proof.",
                 "End with exactly this structured verdict block. Use exact lowercase reason codes:",
@@ -107,44 +126,10 @@ class VerifierService:
         )
 
     def parse_verdict(self, text: str) -> VerifierVerdict:
-        fields = self._structured_fields(text)
-        raw_verdict = fields.get("VERDICT")
-        if not raw_verdict:
-            raise VerdictParseError("missing VERDICT line")
         try:
-            verdict = Verdict(raw_verdict.strip().lower())
+            return parse_verdict_text(text)
         except ValueError as exc:
-            raise VerdictParseError(f"unknown verdict: {raw_verdict}") from exc
-
-        raw_reason = fields.get("REASON", "").strip()
-        if verdict is Verdict.REJECTED and not raw_reason:
-            raise VerdictParseError("REASON is required for REJECTED verdicts")
-        if not raw_reason:
-            raw_reason = ReasonCode.UNKNOWN.value
-        normalized_reason = raw_reason.lower()
-        if normalized_reason == "checks_failed":
-            normalized_reason = ReasonCode.OBJECTIVE_CHECK_FAILED.value
-        try:
-            reason = ReasonCode(normalized_reason)
-        except ValueError as exc:
-            raise VerdictParseError(f"unknown reason code: {raw_reason}") from exc
-
-        detail = fields.get("DETAIL", "").strip()
-        fixes = tuple(
-            part.strip()
-            for part in fields.get("FIXES", "").split(",")
-            if part.strip() and part.strip().lower() != "none"
-        )
-        verifier_worker = fields.get("VERIFIER_WORKER", "verifier").strip() or "verifier"
-        task_id = fields.get("TASK_ID", "").strip() or None
-        return VerifierVerdict(
-            verdict=verdict,
-            reason_code=reason,
-            detail=detail,
-            required_fixes=fixes,
-            verifier_worker=verifier_worker,
-            task_id=task_id,
-        )
+            raise VerdictParseError(str(exc)) from exc
 
     async def dispatch_and_collect(
         self,
@@ -160,8 +145,23 @@ class VerifierService:
             raise WorkerGatewayUnavailable("VerifierService requires a WorkerGateway to dispatch verifier work")
         if attempt.verifier is None:
             raise VerifierDispatchError("attempt has no verifier assignment")
+        if attempt.maker_result is None or not attempt.maker_result.result.strip():
+            raise VerifierDispatchError("attempt has no maker result to verify")
         check_report = check_service.run_checks(Path(worktree.path) if worktree is not None else None) if run_checks and check_service is not None else None
-        prompt = self.build_prompt(item, attempt, worktree, check_report=check_report)
+        evidence = (
+            WorktreeEvidence(unavailable_reason="no evidence collector configured")
+            if self.evidence_collector is None
+            else self.evidence_collector.collect(worktree)
+        )
+        prompt = self.build_prompt(
+            item,
+            attempt,
+            worktree,
+            check_report=check_report,
+            changed_files=evidence.changed_files,
+            diff_evidence=evidence.diff_evidence,
+            evidence_unavailable_reason=evidence.unavailable_reason,
+        )
         try:
             handle = await self.gateway.dispatch_verifier(attempt.verifier, prompt)
             try:
@@ -207,28 +207,8 @@ class VerifierService:
         if maker_worker == verifier_worker and not allow_same_worker:
             raise VerifierMismatch("verifier worker must differ from maker worker")
 
-    def _structured_fields(self, text: str) -> dict[str, str]:
-        lines = text.splitlines()
-        verdict_index: int | None = None
-        for index in range(len(lines) - 1, -1, -1):
-            key, value = self._split_structured_line(lines[index])
-            if key == "VERDICT":
-                verdict_index = index
-                break
-        if verdict_index is None:
-            return {}
 
-        fields: dict[str, str] = {}
-        key, value = self._split_structured_line(lines[verdict_index])
-        fields[key] = value
-        for line in lines[verdict_index + 1 :]:
-            key, value = self._split_structured_line(line)
-            if key in {"REASON", "DETAIL", "FIXES", "VERIFIER_WORKER", "TASK_ID"}:
-                fields[key] = value
-        return fields
-
-    def _split_structured_line(self, line: str) -> tuple[str, str]:
-        if ":" not in line:
-            return "", ""
-        key, value = line.split(":", 1)
-        return key.strip().upper(), value.strip()
+def _truncate_prompt_evidence(text: str, limit: int = 4000) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "\n...<truncated>"

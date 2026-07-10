@@ -11,9 +11,10 @@ implements the :class:`orchlink.broker.storage.base.MessageStore` contract.
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from orchlink.broker.state import (
     BUSY_MESSAGE_STATUSES,
@@ -401,12 +402,30 @@ class MemoryMessageStore(MessageStore):
         await inbox.put(stored_message)
         return result
 
+    def _invoke_on_delivered(
+        self,
+        delivered: dict[str, Any],
+        on_delivered: Callable[[dict[str, Any]], None] | None,
+    ) -> None:
+        """Call the optional delivery callback while still under ``self._lock``.
+
+        Callback failures are logged and swallowed: they are a checkpoint
+        concern, not a reason to roll back a successful store delivery.
+        """
+        if on_delivered is None:
+            return
+        try:
+            on_delivered(delivered)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("on_delivered callback failed: %s", exc)
+
     async def get_next_message(
         self,
         agent_id: str,
         wait_seconds: int,
         lease_id: str | None = None,
         project_id: str | None = None,
+        on_delivered: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any] | None:
         async with self._lock:
             self._expire_timed_out_messages_locked()
@@ -430,6 +449,7 @@ class MemoryMessageStore(MessageStore):
                     if wait_seconds <= 0 or loop.time() >= deadline:
                         return None
                     continue
+                self._invoke_on_delivered(delivered, on_delivered)
             return delivered
 
     async def save_reply(

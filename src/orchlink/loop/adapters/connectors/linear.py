@@ -97,10 +97,13 @@ class LinearConnector:
             priority=Priority.NORMAL,
             suggested_skill=None,
             suggested_worktree=None,
+            source_url=self._scope_ref(scope),
+            source_context="",
+            source_metadata={"kind": "recent_activity", **scope},
         )
 
     def _query_issues(self, headers: dict[str, str], scope: dict[str, Any], *, limit: int, recent: bool) -> Any:
-        query = "query OrchlinkLinearIssues($first: Int!, $filter: IssueFilter) { issues(first: $first, filter: $filter) { nodes { identifier title url updatedAt } } }"
+        query = "query OrchlinkLinearIssues($first: Int!, $filter: IssueFilter) { issues(first: $first, filter: $filter) { nodes { identifier title url description updatedAt } } }"
         variables: dict[str, Any] = {"first": limit, "filter": self._linear_filter(scope)}
         if recent:
             variables["orderBy"] = "updatedAt"
@@ -167,6 +170,9 @@ class LinearConnector:
             priority=Priority.NORMAL,
             suggested_skill=None,
             suggested_worktree=None,
+            source_url=url,
+            source_context=str(issue.get("description") or issue.get("body") or ""),
+            source_metadata={"kind": "issue", "identifier": identifier, "updated_at": issue.get("updatedAt")},
         )
 
     def _scope_filter(self) -> dict[str, str] | None:

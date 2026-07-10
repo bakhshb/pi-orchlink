@@ -70,6 +70,8 @@ If the worker returns `BLOCKER` or asks a direct question, answer it before movi
 
 When a `[Orchlink] Result from ...` message appears, treat it as a steering interrupt: stop unrelated work, reconcile the result, then continue.
 
+With multiple independent async tasks, handle result notifications first-come, first-served: retrieve each with `orch jobs --result <task_id>` and reconcile it while other workers continue. Use `orch jobs --wait` only when that exact task is the sole blocker.
+
 ## Non-negotiable safety rules
 
 - Keep lead-owned work and worker-owned work separate.

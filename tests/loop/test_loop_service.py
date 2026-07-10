@@ -17,7 +17,7 @@ from orchlink.loop.domain import (
     Worktree,
 )
 from orchlink.loop.domain.verdict import utc_now
-from orchlink.loop.services import ItemCandidate, LoopService
+from orchlink.loop.services import BrokerTaskStatus, ItemCandidate, LoopService
 from orchlink.loop.services.loop_service import DEFAULT_RESERVATION_GRACE
 
 
@@ -27,7 +27,12 @@ class FakeBroker:
         self.sessions = sessions or {}
 
     def get_task_status(self, task_id):
-        return self.tasks.get(task_id)
+        raw = self.tasks.get(task_id)
+        if raw is None or isinstance(raw, BrokerTaskStatus):
+            return raw
+        if isinstance(raw, VerifierVerdict):
+            return BrokerTaskStatus(status="done", result=raw)
+        return BrokerTaskStatus(status=str(raw).lower())
 
     def get_session_active(self, lease_id):
         return self.sessions.get(lease_id)
@@ -78,13 +83,18 @@ def add_awaiting(service, item_id="I-1"):
     return service.collect_maker_result(item_id, attempt_no=running.attempts[-1].number, result=MakerResult("done"))
 
 
-def add_verifying(service, item_id="I-1", maker="maker", verifier="review"):
+def add_verifying(service, item_id="I-1", maker="maker", verifier="review", allow_same_worker=False):
     add_ready(service, item_id)
     reservation = service.next_item(item_id, maker_worker=maker, worktree=None)
     service.mark_dispatched(item_id, attempt_no=reservation.attempt.number, task_id="T-maker")
     service.mark_running(item_id, attempt_no=reservation.attempt.number)
     service.collect_maker_result(item_id, attempt_no=reservation.attempt.number, result=MakerResult("done"))
-    return service.reserve_verification(item_id, attempt_no=reservation.attempt.number, verifier_worker=verifier)
+    return service.reserve_verification(
+        item_id,
+        attempt_no=reservation.attempt.number,
+        verifier_worker=verifier,
+        allow_same_worker=allow_same_worker,
+    )
 
 
 def add_verifying_with_goal(service, item_id="I-1", goal_id="G001"):
@@ -168,7 +178,7 @@ def test_next_item_reserves_attempt_and_second_call_raises(service):
 
 def test_mark_dispatched_and_rollback(service):
     add_ready(service)
-    reservation = service.next_item("I-1", maker_worker="maker", worktree=None)
+    service.next_item("I-1", maker_worker="maker", worktree=None)
     dispatched = service.mark_dispatched("I-1", attempt_no=1, task_id="T-1")
     assert dispatched.state is LoopItemState.DISPATCHING
     assert dispatched.attempts[-1].maker.task_id == "T-1"
@@ -219,7 +229,7 @@ def test_apply_verdict_accepted_reaches_done_only_by_method(service):
 
 
 def test_apply_verdict_rejected_then_exhausted_blocks(service):
-    verifying = add_verifying(service)
+    add_verifying(service)
     first = service.apply_verdict("I-1", attempt_no=1, verdict=verdict(Verdict.REJECTED, reason=ReasonCode.REVIEW_FAILED))
     assert first.state is LoopItemState.REJECTED
     service.ready("I-1")
@@ -260,6 +270,15 @@ def test_attach_evidence_to_goal_returns_false_without_goal_id_or_service(servic
     assert service.attach_evidence_to_goal("I-1", goal_service=goal_service) is False
     assert service.attach_evidence_to_goal("I-1", goal_service=None) is False
     assert goal_service.calls == []
+
+
+def test_attach_evidence_to_goal_rejects_object_without_attach_evidence_method(service):
+    verifying = add_verifying_with_goal(service)
+    service.apply_verdict("I-1", attempt_no=verifying.attempt.number, verdict=verdict())
+
+    with pytest.raises(AttributeError):
+        service.attach_evidence_to_goal("I-1", goal_service=object())
+    assert service.get("I-1").attached_evidence_ids == ()
 
 
 def test_attach_evidence_to_goal_returns_false_for_non_accepted_verdicts(service):
@@ -308,14 +327,51 @@ def test_attach_evidence_to_goal_missing_item_raises(service):
         service.attach_evidence_to_goal("missing", goal_service=FakeGoalService())
 
 
-def test_same_worker_verifier_requires_override_and_marks_lower_confidence(service):
-    verifying = add_verifying(service, maker="same", verifier="same")
+def test_same_worker_verifier_requires_explicit_reservation_override_and_marks_lower_confidence(service):
+    awaiting = add_awaiting(service, "I-1")
+
     with pytest.raises(VerifierMismatch):
-        service.apply_verdict("I-1", attempt_no=verifying.attempt.number, verdict=verdict(worker="same"))
-    result = service.apply_verdict("I-1", attempt_no=verifying.attempt.number, verdict=verdict(worker="same"), allow_same_worker=True)
+        service.reserve_verification("I-1", attempt_no=awaiting.attempts[-1].number, verifier_worker="maker")
+
+    verifying = service.reserve_verification(
+        "I-1",
+        attempt_no=awaiting.attempts[-1].number,
+        verifier_worker="maker",
+        allow_same_worker=True,
+    )
+    assert verifying.attempt.same_worker_verifier_override is True
+
+    result = service.apply_verdict("I-1", attempt_no=verifying.attempt.number, verdict=verdict(worker="maker"))
     assert result.state is LoopItemState.DONE
     assert result.lower_confidence is True
     assert result.note == "same_worker_verifier_override"
+
+
+def test_recover_same_worker_override_completes_with_lower_confidence_note(repo):
+    service = LoopService({}, repo, broker=FakeBroker(tasks={"verify:I-1:1": verdict(worker="maker")}))
+    verifying = add_verifying(service, maker="maker", verifier="maker", allow_same_worker=True)
+
+    report = service.recover()
+
+    assert report.items_changed == 1
+    assert service.get("I-1").state is LoopItemState.DONE
+    assert "I-1: same_worker_verifier_override" in report.notes
+    assert verifying.attempt.same_worker_verifier_override is True
+
+
+def test_recover_legacy_same_worker_verifier_without_override_fails_closed(repo):
+    service = LoopService({}, repo, broker=FakeBroker(tasks={"verify:I-1:1": verdict(worker="maker")}))
+    verifying = add_verifying(service, maker="maker", verifier="maker", allow_same_worker=True)
+    legacy_attempt = replace(verifying.attempt, same_worker_verifier_override=False)
+    with repo.transaction("test") as state:
+        state.replace_item(replace(verifying.item, attempts=(legacy_attempt,)))
+
+    report = service.recover()
+
+    assert report.items_changed == 1
+    assert service.get("I-1").state is LoopItemState.BLOCKED
+    assert service.get("I-1").blocker == "verifier_same_worker_override_missing"
+    assert "I-1: verifier_same_worker_override_missing" in report.notes
 
 
 def test_cancel_from_non_terminal(service):
@@ -369,6 +425,19 @@ def test_recover_explicit_none_uses_broker_unavailable_reason(repo):
     assert service.get("I-1").blocker == "broker_unavailable"
 
 
+def test_recover_reserved_dispatch_within_grace_waits_without_change(repo):
+    service = LoopService({}, repo, broker=FakeBroker(tasks={}))
+    add_ready(service)
+    service.next_item("I-1", maker_worker="maker", worktree=None)
+
+    report = service.recover()
+    item = service.get("I-1")
+
+    assert report.items_changed == 0
+    assert item.state is LoopItemState.DISPATCHING
+    assert item.attempts[-1].maker.task_id.startswith("reserved:")
+
+
 def test_recover_expired_dispatch_without_task_returns_ready(repo):
     service = LoopService({}, repo, broker=FakeBroker(tasks={}))
     add_ready(service)
@@ -385,6 +454,21 @@ def test_recover_expired_dispatch_without_task_returns_ready(repo):
     assert service.get("I-1").attempts == ()
 
 
+def test_recover_dispatching_real_broker_task_missing_rolls_back_to_ready(repo):
+    service = LoopService({}, repo, broker=FakeBroker(tasks={}))
+    add_ready(service)
+    service.next_item("I-1", maker_worker="maker", worktree=None)
+    service.mark_dispatched("I-1", attempt_no=1, task_id="T-maker")
+
+    report = service.recover()
+    item = service.get("I-1")
+
+    assert report.items_changed == 1
+    assert report.items_resumed == 1
+    assert item.state is LoopItemState.READY
+    assert item.attempts == ()
+
+
 def test_recover_dispatching_real_broker_task_found_moves_to_running(repo):
     service = LoopService({}, repo, broker=FakeBroker(tasks={"T-maker": "running"}))
     add_ready(service)
@@ -395,6 +479,28 @@ def test_recover_dispatching_real_broker_task_found_moves_to_running(repo):
 
     assert report.items_changed == 1
     assert report.items_resumed == 1
+    assert service.get("I-1").state is LoopItemState.RUNNING
+
+
+def test_recover_running_task_status_waits_without_change(repo):
+    service = LoopService({}, repo, broker=FakeBroker(tasks={"T-maker": "running"}))
+    add_running(service)
+
+    report = service.recover()
+    item = service.get("I-1")
+
+    assert report.items_changed == 0
+    assert item.state is LoopItemState.RUNNING
+    assert item.attempts[-1].maker.task_id == "T-maker"
+
+
+def test_recover_running_missing_task_without_stale_worker_waits_without_change(repo):
+    service = LoopService({}, repo, broker=FakeBroker(tasks={}))
+    add_running(service)
+
+    report = service.recover()
+
+    assert report.items_changed == 0
     assert service.get("I-1").state is LoopItemState.RUNNING
 
 
@@ -440,6 +546,55 @@ def test_recover_running_timeout_status_blocks(repo):
     assert service.get("I-1").blocker == "task_timeout"
 
 
+def test_recover_running_done_snapshot_collects_real_maker_result(repo):
+    service = LoopService({}, repo, broker=FakeBroker(tasks={"T-maker": BrokerTaskStatus("done", MakerResult("actual result"))}))
+    add_running(service)
+
+    report = service.recover()
+    item = service.get("I-1")
+
+    assert report.items_changed == 1
+    assert item.state is LoopItemState.AWAITING_VERDICT
+    assert item.attempts[-1].maker_result.result == "actual result"
+
+
+def test_recover_running_done_with_empty_result_blocks_without_placeholder(repo):
+    service = LoopService({}, repo, broker=FakeBroker(tasks={"T-maker": BrokerTaskStatus("done", None)}))
+    add_running(service)
+
+    report = service.recover()
+    item = service.get("I-1")
+
+    assert report.items_changed == 1
+    assert item.state is LoopItemState.BLOCKED
+    assert item.blocker == "task_empty_result"
+    assert item.attempts[-1].maker_result is None
+
+
+def test_recover_running_failed_status_blocks_without_maker_result(repo):
+    service = LoopService({}, repo, broker=FakeBroker(tasks={"T-maker": "failed"}))
+    add_running(service)
+
+    report = service.recover()
+    item = service.get("I-1")
+
+    assert report.items_changed == 1
+    assert item.state is LoopItemState.BLOCKED
+    assert item.blocker == "task_failed"
+    assert item.attempts[-1].maker_result is None
+
+
+def verdict_block(verdict="ACCEPTED", reason="accepted", detail="ok", fixes=None, worker="review"):
+    lines = [
+        f"VERDICT: {verdict}",
+        f"REASON: {reason}",
+        f"DETAIL: {detail}",
+        f"FIXES: {', '.join(fixes) if fixes else 'none'}",
+        f"VERIFIER_WORKER: {worker}",
+    ]
+    return "\n".join(lines)
+
+
 @pytest.mark.parametrize(
     "verdict_value,expected_state,expected_blocker",
     [
@@ -457,6 +612,94 @@ def test_recover_verifying_with_verifier_result_applies_verdict(repo, verdict_va
     assert report.items_changed == 1
     assert service.get("I-1").state is expected_state
     assert service.get("I-1").blocker == expected_blocker
+
+
+def test_recover_verifying_parses_raw_verdict_text_accepted(repo):
+    block = verdict_block("ACCEPTED")
+    service = LoopService({}, repo, broker=FakeBroker(tasks={"verify:I-1:1": BrokerTaskStatus("done", block)}))
+    add_verifying(service)
+
+    report = service.recover()
+    item = service.get("I-1")
+
+    assert report.items_changed == 1
+    assert item.state is LoopItemState.DONE
+    assert item.attempts[-1].verdict.verdict is Verdict.ACCEPTED
+    assert item.attempts[-1].verdict.verifier_worker == "review"
+
+
+def test_recover_verifying_raw_rejected_at_max_blocks_retry_exhausted(repo):
+    service = LoopService(
+        {},
+        repo,
+        broker=FakeBroker(tasks={"verify:I-1:2": BrokerTaskStatus("done", verdict_block("REJECTED", reason="review_failed", detail="nope"))}),
+    )
+    # Burn attempt 1 with a rejection (default max_attempts=2), then re-ready into attempt 2.
+    verifying = add_verifying(service)
+    service.apply_verdict("I-1", attempt_no=verifying.attempt.number, verdict=verdict(Verdict.REJECTED, reason=ReasonCode.REVIEW_FAILED))
+    service.ready("I-1")
+    reservation = service.next_item("I-1", maker_worker="maker", worktree=None)
+    service.mark_dispatched("I-1", attempt_no=reservation.attempt.number, task_id="T-maker-2")
+    service.mark_running("I-1", attempt_no=reservation.attempt.number)
+    service.collect_maker_result("I-1", attempt_no=reservation.attempt.number, result=MakerResult("again"))
+    service.reserve_verification("I-1", attempt_no=reservation.attempt.number, verifier_worker="review")
+
+    report = service.recover()
+    item = service.get("I-1")
+
+    assert report.items_changed == 1
+    assert item.state is LoopItemState.BLOCKED
+    assert item.blocker == "retry_exhausted"
+
+
+def test_recover_verifying_malformed_verdict_text_fails_closed(repo):
+    service = LoopService({}, repo, broker=FakeBroker(tasks={"verify:I-1:1": BrokerTaskStatus("done", "VERDICT: BOGUS\nREASON: unknown")}))
+    add_verifying(service)
+
+    report = service.recover()
+    item = service.get("I-1")
+
+    assert report.items_changed == 1
+    assert item.state is LoopItemState.BLOCKED
+    assert item.blocker == "verifier_malformed_result"
+    assert item.attempts[-1].verdict is None
+
+
+def test_recover_verifying_done_with_absent_verdict_payload_blocks_empty(repo):
+    service = LoopService({}, repo, broker=FakeBroker(tasks={"verify:I-1:1": BrokerTaskStatus("done", None)}))
+    add_verifying(service)
+
+    report = service.recover()
+    item = service.get("I-1")
+
+    assert report.items_changed == 1
+    assert item.state is LoopItemState.BLOCKED
+    assert item.blocker == "verifier_empty_result"
+    assert item.attempts[-1].verdict is None
+
+
+def test_recover_verifying_raw_same_worker_records_override_note(repo):
+    service = LoopService({}, repo, broker=FakeBroker(tasks={"verify:I-1:1": BrokerTaskStatus("done", verdict_block("ACCEPTED", worker="maker"))}))
+    add_verifying(service, maker="maker", verifier="maker", allow_same_worker=True)
+
+    report = service.recover()
+    item = service.get("I-1")
+
+    assert report.items_changed == 1
+    assert item.state is LoopItemState.DONE
+    assert "I-1: same_worker_verifier_override" in report.notes
+
+
+def test_recover_running_done_with_text_result_collects_maker_result(repo):
+    service = LoopService({}, repo, broker=FakeBroker(tasks={"T-maker": BrokerTaskStatus("done", "real maker output")}))
+    add_running(service)
+
+    report = service.recover()
+    item = service.get("I-1")
+
+    assert report.items_changed == 1
+    assert item.state is LoopItemState.AWAITING_VERDICT
+    assert item.attempts[-1].maker_result.result == "real maker output"
 
 
 def test_recover_without_broker_blocks_active_items(repo):

@@ -148,7 +148,7 @@ def test_jsonl_store_records_mutating_operations(tmp_path):
         await store.save_reply("msg-0001", message_envelope(reply_message()))
 
         records = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
-        assert [record["operation"] for record in records] == ["enqueue_message", "save_reply"]
+        assert [record["operation"] for record in records] == ["enqueue_message", "get_next_message", "save_reply"]
         assert records[-1]["result"]["status"] == "reply_received"
         assert records[-1]["snapshot"]["tasks"]["default:TEST-001"]["status"] == "DONE"
 

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from orchlink.loop.adapters.worktree_evidence import WorktreeEvidence
 from orchlink.loop.domain import (
     LoopAttempt,
     LoopItem,
@@ -40,6 +41,16 @@ def item():
     return LoopItem(item_id="I-1", title="Add loop verification")
 
 
+def sourced_item():
+    return LoopItem(
+        item_id="I-2",
+        title="Issue title",
+        source="github:https://github.test/issues/2",
+        source_url="https://github.test/issues/2",
+        objective="Fix the failing export path with compatibility tests",
+    )
+
+
 def test_build_prompt_is_deterministic_snapshot():
     service = VerifierService({})
     prompt = service.build_prompt(item(), attempt(), Worktree("/tmp/wt"))
@@ -51,8 +62,15 @@ def test_build_prompt_is_deterministic_snapshot():
         "MAKER_WORKER: maker\n"
         "VERIFIER_WORKER: review\n"
         "OBJECTIVE: Add loop verification\n"
+        "SOURCE_REF: none\n"
+        "SOURCE_URL: none\n"
+        "MAKER_RESULT:\n"
+        "implemented changes\n"
+        "END_MAKER_RESULT\n"
         "WORKTREE: /tmp/wt\n"
-        "FILES_CHANGED: unavailable (diff collection is handled by an adapter; no git I/O here)\n"
+        "FILES_CHANGED: unavailable (diff collection was not provided)\n"
+        "DIFF_EVIDENCE: unavailable (diff collection was not provided)\n"
+        "OBJECTIVE_CHECK_REPORT: unavailable (objective checks were not run)\n"
         "VERIFY_POLICY:\n"
         "- require_verifier: true\n"
         "- require_separate_verifier_worker: true\n"
@@ -74,6 +92,24 @@ def test_build_prompt_includes_same_worker_override_marker():
 
     assert "ALLOW_SAME_WORKER: true (explicit override required; lower confidence)" in prompt
     assert "WORKTREE: none" in prompt
+
+
+def test_build_prompt_includes_source_maker_result_files_and_diff_evidence():
+    prompt = VerifierService({}).build_prompt(
+        sourced_item(),
+        attempt(),
+        Worktree("/tmp/wt"),
+        changed_files=["src/export.py", "tests/test_export.py"],
+        diff_evidence="diff --git a/src/export.py b/src/export.py\n+ fixed",
+    )
+
+    assert "OBJECTIVE: Fix the failing export path with compatibility tests" in prompt
+    assert "SOURCE_REF: github:https://github.test/issues/2" in prompt
+    assert "SOURCE_URL: https://github.test/issues/2" in prompt
+    assert "MAKER_RESULT:\nimplemented changes\nEND_MAKER_RESULT" in prompt
+    assert "FILES_CHANGED:\n- src/export.py\n- tests/test_export.py" in prompt
+    assert "DIFF_EVIDENCE:\ndiff --git a/src/export.py b/src/export.py\n+ fixed\nEND_DIFF_EVIDENCE" in prompt
+    assert "WORKTREE: /tmp/wt" in prompt
 
 
 def failed_required_report():
@@ -259,13 +295,13 @@ class FakeGateway:
 
 
 class SpyVerifierService(VerifierService):
-    def __init__(self, config, gateway):
-        super().__init__(config, gateway)
+    def __init__(self, config, gateway, evidence_collector=None):
+        super().__init__(config, gateway, evidence_collector=evidence_collector)
         self.build_calls = []
 
-    def build_prompt(self, item_arg, attempt_arg, worktree_arg, check_report=None):
-        self.build_calls.append((item_arg, attempt_arg, worktree_arg, check_report))
-        return super().build_prompt(item_arg, attempt_arg, worktree_arg, check_report=check_report)
+    def build_prompt(self, item_arg, attempt_arg, worktree_arg, check_report=None, **kwargs):
+        self.build_calls.append((item_arg, attempt_arg, worktree_arg, check_report, kwargs))
+        return super().build_prompt(item_arg, attempt_arg, worktree_arg, check_report=check_report, **kwargs)
 
 
 def test_dispatch_and_collect_uses_gateway_and_parses_result():
@@ -277,13 +313,70 @@ def test_dispatch_and_collect_uses_gateway_and_parses_result():
 
     result = asyncio.run(service.dispatch_and_collect(loop_item, loop_attempt, worktree=worktree, timeout_seconds=12))
 
-    assert service.build_calls == [(loop_item, loop_attempt, worktree, None)]
+    assert service.build_calls[0][:4] == (loop_item, loop_attempt, worktree, None)
     assert gateway.dispatched[0][0] == loop_attempt.verifier
     assert "ITEM_ID: I-1" in gateway.dispatched[0][1]
     assert gateway.awaited == [(VerifierHandle(task_id="V-1", worker_name="review"), 12)]
     assert result.verdict is Verdict.REJECTED
     assert result.reason_code is ReasonCode.REVIEW_FAILED
     assert result.required_fixes == ("add test",)
+
+
+def test_dispatch_and_collect_refuses_to_verify_without_actual_maker_result():
+    gateway = FakeGateway()
+    service = VerifierService({}, gateway)
+    missing_result = LoopAttempt(
+        number=1,
+        maker=WorkerAssignment(worker_name="maker", task_id="T-maker"),
+        verifier=WorkerAssignment(worker_name="review", task_id="T-review"),
+    )
+    empty_result = LoopAttempt(
+        number=1,
+        maker=WorkerAssignment(worker_name="maker", task_id="T-maker"),
+        verifier=WorkerAssignment(worker_name="review", task_id="T-review"),
+        maker_result=MakerResult("   "),
+    )
+
+    with pytest.raises(VerifierDispatchError, match="maker result"):
+        asyncio.run(service.dispatch_and_collect(item(), missing_result, worktree=Worktree("/tmp/wt")))
+    with pytest.raises(VerifierDispatchError, match="maker result"):
+        asyncio.run(service.dispatch_and_collect(item(), empty_result, worktree=Worktree("/tmp/wt")))
+
+    assert gateway.dispatched == []
+    assert gateway.awaited == []
+
+
+def test_dispatch_and_collect_includes_collected_worktree_evidence_in_prompt():
+    gateway = FakeGateway()
+    worktree = Worktree("/tmp/wt")
+    evidence_collector = FakeEvidenceCollector(
+        WorktreeEvidence(
+            changed_files=("src/export.py", "tests/test_export.py"),
+            diff_evidence="src/export.py | 2 ++",
+        )
+    )
+    service = VerifierService({}, gateway, evidence_collector=evidence_collector)
+
+    asyncio.run(service.dispatch_and_collect(sourced_item(), attempt(), worktree=worktree))
+
+    prompt = gateway.dispatched[0][1]
+    assert evidence_collector.calls == [worktree]
+    assert "OBJECTIVE: Fix the failing export path with compatibility tests" in prompt
+    assert "SOURCE_REF: github:https://github.test/issues/2" in prompt
+    assert "MAKER_RESULT:\nimplemented changes\nEND_MAKER_RESULT" in prompt
+    assert "WORKTREE: /tmp/wt" in prompt
+    assert "FILES_CHANGED:\n- src/export.py\n- tests/test_export.py" in prompt
+    assert "DIFF_EVIDENCE:\nsrc/export.py | 2 ++\nEND_DIFF_EVIDENCE" in prompt
+
+
+class FakeEvidenceCollector:
+    def __init__(self, evidence):
+        self.evidence = evidence
+        self.calls = []
+
+    def collect(self, worktree):
+        self.calls.append(worktree)
+        return self.evidence
 
 
 class FakeObjectiveCheckService:

@@ -19,6 +19,22 @@ HttpClient = Callable[[str, str, dict[str, str], dict[str, Any]], dict[str, Any]
 _WORK_LABELS = {"bug", "enhancement", "good first issue", "help wanted"}
 
 
+def _login(value: Any) -> str | None:
+    return str(value.get("login")) if isinstance(value, dict) and value.get("login") else None
+
+
+def _label_names(labels: Any) -> list[str]:
+    names: list[str] = []
+    if not isinstance(labels, list):
+        return names
+    for label in labels:
+        if isinstance(label, dict) and label.get("name"):
+            names.append(str(label["name"]))
+        elif isinstance(label, str):
+            names.append(label)
+    return names
+
+
 class GitHubConnector:
     name = "github"
 
@@ -96,6 +112,9 @@ class GitHubConnector:
                     priority=Priority.NORMAL,
                     suggested_skill=None,
                     suggested_worktree=None,
+                    source_url=url,
+                    source_context=str(pr.get("body") or ""),
+                    source_metadata={"kind": "pull_request", "number": number, "repo": repo, "author": _login(pr.get("user"))},
                 )
             )
         return candidates
@@ -128,6 +147,9 @@ class GitHubConnector:
                     priority=Priority.NORMAL,
                     suggested_skill=None,
                     suggested_worktree=None,
+                    source_url=url,
+                    source_context=str(issue.get("body") or ""),
+                    source_metadata={"kind": "issue", "number": number, "repo": repo, "labels": _label_names(labels), "author": _login(issue.get("user"))},
                 )
             )
         return candidates
@@ -158,6 +180,9 @@ class GitHubConnector:
                 priority=Priority.HIGH,
                 suggested_skill=None,
                 suggested_worktree=None,
+                source_url=str(body.get("target_url") or f"https://github.com/{repo}/commits/{sha}"),
+                source_context=str(body.get("description") or ""),
+                source_metadata={"kind": "ci_status", "repo": repo, "branch": branch, "sha": sha, "state": state},
             )
         ]
 

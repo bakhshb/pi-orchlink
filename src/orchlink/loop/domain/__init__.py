@@ -18,7 +18,7 @@ from orchlink.loop.domain.item import (
 )
 from orchlink.loop.domain.policy import LoopPolicy, RetryPolicy
 from orchlink.loop.domain.skill import Skill
-from orchlink.loop.domain.verdict import ReasonCode, Verdict, VerifierVerdict
+from orchlink.loop.domain.verdict import ReasonCode, Verdict, VerifierVerdict, parse_verdict_text
 from orchlink.loop.domain.worktree import Worktree, WorktreeResult
 
 __all__ = [
@@ -42,4 +42,5 @@ __all__ = [
     "WorkerAssignment",
     "Worktree",
     "WorktreeResult",
+    "parse_verdict_text",
 ]

@@ -11,7 +11,6 @@ from orchlink.loop.domain.errors import BudgetExhausted, IllegalTransition, Veri
 from orchlink.loop.domain.policy import LoopPolicy, RetryPolicy
 from orchlink.loop.domain.skill import Skill
 from orchlink.loop.domain.verdict import (
-    ReasonCode,
     VerifierVerdict,
     Verdict,
     datetime_to_json,
@@ -35,6 +34,7 @@ class LoopItemState(str, Enum):
 
 
 State = LoopItemState
+RESERVED_TASK_PREFIX = "reserved:"
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +112,7 @@ class LoopAttempt:
     number: int
     maker: WorkerAssignment
     verifier: WorkerAssignment | None = None
+    same_worker_verifier_override: bool = False
     maker_result: MakerResult | None = None
     verdict: VerifierVerdict | None = None
     reserved_at: datetime | None = None
@@ -155,6 +156,7 @@ class LoopAttempt:
             "number": self.number,
             "maker": self.maker.to_dict(),
             "verifier": self.verifier.to_dict() if self.verifier else None,
+            "same_worker_verifier_override": self.same_worker_verifier_override,
             "maker_result": self.maker_result.to_dict() if self.maker_result else None,
             "verdict": self.verdict.to_dict() if self.verdict else None,
             "reserved_at": datetime_to_json(self.reserved_at),
@@ -170,6 +172,7 @@ class LoopAttempt:
             number=int(data["number"]),
             maker=WorkerAssignment.from_dict(data["maker"]),
             verifier=WorkerAssignment.from_dict(data["verifier"]) if data.get("verifier") else None,
+            same_worker_verifier_override=bool(data.get("same_worker_verifier_override", False)),
             maker_result=MakerResult.from_dict(data["maker_result"]) if data.get("maker_result") else None,
             verdict=VerifierVerdict.from_dict(data["verdict"]) if data.get("verdict") else None,
             reserved_at=parse_datetime(data.get("reserved_at")),
@@ -191,6 +194,10 @@ class LoopItem:
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     goal_id: str | None = None
     source: str | None = None
+    source_url: str | None = None
+    objective: str = ""
+    source_context: str = ""
+    source_metadata: dict[str, Any] = field(default_factory=dict)
     blocker: str | None = None
     cancellation_reason: str | None = None
     attached_evidence_ids: tuple[str, ...] = field(default_factory=tuple)
@@ -210,6 +217,7 @@ class LoopItem:
                 tuple(LoopAttempt.from_dict(attempt) for attempt in self.attempts),
             )
         object.__setattr__(self, "attached_evidence_ids", tuple(str(item) for item in self.attached_evidence_ids))
+        object.__setattr__(self, "source_metadata", dict(self.source_metadata or {}))
         if self.worktree is not None and not isinstance(self.worktree, Worktree):
             object.__setattr__(self, "worktree", Worktree.from_dict(self.worktree))
         if self.skill is not None and not isinstance(self.skill, Skill):
@@ -348,11 +356,45 @@ class LoopItem:
         if len(self.attempts) >= self.retry_policy.max_attempts:
             raise BudgetExhausted(f"attempt budget exhausted for {self.item_id}")
         if maker.task_id is None:
-            maker = replace(maker, task_id=f"reserved:{self.item_id}:{len(self.attempts) + 1}")
+            maker = replace(maker, task_id=f"{RESERVED_TASK_PREFIX}{self.item_id}:{len(self.attempts) + 1}")
         attempt = LoopAttempt(number=len(self.attempts) + 1, maker=maker, reserved_at=utc_now())
         return self._transition(LoopItemState.DISPATCHING, attempts=(*self.attempts, attempt))
 
     reserve_attempt = dispatch
+
+    def record_broker_task(self, task_id: str) -> "LoopItem":
+        self._require({LoopItemState.DISPATCHING}, "record_broker_task")
+        if not task_id:
+            raise ValueError("real broker task id is required")
+        if task_id.startswith(RESERVED_TASK_PREFIX):
+            raise ValueError(f"real broker task ids must not start with {RESERVED_TASK_PREFIX!r}")
+        attempt = self.active_attempt
+        if attempt is None:
+            raise IllegalTransition(self.state, "record_broker_task")
+        maker = replace(attempt.maker, task_id=task_id, dispatched_at=utc_now())
+        return self._transition(
+            LoopItemState.DISPATCHING,
+            attempts=self._replace_current_attempt(replace(attempt, maker=maker)),
+        )
+
+    def rollback_dispatch(self) -> "LoopItem":
+        self._require({LoopItemState.DISPATCHING}, "rollback_dispatch")
+        return self._transition(LoopItemState.READY, attempts=self.attempts[:-1])
+
+    def confirm_dispatch_running(self) -> "LoopItem":
+        self._require({LoopItemState.DISPATCHING}, "confirm_dispatch_running")
+        attempt = self.active_attempt
+        if attempt is None:
+            raise IllegalTransition(self.state, "confirm_dispatch_running")
+        if attempt.maker.task_id is None or attempt.maker.task_id.startswith(RESERVED_TASK_PREFIX):
+            raise IllegalTransition(self.state, "confirm_dispatch_running")
+        maker = attempt.maker
+        if maker.dispatched_at is None:
+            maker = replace(maker, dispatched_at=utc_now())
+        return self._transition(
+            LoopItemState.RUNNING,
+            attempts=self._replace_current_attempt(replace(attempt, maker=maker)),
+        )
 
     def broker_sent(self, *, task_id: str | None = None, session_lease_id: str | None = None) -> "LoopItem":
         self._require({LoopItemState.DISPATCHING}, "broker_sent")
@@ -399,18 +441,20 @@ class LoopItem:
         attempt = self.active_attempt
         if attempt is None:
             raise IllegalTransition(self.state, "start_verification")
-        if (
-            self.verify_policy.require_separate_verifier_worker
-            and not allow_same_worker
-            and verifier.same_worker(attempt.maker)
-        ):
+        same_worker = verifier.same_worker(attempt.maker)
+        if self.verify_policy.require_separate_verifier_worker and not allow_same_worker and same_worker:
             raise VerifierMismatch("verifier worker must differ from maker worker")
         if verifier.task_id is None:
             verifier = replace(verifier, task_id=f"verify:{self.item_id}:{attempt.number}")
         return self._transition(
             LoopItemState.VERIFYING,
             attempts=self._replace_current_attempt(
-                replace(attempt, verifier=verifier, verification_started_at=utc_now())
+                replace(
+                    attempt,
+                    verifier=verifier,
+                    same_worker_verifier_override=bool(same_worker and allow_same_worker),
+                    verification_started_at=utc_now(),
+                )
             ),
         )
 
@@ -452,6 +496,20 @@ class LoopItem:
             raise ValueError("blocker is required")
         return self._transition(LoopItemState.BLOCKED, blocker=blocker)
 
+    def block_retry_exhausted(self) -> "LoopItem":
+        self._require({LoopItemState.REJECTED}, "block_retry_exhausted")
+        if len(self.attempts) < self.retry_policy.max_attempts:
+            raise ValueError("retry budget is not exhausted")
+        return self._transition(LoopItemState.BLOCKED, blocker="retry_exhausted")
+
+    def attach_accepted_evidence_id(self, evidence_id: str) -> "LoopItem":
+        self._require({LoopItemState.DONE}, "attach_accepted_evidence_id")
+        if not evidence_id:
+            raise ValueError("evidence_id is required")
+        if evidence_id in self.attached_evidence_ids:
+            return self
+        return replace(self, attached_evidence_ids=(*self.attached_evidence_ids, evidence_id), updated_at=utc_now())
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "item_id": self.item_id,
@@ -464,6 +522,10 @@ class LoopItem:
             "retry_policy": self.retry_policy.to_dict(),
             "goal_id": self.goal_id,
             "source": self.source,
+            "source_url": self.source_url,
+            "objective": self.objective,
+            "source_context": self.source_context,
+            "source_metadata": self.source_metadata,
             "blocker": self.blocker,
             "cancellation_reason": self.cancellation_reason,
             "attached_evidence_ids": list(self.attached_evidence_ids),
@@ -483,6 +545,10 @@ class LoopItem:
             retry_policy=RetryPolicy.from_dict(data.get("retry_policy")),
             goal_id=data.get("goal_id"),
             source=data.get("source"),
+            source_url=data.get("source_url"),
+            objective=data.get("objective", ""),
+            source_context=data.get("source_context", ""),
+            source_metadata=dict(data.get("source_metadata") or {}),
             blocker=data.get("blocker"),
             cancellation_reason=data.get("cancellation_reason"),
             attached_evidence_ids=tuple(data.get("attached_evidence_ids") or ()),

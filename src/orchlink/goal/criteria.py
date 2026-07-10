@@ -13,6 +13,7 @@ from orchlink.goal.checks import (
     parse_acceptance_criteria,
     run_check,
 )
+from orchlink.goal.lifecycle import AcceptanceStatus
 from orchlink.goal.models import AcceptanceCriterion
 from orchlink.goal.store import GoalStore
 from orchlink.project.config import project_root
@@ -35,12 +36,16 @@ class GoalCriteriaEngine:
             return []
         return parse_acceptance_criteria(acceptance_path.read_text(encoding="utf-8"))
 
+    def status_for(self, goal_id: str, ac_id: str) -> str:
+        """Return the authoritative acceptance-criterion status from goal.yaml."""
+        return self._store.load(goal_id).ac_status.get(ac_id, AcceptanceStatus.PENDING.value)
+
     def selected(self, goal_id: str) -> AcceptanceCriterion | None:
         statuses = self._store.load(goal_id).ac_status
         for criterion in self.criteria(goal_id):
             if criterion.priority != "core":
                 continue
-            status = statuses.get(criterion.id, criterion.status)
+            status = statuses.get(criterion.id, AcceptanceStatus.PENDING.value)
             if status in {"verified", "human-approved", "deferred"}:
                 continue
             if criterion.type == "subjective" or not criterion.check:
@@ -55,14 +60,13 @@ class GoalCriteriaEngine:
             criterion
             for criterion in self.criteria(goal_id)
             if criterion.priority == "core"
-            and statuses.get(criterion.id, criterion.status) not in {"verified", "human-approved"}
+            and statuses.get(criterion.id, AcceptanceStatus.PENDING.value) not in {"verified", "human-approved"}
             and (criterion.type == "subjective" or not criterion.check)
             and self.dependencies_satisfied(goal_id, criterion)
         ]
 
     def dependencies_satisfied(self, goal_id: str, criterion: AcceptanceCriterion) -> bool:
-        statuses = {item.id: item.status for item in self.criteria(goal_id)}
-        statuses.update(self._store.load(goal_id).ac_status)
+        statuses = self._store.load(goal_id).ac_status
         return all(statuses.get(dep) in {"verified", "human-approved"} for dep in criterion.depends_on)
 
     def all_required_criteria_satisfied(self, goal_id: str) -> bool:
@@ -71,7 +75,7 @@ class GoalCriteriaEngine:
             return False
         statuses = self._store.load(goal_id).ac_status
         for criterion in criteria:
-            status = statuses.get(criterion.id, criterion.status)
+            status = statuses.get(criterion.id, AcceptanceStatus.PENDING.value)
             if criterion.priority == "core" and status not in {"verified", "human-approved"}:
                 return False
         return True
@@ -79,8 +83,9 @@ class GoalCriteriaEngine:
     def process_noncore(self, goal_id: str, *, timeout_seconds: int = 1800) -> None:
         if self._config is None:
             raise GoalCriteriaConfigError("process_noncore requires an engine bound to config; call with_config().")
+        statuses = self._store.load(goal_id).ac_status
         for criterion in self.criteria(goal_id):
-            if criterion.priority == "core" or criterion.status in {"verified", "deferred"}:
+            if criterion.priority == "core" or statuses.get(criterion.id, AcceptanceStatus.PENDING.value) in {"verified", "deferred"}:
                 continue
             if not self.dependencies_satisfied(goal_id, criterion):
                 continue

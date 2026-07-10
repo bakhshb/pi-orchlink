@@ -5,7 +5,7 @@ import logging
 
 import pytest
 
-from orchlink.loop.adapters.connectors import ConnectorConfig, ConnectorSecretGateway, GitHubConnector
+from orchlink.loop.adapters.connectors import ConnectorConfig, GitHubConnector
 from orchlink.loop.adapters.connectors import github as github_module
 from orchlink.loop.adapters.state_repo import LoopStateRepo
 from orchlink.loop.services import ItemCandidate, LoopService
@@ -73,7 +73,7 @@ def test_connector_config_init_rejects_secret_extra_key():
 def test_github_discover_pr_candidates():
     http = FakeGitHubHttp(
         [
-            ("/pulls", {"status": 200, "json": [{"number": 7, "title": "Add API", "html_url": "https://github.test/pull/7"}]}),
+            ("/pulls", {"status": 200, "json": [{"number": 7, "title": "Add API", "html_url": "https://github.test/pull/7", "body": "PR body", "user": {"login": "octo"}}]}),
             ("/issues", {"status": 200, "json": []}),
             ("/commits/main/status", {"status": 200, "json": {"state": "success", "sha": "abc"}}),
         ]
@@ -88,6 +88,9 @@ def test_github_discover_pr_candidates():
     assert candidates[0].source_ref == "https://github.test/pull/7"
     assert candidates[0].title == "Add API"
     assert candidates[0].objective == "Review or address pull request #7: Add API"
+    assert candidates[0].source_url == "https://github.test/pull/7"
+    assert candidates[0].source_context == "PR body"
+    assert candidates[0].source_metadata == {"kind": "pull_request", "number": 7, "repo": "owner/repo", "author": "octo"}
 
 
 def test_github_discover_issue_candidates_when_prs_empty():
@@ -99,7 +102,7 @@ def test_github_discover_issue_candidates_when_prs_empty():
                 {
                     "status": 200,
                     "json": [
-                        {"number": 3, "title": "Fix crash", "html_url": "https://github.test/issues/3", "labels": [{"name": "Bug"}]},
+                        {"number": 3, "title": "Fix crash", "html_url": "https://github.test/issues/3", "body": "Crash details", "labels": [{"name": "Bug"}]},
                         {"number": 4, "title": "Question", "html_url": "https://github.test/issues/4", "labels": [{"name": "question"}]},
                     ],
                 },
@@ -112,6 +115,8 @@ def test_github_discover_issue_candidates_when_prs_empty():
 
     assert [candidate.id for candidate in candidates] == ["issue-3"]
     assert candidates[0].objective == "Address GitHub issue #3: Fix crash"
+    assert candidates[0].source_context == "Crash details"
+    assert candidates[0].source_metadata["labels"] == ["Bug"]
 
 
 def test_github_discover_ci_failure_candidate():
@@ -280,6 +285,10 @@ def test_github_discover_does_not_serialize_token_to_loop_state(tmp_path):
                 title=candidate.title,
                 source_type=candidate.source_type,
                 source_ref=candidate.source_ref,
+                objective=candidate.objective,
+                source_url=candidate.source_url,
+                source_context=candidate.source_context,
+                source_metadata=candidate.source_metadata,
             )
             for candidate in candidates
         ]

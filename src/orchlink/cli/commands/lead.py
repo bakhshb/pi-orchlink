@@ -27,7 +27,7 @@ from orchlink.cli.commands._helpers import auto_refresh_project_skills, load_pro
 from orchlink.client import THINKING_LEVELS, normalize_thinking_level
 from orchlink.client.process import broker_pid_path
 from orchlink.connector.pi_connector import PiConnectorError
-from orchlink.loop.adapters.worktree_service import WorktreeCreateError, WorktreeService
+from orchlink.loop.adapters.worktree_service import WorktreeService
 from orchlink.loop.domain.worktree import Worktree
 from orchlink.project.config import DEFAULT_WORKER_NAME, normalize_worker_name, project_root, role_agent_id, save_project_config, with_worker_name, worker_agent_id
 

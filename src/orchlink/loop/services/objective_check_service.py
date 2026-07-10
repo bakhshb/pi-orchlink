@@ -25,6 +25,10 @@ class SubprocessResult(Protocol):
 Runner = Callable[[str, Path, int], SubprocessResult]
 
 
+class ObjectiveCheckConfigError(ValueError):
+    """Raised when checked Loop Mode has no usable check configuration."""
+
+
 @dataclass(frozen=True, slots=True)
 class CheckDefinition:
     id: str
@@ -118,12 +122,14 @@ class ObjectiveCheckService:
     def _load_definitions(self) -> list[CheckDefinition]:
         path = self.project_dir / ".orch" / "loop" / "checks.yaml"
         try:
-            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except FileNotFoundError:
-            return []
-        checks = raw.get("checks") if isinstance(raw, dict) else None
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except FileNotFoundError as exc:
+            raise ObjectiveCheckConfigError("missing .orch/loop/checks.yaml") from exc
+        if not isinstance(raw, dict):
+            raise ObjectiveCheckConfigError("checks.yaml must contain a top-level mapping")
+        checks = raw.get("checks")
         if not isinstance(checks, list):
-            return []
+            raise ObjectiveCheckConfigError("checks.yaml must contain a checks list")
         definitions: list[CheckDefinition] = []
         for index, check in enumerate(checks):
             if not isinstance(check, dict):
@@ -140,6 +146,8 @@ class ObjectiveCheckService:
                     required=bool(check.get("required", False)),
                 )
             )
+        if not definitions:
+            raise ObjectiveCheckConfigError("checks.yaml contains zero valid checks")
         return definitions
 
     def _run_one(self, definition: CheckDefinition, cwd: Path) -> CheckResult:

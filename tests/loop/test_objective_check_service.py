@@ -32,12 +32,36 @@ def service(tmp_path, runner=None):
     return ObjectiveCheckService({"_project_root": str(tmp_path)}, runner=runner)
 
 
-def test_run_checks_returns_empty_passing_report_without_config(tmp_path):
+def test_run_checks_missing_config_fails_closed(tmp_path):
     report = service(tmp_path).run_checks()
 
-    assert report.results == ()
-    assert report.overall_pass is True
-    assert report.any_required_failed is False
+    assert report.overall_pass is False
+    assert report.any_required_failed is True
+    assert report.results[0].status == "error"
+    assert report.results[0].required is True
+    assert "missing .orch/loop/checks.yaml" in report.results[0].stderr
+
+
+def test_run_checks_malformed_config_fails_closed(tmp_path):
+    write_checks(tmp_path, "not: [valid")
+
+    report = service(tmp_path).run_checks()
+
+    assert report.overall_pass is False
+    assert report.any_required_failed is True
+    assert report.results[0].status == "error"
+    assert "ParserError" in report.results[0].stderr or "ScannerError" in report.results[0].stderr
+
+
+def test_run_checks_zero_valid_checks_fails_closed(tmp_path):
+    write_checks(tmp_path, "checks:\n  - id: missing-command\n")
+
+    report = service(tmp_path).run_checks()
+
+    assert report.overall_pass is False
+    assert report.any_required_failed is True
+    assert report.results[0].status == "error"
+    assert "zero valid checks" in report.results[0].stderr
 
 
 def test_run_checks_with_passing_check(tmp_path):

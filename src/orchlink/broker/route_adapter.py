@@ -12,14 +12,19 @@ from typing import Any
 from fastapi import HTTPException
 
 from orchlink.broker.service import BrokerService
-from orchlink.broker.storage import MessageStore, MessageStoreBusy
-from orchlink.broker.storage.base import ActivityInput, AgentInput, LeaseConflictError, MessageInput, SessionAcquireInput, SessionHeartbeatInput
+from orchlink.broker.storage import MessageStoreBusy
+from orchlink.broker.storage.base import ActivityInput, AgentInput, LeaseConflictError, MessageInput, MessageStore, SessionAcquireInput, SessionHeartbeatInput
 from orchlink.core.envelope import MessageEnvelope
 
 
 class BrokerRouteAdapter:
-    def __init__(self, store: MessageStore) -> None:
-        self.service = BrokerService(store)
+    def __init__(self, service: BrokerService | MessageStore) -> None:
+        if isinstance(service, BrokerService):
+            self.service = service
+        else:
+            # Raw MessageStore injection is kept for older tests and extension
+            # code; routes still interact with the typed BrokerService facade.
+            self.service = BrokerService(service)
 
     @property
     def journal(self) -> Any:
@@ -167,6 +172,5 @@ class BrokerRouteAdapter:
 
     async def pending_reply_count(self) -> int:
         return await self.service.pending_reply_count()
-
 
 __all__ = ["BrokerRouteAdapter"]

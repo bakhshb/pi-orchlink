@@ -142,6 +142,33 @@ def test_readme_documents_windows_beta_status_for_g006_ac1():
     )
 
 
+def test_readme_documents_headless_rpc_approval_boundary():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "Headless RPC workers invoke Pi with `--approve`" in text
+    assert "tool approval suitable for unattended operation" in text
+    assert "without per-tool confirmation" in text
+    assert "not a shell-command sandbox" in text
+    assert "Orchlink does not sandbox worker shell commands" in text
+
+
+def test_readme_documents_broker_sharing_requires_same_auth_key():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "same broker authentication key/API key" in text
+    assert "does not currently implement multi-key broker support" in text
+    assert "project_id" in text
+
+
+def test_readme_documents_loop_worktree_isolation_as_explicit_setup():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "--name maker --worktree-create --base main" in text
+    assert "require_worktree_isolation: true" in text
+    assert "refuses maker dispatch unless" in text
+    assert "legacy non-isolated dispatch remains allowed" in text
+
+
 def test_readme_documents_resume_as_first_recovery_command_for_g006_ac7():
     text = (ROOT / "README.md").read_text(encoding="utf-8")
 
@@ -207,6 +234,7 @@ def test_adapter_skills_share_prompt_policy_text():
         assert "Pi's native `/compact` command" in text
         assert "visible worker terminal" in text
         assert "orch work --background" in text
+        assert "first-come, first-served" in text
         assert ".orch/run/orch-work.log" in text
 
 

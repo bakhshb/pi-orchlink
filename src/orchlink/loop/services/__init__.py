@@ -25,7 +25,7 @@ from orchlink.loop.services.exceptions import (
     WorkerGatewayUnavailable,
 )
 from orchlink.loop.services.triage_service import ItemCandidate, Priority, SkillRef, TriageService
-from orchlink.loop.services.worker_service import WorkerService
+from orchlink.loop.services.worker_service import MakerSessionWorktree, MakerWorktreeUnavailable, WorkerService
 from orchlink.loop.services.verifier_service import (
     VerifierHandle,
     VerifierService,
@@ -44,8 +44,10 @@ __all__ = [
     "LoopEngine",
     "LoopService",
     "MakerDispatchError",
+    "MakerSessionWorktree",
     "MakerTimeoutError",
     "MakerUnreachable",
+    "MakerWorktreeUnavailable",
     "ObjectiveCheckService",
     "Priority",
     "RecoverableBroker",

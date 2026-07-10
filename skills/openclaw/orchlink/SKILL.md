@@ -73,6 +73,7 @@ If neither option is available, stop and tell the human Orchlink cannot proceed 
 - Do not stop visible worker terminals from the lead. Stop only tracked background workers; a visible worker should be stopped by the human in its own terminal with Ctrl-C.
 - Do not run dependent full tests while worker work is active.
 - Do not use blocking waits to rush long worker tasks; dispatch async and resolve the task ID at a natural checkpoint.
+- With multiple independent async tasks, handle injected results first-come, first-served: retrieve each with `orch jobs --result <task_id>` while other workers continue. Use `orch jobs --wait` only when that exact task is the sole blocker.
 - Async closeout: `orch send` is not fire-and-forget. Before any human-facing completion or decision, read the exact result with `orch jobs --result <task_id>`/`--wait <task_id>`, or state that the task ID is still pending, whether it blocks, and how to retrieve it. Do not claim dependent work is done while it is pending.
 - Do not make final claims until blocking reviews and active work are resolved.
 - Do not accept worker output blindly. Name the risk, disagreement, or assumption before deciding.

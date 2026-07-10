@@ -10,7 +10,6 @@ execution in :mod:`orchlink.goal.checks`.
 from __future__ import annotations
 
 from typing import Any
-
 import httpx
 
 from orchlink import client
@@ -86,6 +85,8 @@ class GoalRunner:
         if goal.ac_gate != "approved" or goal.plan_gate != "approved":
             self.store.append_history(goal.id, {"type": GoalEventType.GATE_REQUIRED.value, "ac_gate": goal.ac_gate, "plan_gate": goal.plan_gate})
             return f"Goal {goal.id} paused: approve the AC and plan gates before work."
+        if goal.active_task_id:
+            return self._active_task_message(goal.id, goal.active_task_id)
         if goal.status == "done":
             return f"Goal {goal.id} is already done."
 
@@ -112,14 +113,19 @@ class GoalRunner:
                 return f"Goal {goal.id} paused: manual verification is required."
 
             steps += 1
-            task_id = f"{goal.id}-WORK-{self.store.next_task_number(goal.id):03d}"
             prompt = worker_prompt(
                 self.store,
                 goal.id,
                 selected_criterion_text=f"{selected.id} {selected.text}",
                 previous_summary=last_summary,
             )
-            self.store.record_task(goal.id, task_id, detail=self._dispatch_detail("maker"))
+            try:
+                _, task_id = self.store.claim_next_task(goal.id, "WORK", detail=self._dispatch_detail("maker"))
+            except GoalStoreError:
+                current = self.store.load(goal.id)
+                if current.active_task_id:
+                    return self._active_task_message(current.id, current.active_task_id)
+                raise
             try:
                 result = self.dispatcher.dispatch(
                     role="maker",
@@ -186,8 +192,12 @@ class GoalRunner:
         goal = self.store.load(goal_id)
         source_path = self.store.goal_dir(goal_id) / "source.md"
         source = source_path.read_text(encoding="utf-8") if source_path.is_file() else ""
-        task_id = f"{goal.id}-DERIVE-{self._next_derivation_number(goal.id):03d}"
-        self.store.record_task(goal.id, task_id, event_type=GoalEventType.DERIVATION_DISPATCHED.value, detail=self._dispatch_detail("maker"))
+        _, task_id = self.store.claim_next_task(
+            goal.id,
+            "DERIVE",
+            event_type=GoalEventType.DERIVATION_DISPATCHED.value,
+            detail=self._dispatch_detail("maker"),
+        )
         try:
             result = self.dispatcher.dispatch(
                 role="maker",
@@ -209,8 +219,9 @@ class GoalRunner:
         criteria = self.criteria.criteria(goal_id)
         selected = []
         for criterion in criteria:
-            if criterion.priority == "core" and (criterion.type == "subjective" or not criterion.check) and criterion.status != "verified":
-                if all_pending or criterion.id == ac_id:
+            if criterion.priority == "core" and (criterion.type == "subjective" or not criterion.check):
+                status = self.criteria.status_for(goal_id, criterion.id)
+                if status != "verified" and (all_pending or criterion.id == ac_id):
                     selected.append(criterion)
         if not selected:
             raise GoalStoreError("No matching subjective core acceptance criteria need sign-off.")
@@ -226,8 +237,12 @@ class GoalRunner:
 
     def audit(self, goal_id: str, timeout_seconds: int = 1800) -> str:
         goal = self.store.load(goal_id)
-        task_id = f"{goal.id}-AUDIT-{self._next_audit_number(goal.id):03d}"
-        self.store.record_task(goal.id, task_id, event_type=GoalEventType.AUDIT_DISPATCHED.value, detail=self._dispatch_detail("verifier"))
+        _, task_id = self.store.claim_next_task(
+            goal.id,
+            "AUDIT",
+            event_type=GoalEventType.AUDIT_DISPATCHED.value,
+            detail=self._dispatch_detail("verifier"),
+        )
         try:
             result = self.dispatcher.dispatch(
                 role="verifier",
@@ -244,9 +259,6 @@ class GoalRunner:
         payload = reply.get("payload") or {}
         audit_text = str(payload.get("audit") or result_summary(result) or "No audit summary returned.")
         findings = payload.get("findings") or []
-        restored = self.store.load(goal.id)
-        restored.active_task_id = None
-        self.store.save(restored)
         self.store.write_audit(goal.id, audit_text, task_id)
         self.store.record_evidence(goal.id, {"type": "audit", "task_id": task_id, "summary": audit_text[:4000], "findings": findings})
         return f"Goal {goal.id} audit recorded from {task_id}."
@@ -262,6 +274,14 @@ class GoalRunner:
         self.store.cancel(goal_id, reason=reason)
         return f"Cancelled {goal_id}."
 
+    @staticmethod
+    def _active_task_message(goal_id: str, active_task_id: str) -> str:
+        return (
+            f"Goal {goal_id} paused: active worker task {active_task_id} is still owned by this goal. "
+            f"Do not dispatch another task. Recover with `orch jobs --result {active_task_id}` when it completes, "
+            f"or cancel it with `orch jobs --cancel {active_task_id} -m \"reason\"` and then run `orch goal work {goal_id}` again."
+        )
+
     def _dispatch_detail(self, role: str) -> dict[str, Any]:
         if role == "verifier":
             detail: dict[str, Any] = {"worker_role": role, "worker": self.verifier_worker}
@@ -274,22 +294,5 @@ class GoalRunner:
         if self.verifier_model:
             detail["verifier_model"] = self.verifier_model
         return detail
-
-    def _next_derivation_number(self, goal_id: str) -> int:
-        return self._next_number_for_prefix(goal_id, f"{goal_id}-DERIVE-")
-
-    def _next_audit_number(self, goal_id: str) -> int:
-        return self._next_number_for_prefix(goal_id, f"{goal_id}-AUDIT-")
-
-    def _next_number_for_prefix(self, goal_id: str, prefix: str) -> int:
-        highest = 0
-        for event in self.store.history(goal_id):
-            task_id = str(event.get("task_id") or "")
-            if task_id.startswith(prefix):
-                suffix = task_id[len(prefix) :]
-                if suffix.isdigit():
-                    highest = max(highest, int(suffix))
-        return highest + 1
-
 
 __all__ = ["GoalEvidenceAdapter", "GoalRunner"]

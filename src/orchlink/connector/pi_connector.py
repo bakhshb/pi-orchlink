@@ -5,6 +5,7 @@ import subprocess
 import sys
 import threading
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -81,7 +82,7 @@ class PiSessionLease:
 class PiConnector:
     """Small adapter around local Pi lead and named worker sessions."""
 
-    def __init__(self, config: dict[str, Any]) -> None:
+    def __init__(self, config: Mapping[str, Any]) -> None:
         self.config = config
 
     def pi_command(self) -> str:
@@ -183,6 +184,20 @@ class PiConnector:
         extra: dict[str, str] | None = None,
         project_dir: str | Path | None = None,
     ) -> dict[str, str]:
+        # Compatibility wrapper. New callers should use :meth:`env`.
+        return self.env(role, extra=extra, project_dir=project_dir)
+
+    def env(
+        self,
+        role: str,
+        extra: dict[str, str] | None = None,
+        project_dir: str | Path | None = None,
+    ) -> dict[str, str]:
+        """Public typed environment builder for a Pi child process.
+
+        Returns the orchlink variables plus any caller-provided ``extra`` keys
+        on top of the inherited process environment.
+        """
         env = os.environ.copy()
         role_key = "work" if role == "work" else "lead"
         role_config = self.config.get(role_key) or {}
@@ -266,6 +281,15 @@ class PiConnector:
         self._post_broker(f"/v1/sessions/{lease_id}/heartbeat", body)
 
     def _release_session(self, lease_id: str, reason: str) -> None:
+        # Compatibility wrapper. New callers should use :meth:`release_session`.
+        self.release_session(lease_id, reason)
+
+    def release_session(self, lease_id: str, reason: str) -> None:
+        """Release a broker session lease.
+
+        Release failures are swallowed because the supervisor and CLI both run
+        this from ``finally`` paths where the broker may already be unreachable.
+        """
         try:
             self._post_broker(
                 f"/v1/sessions/{lease_id}/release",

@@ -45,6 +45,7 @@ class SessionAcquireBody(BrokerBody):
     thinking: str | None = None
     supervisor_pid: int | None = None
     pi_pid: int | None = None
+    project_dir: str | None = None
 
     def to_command(self) -> SessionAcquire:
         return session_acquire_from_wire(self.to_store_dict())
@@ -60,6 +61,7 @@ class SessionHeartbeatBody(BrokerBody):
     supervisor_pid: int | None = None
     pi_pid: int | None = None
     worker_name: str | None = None
+    project_dir: str | None = None
 
     def to_command(self, lease_id: str, project_id: str | None = None) -> SessionHeartbeat:
         return session_heartbeat_from_wire(lease_id, project_id=project_id, heartbeat=self.to_store_dict())

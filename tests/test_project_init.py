@@ -48,6 +48,7 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "orch send" in lead_skill
     assert "orch jobs --wait" in lead_skill
     assert "orch jobs --result" in lead_skill
+    assert "handle result notifications first-come, first-served" in lead_skill
     assert "orch jobs --idle" in lead_skill
     assert "references/lead-commands.md" in lead_skill
     assert "references/goal-mode.md" in lead_skill

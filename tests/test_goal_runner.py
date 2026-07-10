@@ -23,17 +23,35 @@ All tests stay broker-free by monkeypatching ``orchlink.goal.runner.ask_worker_s
 objective ``check`` commands run as real local subprocesses against temp check scripts.
 """
 
+import errno
 import json
+import multiprocessing
+import os
+import socket
 from pathlib import Path
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
 from orchlink.cli import main as cli_main
+from orchlink.goal import files as goal_files
+from orchlink.goal.store import GoalStore, GoalStoreError
 from orchlink.project.init import init_project
 
 
 runner = CliRunner()
+
+
+def _claim_task_in_process(project_root: str, ready, outcomes) -> None:
+    ready.wait(10)
+    store = GoalStore({"_project_root": project_root})
+    try:
+        _, task_id = store.claim_next_task("G001", "WORK")
+    except GoalStoreError as exc:
+        outcomes.put(("blocked", str(exc)))
+    else:
+        outcomes.put(("claimed", task_id))
 
 
 def _init(tmp_path: Path, monkeypatch) -> None:
@@ -189,6 +207,34 @@ def test_goal_work_pauses_at_unapproved_gate(tmp_path, monkeypatch):
     assert "approve" in result.output.lower()
     assert _goal(tmp_path)["status"] == "draft"
     assert any(event.get("type") == "gate_required" for event in _history(tmp_path))
+
+
+def test_goal_work_refuses_new_dispatch_when_active_task_exists(tmp_path, monkeypatch):
+    _init(tmp_path, monkeypatch)
+    _create_ready_goal(tmp_path)
+    _write_check(tmp_path, "check_ok.py", 0)
+    _write_acceptance(tmp_path, [_ac("AC-1", "CSV export works", check="python3 check_ok.py")])
+    GoalStore({"_project_root": str(tmp_path)}).record_task("G001", "G001-WORK-001")
+
+    def fail_dispatch(**kwargs):
+        raise AssertionError("must not dispatch while active_task_id is set")
+
+    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", fail_dispatch)
+
+    first = runner.invoke(cli_main.app, ["goal", "work", "G001", "--max-steps", "2"])
+    second = runner.invoke(cli_main.app, ["goal", "work", "G001", "--max-steps", "2"])
+    goal = _goal(tmp_path)
+    dispatched = [event for event in _history(tmp_path) if event.get("type") == "task_dispatched"]
+
+    output = " ".join(first.output.split())
+    assert first.exit_code == 0
+    assert second.exit_code == 0
+    assert "active worker task G001-WORK-001" in output
+    assert "orch jobs --result G001-WORK-001" in output
+    assert "orch jobs --cancel G001-WORK-001" in output
+    assert goal["active_task_id"] == "G001-WORK-001"
+    assert goal["status"] == "running"
+    assert [event["task_id"] for event in dispatched] == ["G001-WORK-001"]
 
 
 def test_goal_work_marks_done_when_single_core_ac_check_passes(tmp_path, monkeypatch):
@@ -711,3 +757,233 @@ def test_goal_audit_preserves_done_status(tmp_path, monkeypatch):
     assert _goal(tmp_path)["status"] == "done"
     assert _goal(tmp_path)["active_task_id"] is None
     assert (tmp_path / ".orch" / "goals" / "G001" / "audit.md").is_file()
+
+
+def test_goal_store_claim_is_exclusive_across_independent_instances(tmp_path, monkeypatch):
+    _init(tmp_path, monkeypatch)
+    _create_ready_goal(tmp_path)
+    first = GoalStore({"_project_root": str(tmp_path)})
+    second = GoalStore({"_project_root": str(tmp_path)})
+
+    first.record_task("G001", "G001-WORK-001")
+
+    with pytest.raises(GoalStoreError):
+        second.record_task("G001", "G001-WORK-002")
+    assert _goal(tmp_path)["active_task_id"] == "G001-WORK-001"
+    dispatched = [event for event in _history(tmp_path) if event.get("type") == "task_dispatched"]
+    assert [event["task_id"] for event in dispatched] == ["G001-WORK-001"]
+
+
+def test_goal_store_claim_is_exclusive_across_processes(tmp_path, monkeypatch):
+    _init(tmp_path, monkeypatch)
+    _create_ready_goal(tmp_path)
+    context = multiprocessing.get_context("spawn")
+    ready = context.Event()
+    outcomes = context.Queue()
+    processes = [
+        context.Process(target=_claim_task_in_process, args=(str(tmp_path), ready, outcomes))
+        for _ in range(2)
+    ]
+    try:
+        for process in processes:
+            process.start()
+        ready.set()
+        results = [outcomes.get(timeout=15) for _ in processes]
+    finally:
+        for process in processes:
+            process.join(timeout=15)
+            if process.is_alive():
+                process.terminate()
+                process.join()
+
+    assert sorted(result[0] for result in results) == ["blocked", "claimed"]
+    claimed = next(result[1] for result in results if result[0] == "claimed")
+    assert _goal(tmp_path)["active_task_id"] == claimed
+    dispatched = [event for event in _history(tmp_path) if event.get("type") == "task_dispatched"]
+    assert [event["task_id"] for event in dispatched] == [claimed]
+
+
+def test_goal_store_recovers_stale_lock_owner(tmp_path, monkeypatch):
+    _init(tmp_path, monkeypatch)
+    _create_ready_goal(tmp_path)
+    lock_path = tmp_path / ".orch" / "goals" / "G001" / ".goal.lock"
+    lock_path.mkdir()
+    (lock_path / "owner.json").write_text(
+        json.dumps({"hostname": socket.gethostname(), "pid": 999_999_999, "token": "stale"}),
+        encoding="utf-8",
+    )
+
+    with GoalStore({"_project_root": str(tmp_path)}).files.lock_goal("G001"):
+        assert (lock_path / "owner.json").is_file()
+
+    assert not lock_path.exists()
+
+
+def test_goal_store_task_completion_requires_matching_active_task(tmp_path, monkeypatch):
+    _init(tmp_path, monkeypatch)
+    _create_ready_goal(tmp_path)
+    first = GoalStore({"_project_root": str(tmp_path)})
+    second = GoalStore({"_project_root": str(tmp_path)})
+    first.record_task("G001", "G001-WORK-001")
+
+    with pytest.raises(GoalStoreError):
+        second.record_task_result("G001", "G001-WORK-999", {"status": "DONE"})
+
+    assert _goal(tmp_path)["active_task_id"] == "G001-WORK-001"
+    assert not any(event.get("type") == "task_result" and event.get("task_id") == "G001-WORK-999" for event in _history(tmp_path))
+    second.record_task_result("G001", "G001-WORK-001", {"status": "DONE"})
+    assert _goal(tmp_path)["active_task_id"] is None
+
+
+def test_goal_store_rejects_stale_goal_yaml_save_to_prevent_lost_updates(tmp_path, monkeypatch):
+    _init(tmp_path, monkeypatch)
+    _create_ready_goal(tmp_path)
+    first = GoalStore({"_project_root": str(tmp_path)})
+    second = GoalStore({"_project_root": str(tmp_path)})
+    stale = first.load("G001")
+
+    second.record_evidence("G001", {"type": "check", "criterion_id": "AC-1", "passed": True})
+    stale.title = "stale writer"
+
+    with pytest.raises(GoalStoreError):
+        first.save(stale)
+    current = _goal(tmp_path)
+    assert current["title"] == "Build"
+    assert current["evidence"] and current["evidence"][0]["passed"] is True
+
+
+def test_goal_store_atomic_acceptance_write_failure_commits_authoritative_goal_yaml(tmp_path, monkeypatch):
+    _init(tmp_path, monkeypatch)
+    _create_ready_goal(tmp_path)
+    _write_acceptance(tmp_path, [_ac("AC-1", "CSV export works", check="python3 check_ok.py")])
+    store = GoalStore({"_project_root": str(tmp_path)})
+    original = _acceptance_path(tmp_path).read_text(encoding="utf-8")
+    real_replace = goal_files.os.replace
+
+    def fail_acceptance_replace(src, dst):
+        if Path(dst).name == "acceptance.md":
+            raise OSError("simulated replace failure")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(goal_files.os, "replace", fail_acceptance_replace)
+
+    # goal.yaml is the authoritative committed state; acceptance.md projection
+    # failures do not roll it back. Runtime no longer falls back to the stale
+    # projection, so the new status is still effective.
+    with pytest.raises(OSError):
+        store.set_ac_status("G001", "AC-1", "verified")
+    assert _acceptance_path(tmp_path).read_text(encoding="utf-8") == original
+    assert _goal(tmp_path).get("ac_status", {}) == {"AC-1": "verified"}
+
+    # A subsequent load reconciles the stale projection from goal.yaml.
+    monkeypatch.undo()
+    store.load("G001")
+    assert _ac_status(tmp_path, "AC-1") == "verified"
+    assert not list(_acceptance_path(tmp_path).parent.glob(".acceptance.md.*.tmp"))
+
+
+def test_goal_store_goal_save_failure_precedes_acceptance_projection(tmp_path, monkeypatch):
+    """If goal.yaml cannot be saved, acceptance.md must not be advanced."""
+    _init(tmp_path, monkeypatch)
+    _create_ready_goal(tmp_path)
+    _write_acceptance(tmp_path, [_ac("AC-1", "CSV export works", check="python3 check_ok.py")])
+    store = GoalStore({"_project_root": str(tmp_path)})
+    original = _acceptance_path(tmp_path).read_text(encoding="utf-8")
+    real_replace = goal_files.os.replace
+
+    def fail_goal_replace(src, dst):
+        if Path(dst).name == "goal.yaml":
+            raise OSError("simulated goal.yaml replace failure")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(goal_files.os, "replace", fail_goal_replace)
+
+    with pytest.raises(OSError):
+        store.set_ac_status("G001", "AC-1", "verified")
+    assert _acceptance_path(tmp_path).read_text(encoding="utf-8") == original
+    assert "AC-1" not in _goal(tmp_path).get("ac_status", {})
+
+
+def test_goal_store_goal_save_succeeds_projection_fails_then_recover(tmp_path, monkeypatch):
+    """Authoritative save commits; a later load/mutation repairs the projection."""
+    _init(tmp_path, monkeypatch)
+    _create_ready_goal(tmp_path)
+    _write_acceptance(tmp_path, [_ac("AC-1", "CSV export works", check="python3 check_ok.py")])
+    store = GoalStore({"_project_root": str(tmp_path)})
+    original = _acceptance_path(tmp_path).read_text(encoding="utf-8")
+    real_repair = store.files.repair_acceptance_projection
+    calls = []
+
+    def fail_once_then_pass(goal_id, ac_status):
+        calls.append((goal_id, dict(ac_status)))
+        if len(calls) == 1:
+            raise OSError("simulated projection failure")
+        return real_repair(goal_id, ac_status)
+
+    monkeypatch.setattr(store.files, "repair_acceptance_projection", fail_once_then_pass)
+
+    with pytest.raises(OSError):
+        store.set_ac_status("G001", "AC-1", "verified")
+    assert _goal(tmp_path).get("ac_status", {}) == {"AC-1": "verified"}
+    assert _acceptance_path(tmp_path).read_text(encoding="utf-8") == original
+
+    from orchlink.goal.criteria import GoalCriteriaEngine
+
+    # Runtime state must not regress to the stale projection.
+    engine = GoalCriteriaEngine(store)
+    assert engine.status_for("G001", "AC-1") == "verified"
+
+    # Another mutation also repairs the projection as a side effect of load.
+    store.set_ac_status("G001", "AC-1", "human-approved")
+    assert _ac_status(tmp_path, "AC-1") == "human-approved"
+    assert _goal(tmp_path).get("ac_status", {}) == {"AC-1": "human-approved"}
+
+
+def test_goal_criteria_does_not_fallback_to_projection_status(tmp_path, monkeypatch):
+    """If goal.ac_status lacks an ID, the engine treats it as pending even when acceptance.md claims otherwise."""
+    from orchlink.goal.criteria import GoalCriteriaEngine
+
+    _init(tmp_path, monkeypatch)
+    _create_ready_goal(tmp_path)
+    _write_acceptance(tmp_path, [_ac("AC-1", "CSV export works", check="python3 check_ok.py", status="verified")])
+    store = GoalStore({"_project_root": str(tmp_path)})
+    # Explicitly clear the authoritative map to simulate an unsaved or pre-authority goal.
+    goal = store.load("G001")
+    goal.ac_status.clear()
+    store.save(goal)
+
+    engine = GoalCriteriaEngine(store)
+    selected = engine.selected("G001")
+    assert selected is not None and selected.id == "AC-1"
+    assert engine.status_for("G001", "AC-1") == "pending"
+    assert _ac_status(tmp_path, "AC-1") == "pending"
+
+
+def test_goal_store_history_append_is_fsynced_and_malformed_history_fails_closed(tmp_path, monkeypatch):
+    _init(tmp_path, monkeypatch)
+    _create_ready_goal(tmp_path)
+    fsync_calls: list[int] = []
+    real_fsync = os.fsync
+
+    def tracking_fsync(fd: int) -> None:
+        fsync_calls.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(goal_files.os, "fsync", tracking_fsync)
+    store = GoalStore({"_project_root": str(tmp_path)})
+    store.append_history("G001", {"type": "gate_required"})
+
+    assert fsync_calls
+    history_path = tmp_path / ".orch" / "goals" / "G001" / "history.jsonl"
+    with history_path.open("a", encoding="utf-8") as file:
+        file.write("{not-json}\n")
+    with pytest.raises(json.JSONDecodeError):
+        store.history("G001")
+
+
+def test_goal_store_ignores_unsupported_directory_fsync(tmp_path, monkeypatch):
+    def unsupported_open(*args, **kwargs):
+        raise OSError(errno.EINVAL, "directory fsync is unsupported")
+
+    monkeypatch.setattr(goal_files.os, "open", unsupported_open)
+    goal_files.GoalFileStore._fsync_directory(tmp_path)

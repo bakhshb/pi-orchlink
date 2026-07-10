@@ -1,15 +1,40 @@
-"""Optional JSONL-backed broker store.
+"""JSONL-backed broker store with bounded growth and atomic durability.
 
-The store keeps MemoryMessageStore's behavior and appends a snapshot after each
-mutating operation. On startup it restores the latest snapshot from the journal.
-This is intentionally local and simple: no server process, no SQLite migration,
-and no extra dependency.
+The store keeps :class:`MemoryMessageStore`'s behavior, persists every
+durable mutation through the journal, and replays the latest snapshot on
+startup.
+
+S04 durability properties:
+
+* Every durable mutation, snapshot capture, journal append, and compaction
+  run inside a single critical section keyed off the inherited state lock.
+  The same task that mutates state captures the snapshot and writes the
+  journal line; no other mutation can interleave, so the journal's record
+  order matches the authoritative mutation order.
+* Each journal line is flushed and ``fsync``'d before the mutation returns,
+  so a process crash can lose at most the in-flight mutation.
+* The journal tolerates a partial final line on read: the truncated tail
+  is repaired (rewritten to the valid prefix via the same atomic path as
+  compaction) so a later append never concatenates after corrupt bytes and
+  a future restart never ignores a successful mutation.
+* The journal compacts atomically (``sibling tmp + fsync + os.replace``)
+  to a single-snapshot record whenever the file size or record count
+  crosses a bounded threshold. Compaction is maintenance: if it fails the
+  exception is logged but never propagated, because the preceding append
+  is already durable.
+* Mutations that raise never reach the journal: the append runs only after
+  the in-memory mutation returns successfully.
+* Every state-changing method inherited from :class:`MemoryMessageStore`
+  is overridden here so persistence cannot be bypassed by a future caller.
+  Read-only paths that may only change state through background expiry
+  journal a record only when expiry actually mutated something.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Awaitable, Callable, TypeVar
@@ -17,7 +42,12 @@ from typing import Any, Awaitable, Callable, TypeVar
 from orchlink.broker.state import is_terminal_status
 from orchlink.broker.storage.base import ActivityInput, AgentInput, MessageInput, SessionAcquireInput, SessionHeartbeatInput
 from orchlink.broker.storage.memory import MemoryMessageStore
-from orchlink.core.models import Job, JobRoute, SessionAcquire, SessionHeartbeat, WorkerActivityInput
+from orchlink.broker.storage.persistence import (
+    atomic_append_jsonl_line,
+    atomic_write_text,
+    encode_jsonl_record,
+)
+from orchlink.core.models import Job, JobRoute, ReplyResult, SessionAcquire, SessionHeartbeat, TaskResult, WaitBlocker, WorkerActivityInput
 from orchlink.core.views import (
     activity_record_from_wire,
     activity_record_to_wire,
@@ -31,6 +61,7 @@ from orchlink.core.views import (
     lease_from_wire,
     lease_to_wire,
     message_input_to_wire,
+    reply_result_to_wire,
     session_from_wire,
     session_to_wire,
     stored_message_from_wire,
@@ -41,9 +72,57 @@ from orchlink.core.views import (
     task_projection_to_wire,
     task_result_from_wire,
     task_result_to_wire,
+    wait_blocker_to_wire,
 )
 
 T = TypeVar("T")
+
+
+# Compaction thresholds. Defaults keep the file comfortably under 256 KiB
+# of accumulated audit lines while still amortizing the cost of the
+# compaction ``fsync`` over many appends. Tests override these to exercise
+# compaction deterministically without paying for thousands of mutations.
+DEFAULT_MAX_RECORDS = 64
+DEFAULT_MAX_BYTES = 256 * 1024
+
+
+class _ReentrantAsyncLock:
+    """Minimal asyncio re-entrant lock used by :class:`JsonlMessageStore`.
+
+    ``_recorded`` holds the state lock across ``mutation -> snapshot ->
+    append -> fsync``. The inherited :class:`MemoryMessageStore` mutation
+    methods also acquire ``self._lock``. ``asyncio.Lock`` is not re-entrant,
+    so we wrap it with depth tracking keyed by the current task so a single
+    task can hold the lock across both the journal and the parent method
+    without deadlocking.
+    """
+
+    __slots__ = ("_depth", "_lock", "_owner")
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._owner: asyncio.Task | None = None
+        self._depth = 0
+
+    def locked(self) -> bool:
+        return self._lock.locked() or self._depth > 0
+
+    async def __aenter__(self) -> "_ReentrantAsyncLock":
+        task = asyncio.current_task()
+        if self._owner is task:
+            self._depth += 1
+            return self
+        await self._lock.acquire()
+        self._owner = task
+        self._depth = 1
+        return self
+
+    async def __aexit__(self, *exc_info: Any) -> bool:
+        self._depth -= 1
+        if self._depth == 0:
+            self._owner = None
+            self._lock.release()
+        return False
 
 
 def _job_to_dict(job: Job) -> dict[str, Any]:
@@ -83,6 +162,7 @@ def _job_from_dict(data: dict[str, Any]) -> Job:
         lease=lease_from_wire(data.get("lease")),
     )
 
+
 def _agent_to_journal_request(agent: AgentInput) -> dict[str, Any]:
     """Render an agent input as JSON-serializable request data for JSONL."""
     return agent_to_wire(agent_input_to_agent(agent))
@@ -121,13 +201,36 @@ def _activity_to_journal_request(activity: ActivityInput) -> dict[str, Any]:
 
 
 class JsonlMessageStore(MemoryMessageStore):
-    """Memory store with local snapshot replay."""
+    """Memory store with hardened JSONL persistence.
 
-    def __init__(self, path: str | Path, require_peer_sessions: bool = False, session_grace_seconds: int = 25) -> None:
+    See module docstring for the full S04 durability contract.
+    """
+
+    def __init__(
+        self,
+        path: str | Path,
+        require_peer_sessions: bool = False,
+        session_grace_seconds: int = 25,
+        *,
+        max_records: int | None = None,
+        max_bytes: int | None = None,
+    ) -> None:
         super().__init__(require_peer_sessions=require_peer_sessions, session_grace_seconds=session_grace_seconds)
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # Replace the parent's non-reentrant lock with a re-entrant one so
+        # ``_recorded`` can hold the lock across ``mutation -> snapshot ->
+        # append -> fsync`` without deadlocking the inherited methods that
+        # also acquire ``self._lock``.
+        self._lock = _ReentrantAsyncLock()
+        self._max_records = max_records if max_records is not None else DEFAULT_MAX_RECORDS
+        self._max_bytes = max_bytes if max_bytes is not None else DEFAULT_MAX_BYTES
+        self._record_count = 0
         self._load_latest_snapshot()
+
+    # ------------------------------------------------------------------
+    # Snapshot capture / restore
+    # ------------------------------------------------------------------
 
     def _snapshot(self) -> dict[str, Any]:
         return {
@@ -178,36 +281,208 @@ class JsonlMessageStore(MemoryMessageStore):
                 self._state.inboxes.setdefault(to_agent, asyncio.Queue()).put_nowait(stored)
 
     def _load_latest_snapshot(self) -> None:
+        """Load the latest snapshot and repair a truncated trailing line.
+
+        S04: a process crash mid-append can leave a partial trailing line
+        in the journal. We recover from the preceding valid snapshot *and*
+        repair the file so the partial bytes do not survive. Without the
+        repair, a later durable append would concatenate after the corrupt
+        tail and a future restart would stop at the corrupt line and
+        silently ignore every mutation appended after it.
+
+        The repair runs at construction — before the store is exposed to
+        any caller — so it is serialized ahead of every append under the
+        same critical section that owns the journal. We keep every valid
+        preceding record, drop the corrupt tail, and rewrite the file
+        through the same atomic tmp + fsync + ``os.replace`` path used by
+        compaction, so the canonical file is either fully repaired or fully
+        unchanged. ``_record_count`` is seeded from the surviving records
+        so the compaction policy does not fire on the next append purely
+        from inherited history.
+        """
         if not self.path.is_file():
             return
         latest: dict[str, Any] | None = None
+        valid_count = 0
+        valid_lines: list[str] = []
+        corrupt = False
         with self.path.open("r", encoding="utf-8") as file:
-            for line in file:
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError:
+            for raw in file:
+                stripped = raw.rstrip("\n")
+                if not stripped:
                     continue
+                try:
+                    record = json.loads(stripped)
+                except json.JSONDecodeError:
+                    # Truncated / corrupt line — stop trusting this point
+                    # forward. The valid prefix collected so far is what the
+                    # repair rewrites the file down to.
+                    corrupt = True
+                    break
+                valid_lines.append(stripped)
+                if not isinstance(record, dict):
+                    continue
+                valid_count += 1
                 snapshot = record.get("snapshot")
                 if isinstance(snapshot, dict):
                     latest = snapshot
+        if corrupt:
+            # Drop the corrupt trailing bytes by atomically rewriting the
+            # journal to the valid prefix. Every preceding record is
+            # preserved and the file ends on a clean ``\n`` so the next
+            # append starts a fresh line instead of concatenating after
+            # corrupt bytes.
+            atomic_write_text(self.path, "".join(line + "\n" for line in valid_lines))
+        self._record_count = valid_count
         if latest is not None:
             self._restore_snapshot(latest)
 
-    async def _journal(self, operation: str, request: dict[str, Any], result: Any) -> None:
+    # ------------------------------------------------------------------
+    # Append + compaction
+    # ------------------------------------------------------------------
+
+    def _append_record_locked(
+        self,
+        operation: str,
+        request: dict[str, Any],
+        result: Any,
+        snapshot: dict[str, Any],
+    ) -> None:
+        """Append a journal line and fsync it. Must be called under ``self._lock``.
+
+        Holding the state lock through the append guarantees that another
+        mutation cannot interleave its ``_snapshot`` capture with our write,
+        so every journal record's snapshot reflects the state visible at
+        the moment the mutation committed.
+        """
         record = {
             "time": self._now(),
             "operation": operation,
             "request": request,
             "result": result,
-            "snapshot": self._snapshot(),
+            "snapshot": snapshot,
         }
-        with self.path.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+        atomic_append_jsonl_line(self.path, encode_jsonl_record(record) + "\n")
+        self._record_count += 1
+
+    def _maybe_compact_locked(self) -> None:
+        """Compact the journal to a single-snapshot record if the threshold
+        is exceeded. Must be called under ``self._lock`` (so the snapshot
+        reflects the authoritative state) and before the next append
+        potentially observes a stale ``_record_count``.
+        """
+        try:
+            file_size = self.path.stat().st_size
+        except OSError:
+            return
+        if file_size < self._max_bytes and self._record_count < self._max_records:
+            return
+        snapshot = self._snapshot()
+        compact_record = {
+            "time": self._now(),
+            "operation": "_compact",
+            "request": {},
+            "result": {
+                "compacted_from": self._record_count,
+                "compacted_size": file_size,
+            },
+            "snapshot": snapshot,
+        }
+        line = encode_jsonl_record(compact_record) + "\n"
+        atomic_write_text(self.path, line)
+        self._record_count = 1
+
+    # ------------------------------------------------------------------
+    # Recorded mutation envelope
+    # ------------------------------------------------------------------
+
+    def _compact_or_log(self) -> None:
+        """Attempt compaction; log failures but never let them escape.
+
+        Compaction is maintenance, not part of the mutation contract. The
+        journal line for the successful mutation is already durable, so a
+        compaction failure cannot be allowed to fail the caller.
+        """
+        try:
+            self._maybe_compact_locked()
+        except Exception as exc:
+            logging.getLogger(__name__).warning("JSONL compaction failed: %s", exc)
 
     async def _recorded(self, operation: str, request: dict[str, Any], call: Callable[[], Awaitable[T]]) -> T:
-        result = await call()
-        await self._journal(operation, request, result)
+        """Run a mutation, capture the resulting snapshot, and journal it.
+
+        Ordering invariants:
+
+        * The mutation runs first. If it raises, the journal is untouched
+          and the exception propagates — S04 never persists a failed
+          mutation.
+        * The snapshot is captured under the state lock so no concurrent
+          mutation can mutate ``self._state`` while we read it.
+        * The append + ``fsync`` happen under the same state lock, so the
+          authoritative state and the journal line land together.
+        * Compaction runs under the same state lock, but a compaction
+          failure is logged and swallowed so the mutation still returns
+          successfully.
+        """
+        async with self._lock:
+            result = await call()
+            snapshot = self._snapshot()
+            self._append_record_locked(operation, request, result, snapshot)
+            self._compact_or_log()
         return result
+
+    async def _recorded_read(self, operation: str, request: dict[str, Any], call: Callable[[], Awaitable[T]]) -> T:
+        """Run a read, journal only if background expiry changed state.
+
+        Read-only paths may still mutate state through
+        ``_expire_timed_out_messages_locked``. If that (or any other side
+        effect) changed the snapshot, we persist the resulting state so a
+        later replay does not silently lose the timeout-driven transition.
+        """
+        async with self._lock:
+            before = self._snapshot()
+            result = await call()
+            after = self._snapshot()
+            if before != after:
+                self._append_record_locked(operation, request, result, after)
+                self._compact_or_log()
+            return result
+
+    # ------------------------------------------------------------------
+    # Sync override: checkpoint drifts persisted through the same pipeline
+    # ------------------------------------------------------------------
+
+    def append_checkpoint_drifts(self, drifts: list[Any]) -> None:
+        """Persist checkpoint drift records through the journal.
+
+        ``append_checkpoint_drifts`` is a synchronous startup hook (see
+        ``BrokerService.startup_reconcile_checkpoint``), so it cannot
+        ``await self._lock`` like the async mutations. It reuses the *same*
+        ordered snapshot/append/compact pipeline — mutate first, capture
+        the snapshot, append + ``fsync`` the journal line, then maybe
+        compact — so the drift events survive restart and replay
+        identically to every other mutation.
+
+        Startup reconciliation runs before the broker serves traffic, so no
+        async mutation can interleave; this matches the parent
+        ``MemoryMessageStore``, which also mutates state here without the
+        async lock. A failed durable append propagates to the caller (which
+        logs and continues), exactly as a failed append propagates out of
+        ``_recorded``.
+        """
+        super().append_checkpoint_drifts(drifts)
+        snapshot = self._snapshot()
+        self._append_record_locked(
+            "append_checkpoint_drifts",
+            {"drifts": [drift.to_dict() for drift in drifts]},
+            {"count": len(drifts)},
+            snapshot,
+        )
+        self._compact_or_log()
+
+    # ------------------------------------------------------------------
+    # Inherited mutation overrides (each routes through ``_recorded``)
+    # ------------------------------------------------------------------
 
     async def register_agent(self, agent: AgentInput) -> dict[str, Any]:
         return await self._recorded(
@@ -290,10 +565,11 @@ class JsonlMessageStore(MemoryMessageStore):
         )
 
     async def expire_sessions(self) -> list[dict[str, Any]]:
-        expired = await MemoryMessageStore.expire_sessions(self)
-        if expired:
-            await self._journal("expire_sessions", {}, expired)
-        return expired
+        return await self._recorded(
+            "expire_sessions",
+            {},
+            lambda: MemoryMessageStore.expire_sessions(self),
+        )
 
     async def cancel_work(self, item_id: str, reason: str = "", project_id: str | None = None) -> dict[str, Any]:
         return await self._recorded(
@@ -321,4 +597,216 @@ class JsonlMessageStore(MemoryMessageStore):
             "close_conversation",
             {"conversation_id": conversation_id, "message": _message_to_journal_request(message)},
             lambda: MemoryMessageStore.close_conversation(self, conversation_id, message),
+        )
+
+    # ------------------------------------------------------------------
+    # Polling / wait mutators (release the lock while waiting)
+    # ------------------------------------------------------------------
+
+    async def get_next_message(
+        self,
+        agent_id: str,
+        wait_seconds: int,
+        lease_id: str | None = None,
+        project_id: str | None = None,
+        on_delivered: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any] | None:
+        """Deliver the next inbox message and journal the state transition.
+
+        This mirrors :meth:`MemoryMessageStore.get_next_message` so the
+        delivery status change (``QUEUED`` -> ``DELIVERED``) is persisted.
+        The lock is released while waiting on the inbox, exactly as in the
+        parent implementation. The optional ``on_delivered`` callback is
+        invoked synchronously after the journal append has landed under the
+        store lock, so the caller can record the in-flight lease before
+        the delivery critical section ends.
+        """
+        async with self._lock:
+            self._expire_timed_out_messages_locked()
+            self._session_store.assert_poll_lease_locked(agent_id, project_id=project_id, lease_id=lease_id)
+            inbox = self._work_queue.inbox_for_agent_locked(agent_id)
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + wait_seconds
+        while True:
+            timeout = max(0, deadline - loop.time()) if wait_seconds > 0 else 0
+            try:
+                message = await asyncio.wait_for(inbox.get(), timeout=timeout)
+            except asyncio.TimeoutError:
+                return None
+
+            async with self._lock:
+                self._expire_timed_out_messages_locked()
+                self._session_store.assert_poll_lease_locked(agent_id, project_id=project_id, lease_id=lease_id)
+                before = self._snapshot()
+                delivered = self._work_queue.deliver_message_locked(message)
+                if delivered is None:
+                    after = self._snapshot()
+                    if before != after:
+                        self._append_record_locked(
+                            "get_next_message",
+                            {"agent_id": agent_id, "project_id": project_id, "wait_seconds": wait_seconds, "result": "skipped_stale"},
+                            None,
+                            after,
+                        )
+                        self._compact_or_log()
+                    if wait_seconds <= 0 or loop.time() >= deadline:
+                        return None
+                    continue
+                after = self._snapshot()
+                self._append_record_locked(
+                    "get_next_message",
+                    {"agent_id": agent_id, "project_id": project_id, "wait_seconds": wait_seconds, "message_id": delivered.get("message_id")},
+                    delivered,
+                    after,
+                )
+                self._compact_or_log()
+                self._invoke_on_delivered(delivered, on_delivered)
+            return delivered
+
+    async def wait_for_reply(self, correlation_id: str, timeout_seconds: int) -> dict[str, Any]:
+        """Wait for a reply; journal only if the timeout path mutates state."""
+        async with self._lock:
+            self._expire_timed_out_messages_locked()
+            future = self._work_queue.reply_future_locked(correlation_id)
+
+        try:
+            reply_result = await asyncio.wait_for(future, timeout=timeout_seconds)
+            if isinstance(reply_result, ReplyResult):
+                return reply_result_to_wire(reply_result)
+            return wait_blocker_to_wire(reply_result)
+        except asyncio.TimeoutError:
+            async with self._lock:
+                before = self._snapshot()
+                self._work_queue.timeout_reply_locked(correlation_id)
+                after = self._snapshot()
+                if before != after:
+                    self._append_record_locked(
+                        "wait_for_reply",
+                        {"correlation_id": correlation_id, "timeout_seconds": timeout_seconds, "result": "timeout"},
+                        None,
+                        after,
+                    )
+                    self._compact_or_log()
+            return {
+                "status": "timeout",
+                "correlation_id": correlation_id,
+                "error": "Worker did not reply before timeout.",
+            }
+        finally:
+            if future.done() or future.cancelled():
+                async with self._lock:
+                    self._work_queue.cleanup_reply_waiter_locked(correlation_id, future)
+
+    async def wait_for_task(self, task_id: str, timeout_seconds: int, project_id: str | None = None) -> dict[str, Any]:
+        async with self._lock:
+            before = self._snapshot()
+            self._expire_timed_out_messages_locked()
+            result, task_key, future = self._work_queue.prepare_task_wait_locked(task_id, project_id=project_id)
+            after = self._snapshot()
+            if before != after:
+                self._append_record_locked(
+                    "wait_for_task",
+                    {"task_id": task_id, "project_id": project_id},
+                    {"status": "expiry_applied"},
+                    after,
+                )
+                self._compact_or_log()
+            if isinstance(result, TaskResult):
+                return task_result_to_wire(result)
+            if isinstance(result, WaitBlocker):
+                return wait_blocker_to_wire(result)
+            assert future is not None
+
+        try:
+            completed = await asyncio.wait_for(future, timeout=timeout_seconds)
+            return task_result_to_wire(completed)
+        except asyncio.TimeoutError:
+            async with self._lock:
+                self._work_queue.cleanup_task_waiter_locked(task_key, future)
+            return {"status": "WAIT_TIMEOUT", "project_id": project_id, "task_id": task_id, "error": "No task result arrived before the wait timeout."}
+
+    # ------------------------------------------------------------------
+    # Read-only paths that may mutate state through background expiry
+    # ------------------------------------------------------------------
+
+    async def list_jobs(
+        self,
+        limit: int = 50,
+        project_id: str | None = None,
+        active: bool = False,
+        status: str | None = None,
+        kind: str | None = None,
+        item_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        async def _call() -> list[dict[str, Any]]:
+            self._expire_timed_out_messages_locked()
+            return self._job_projector.list_jobs_locked(
+                limit=limit,
+                project_id=project_id,
+                active=active,
+                status=status,
+                kind=kind,
+                item_id=item_id,
+            )
+
+        return await self._recorded_read(
+            "list_jobs",
+            {"limit": limit, "project_id": project_id, "active": active, "status": status, "kind": kind, "item_id": item_id},
+            _call,
+        )
+
+    async def list_active_messages(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        async def _call() -> list[dict[str, Any]]:
+            self._expire_timed_out_messages_locked()
+            return self._work_queue.list_active_messages_locked(project_id=project_id)
+
+        return await self._recorded_read(
+            "list_active_messages",
+            {"project_id": project_id},
+            _call,
+        )
+
+    async def list_conversations(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        async def _call() -> list[dict[str, Any]]:
+            self._expire_timed_out_messages_locked()
+            return self._job_projector.list_conversations_locked(project_id=project_id)
+
+        return await self._recorded_read(
+            "list_conversations",
+            {"project_id": project_id},
+            _call,
+        )
+
+    async def can_auto_stop(self, project_id: str | None = None) -> bool:
+        async def _call() -> bool:
+            self._expire_timed_out_messages_locked()
+            return self._session_store.active_session_count_locked(project_id) == 0 and self._active_job_count_locked(project_id) == 0
+
+        return await self._recorded_read(
+            "can_auto_stop",
+            {"project_id": project_id},
+            _call,
+        )
+
+    async def get_task_result(self, task_id: str, project_id: str | None = None) -> dict[str, Any]:
+        async def _call() -> dict[str, Any]:
+            self._expire_timed_out_messages_locked()
+            return self._job_projector.get_task_result_locked(task_id, project_id=project_id)
+
+        return await self._recorded_read(
+            "get_task_result",
+            {"task_id": task_id, "project_id": project_id},
+            _call,
+        )
+
+    async def list_sessions(self, project_id: str | None = None, active: bool = False) -> list[dict[str, Any]]:
+        async def _call() -> list[dict[str, Any]]:
+            self._expire_timed_out_messages_locked()
+            return self._session_store.list_sessions_locked(project_id=project_id, active=active)
+
+        return await self._recorded_read(
+            "list_sessions",
+            {"project_id": project_id, "active": active},
+            _call,
         )

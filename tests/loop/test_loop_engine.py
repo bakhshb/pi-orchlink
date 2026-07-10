@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from orchlink.loop.adapters.state_repo import LoopStateRepo
-from orchlink.loop.domain import LoopItemState, MakerResult, ReasonCode, Verdict, VerifierVerdict
-from orchlink.loop.services import ItemCandidate, LoopEngine, LoopService, MakerDispatchError, MakerTimeoutError, TriageService, VerifierService, WorkerService
+from orchlink.loop.domain import LoopItemState, LoopPolicy, MakerResult, ReasonCode, Verdict, VerifierVerdict, Worktree
+from orchlink.loop.services import BrokerTaskStatus, ItemCandidate, LoopEngine, LoopService, MakerDispatchError, MakerSessionWorktree, MakerTimeoutError, MakerWorktreeUnavailable, VerifierService, WorkerService
 from orchlink.loop.services.verifier_service import VerifierHandle
+
+
+def _run(coro):
+    """Drive the async engine inside a fresh event loop (the Typer-edge pattern)."""
+    return asyncio.run(coro)
+
+
+async def _noop_sleeper(_seconds: float) -> None:
+    return None
 
 
 class FakeBrokerClient:
@@ -14,11 +24,18 @@ class FakeBrokerClient:
         self.status = status
 
     def get_task_status(self, task_id):
+        status = None
         if callable(self.status):
-            return self.status(task_id)
-        if isinstance(self.status, dict):
-            return self.status.get(task_id, self.status.get("*"))
-        return self.status
+            status = self.status(task_id)
+        elif isinstance(self.status, dict):
+            status = self.status.get(task_id, self.status.get("*"))
+        else:
+            status = self.status
+        if status is None or isinstance(status, BrokerTaskStatus):
+            return status
+        if isinstance(status, VerifierVerdict):
+            return BrokerTaskStatus(status="done", result=status)
+        return BrokerTaskStatus(status=str(status).lower())
 
     def get_session_active(self, lease_id):
         return True
@@ -36,6 +53,9 @@ class FakeGateway:
 
     async def dispatch_verifier(self, verifier_assignment, prompt):
         return VerifierHandle(task_id="V-1", worker_name=verifier_assignment.worker_name)
+
+    async def maker_session_project_dir(self, worker_name):
+        return None
 
     async def await_result(self, handle, timeout_seconds):
         if self.maker_timeout and handle.worker_name == "maker":
@@ -57,11 +77,17 @@ class FakeGateway:
 
 
 class FakeMakerService:
-    def __init__(self, *, dispatch_error=None, collect_error=None):
+    def __init__(self, *, dispatch_error=None, collect_error=None, session_worktree=None):
         self.dispatch_error = dispatch_error
         self.collect_error = collect_error
+        self.session_worktree = session_worktree
         self.started = []
         self.awaited = []
+
+    async def resolve_maker_worktree(self, worker_name):
+        if self.session_worktree is None:
+            raise MakerWorktreeUnavailable("missing worktree")
+        return self.session_worktree
 
     async def start_maker(self, item, attempt, *, worktree=None):
         self.started.append((item.item_id, attempt.number, worktree))
@@ -92,6 +118,10 @@ class FakeGoalService:
 class RecordingVerifierService:
     def __init__(self):
         self.calls = []
+
+    def validate_separation(self, maker_worker, verifier_worker, *, allow_same_worker=False):
+        if maker_worker == verifier_worker and not allow_same_worker:
+            raise ValueError("same worker")
 
     async def dispatch_and_collect(self, item, attempt, *, worktree=None, run_checks=False, check_service=None):
         self.calls.append({"run_checks": run_checks, "check_service": check_service})
@@ -158,9 +188,9 @@ def add_verifying(loop_service: LoopService, item_id="I-1"):
 
 def test_tick_with_no_work_returns_zero_counters(tmp_path):
     loop_service = make_loop(tmp_path)
-    engine = LoopEngine({}, loop_service, clock=fake_clock, sleeper=lambda seconds: None)
+    engine = LoopEngine({}, loop_service, clock=fake_clock, sleeper=_noop_sleeper)
 
-    result = engine.tick()
+    result = _run(engine.tick())
 
     assert result.items_dispatched == 0
     assert result.items_verified == 0
@@ -169,16 +199,57 @@ def test_tick_with_no_work_returns_zero_counters(tmp_path):
     assert result.errors == []
 
 
+def test_engine_persists_same_worker_override_when_policy_allows_it(tmp_path):
+    loop_service = make_loop(tmp_path)
+    item = add_awaiting(loop_service)
+    with loop_service.repo.transaction("test:allow_same_worker") as state:
+        state.replace_item(replace(item, verify_policy=LoopPolicy(require_separate_verifier_worker=False)))
+    engine = LoopEngine(
+        {"verifier_worker": "maker"},
+        loop_service,
+        verifier_service=RecordingVerifierService(),
+        broker_client=FakeBrokerClient("running"),
+        clock=fake_clock,
+    )
+
+    result = _run(engine.tick(allow_active_attempts=True))
+    completed = loop_service.get("I-1")
+
+    assert result.errors == []
+    assert completed.state is LoopItemState.DONE
+    assert completed.attempts[-1].same_worker_verifier_override is True
+
+
 def test_tick_refuses_active_attempts_by_default(tmp_path):
     loop_service = make_loop(tmp_path)
     add_dispatching(loop_service)
-    engine = LoopEngine({}, loop_service, broker_client=FakeBrokerClient("completed"), clock=fake_clock)
+    engine = LoopEngine({}, loop_service, broker_client=FakeBrokerClient("running"), clock=fake_clock)
 
-    result = engine.tick()
+    result = _run(engine.tick())
 
     assert result.items_dispatched == 0
+    assert result.recovered == 1
     assert any("active attempts present" in note for note in result.notes)
-    assert loop_service.get("I-1").state is LoopItemState.DISPATCHING
+    assert loop_service.get("I-1").state is LoopItemState.RUNNING
+
+
+def test_tick_recovers_before_refusing_active_attempts(tmp_path):
+    loop_service = make_loop(tmp_path)
+    add_verifying(loop_service)
+    verdict = VerifierVerdict(
+        verdict=Verdict.ACCEPTED,
+        reason_code=ReasonCode.ACCEPTED,
+        detail="ok",
+        required_fixes=(),
+        verifier_worker="review",
+    )
+    engine = LoopEngine({}, loop_service, broker_client=FakeBrokerClient(verdict), clock=fake_clock)
+
+    result = _run(engine.tick())
+
+    assert result.recovered == 1
+    assert loop_service.get("I-1").state is LoopItemState.DONE
+    assert not any("active attempts present" in note for note in result.notes)
 
 
 def test_tick_dispatches_ready_item_through_done(tmp_path):
@@ -187,13 +258,60 @@ def test_tick_dispatches_ready_item_through_done(tmp_path):
     broker = FakeBrokerClient({"*": {"status": "completed", "result": MakerResult("maker done")}})
     engine = LoopEngine({}, loop_service, verifier_service=make_verifier(), worker_service=make_worker_service(), broker_client=broker, clock=fake_clock)
 
-    result = engine.tick()
+    result = _run(engine.tick())
 
     assert result.items_dispatched == 1
     assert result.items_verified == 1
     assert result.items_done == 1
     assert result.errors == []
     assert loop_service.get("I-1").state is LoopItemState.DONE
+
+
+def test_tick_isolation_required_attaches_maker_session_worktree_to_attempt(tmp_path):
+    loop_service = make_loop(tmp_path)
+    add_ready(loop_service)
+    worktree_path = tmp_path / "demo-maker"
+    worktree_path.mkdir()
+    worker_service = FakeMakerService(
+        session_worktree=MakerSessionWorktree(Worktree(str(worktree_path)), session_lease_id="lease-maker")
+    )
+    engine = LoopEngine(
+        {"require_worktree_isolation": True},
+        loop_service,
+        worker_service=worker_service,
+        broker_client=FakeBrokerClient("running"),
+    )
+
+    result = _run(engine.tick())
+    item = loop_service.get("I-1")
+    attempt = item.attempts[-1]
+
+    assert result.items_dispatched == 1
+    assert item.worktree.path == str(worktree_path)
+    assert attempt.maker.project_dir == str(worktree_path)
+    assert attempt.maker.session_lease_id == "lease-maker"
+    assert worker_service.started == [("I-1", 1, Worktree(str(worktree_path)))]
+
+
+def test_tick_isolation_required_refuses_dispatch_without_valid_maker_worktree(tmp_path):
+    loop_service = make_loop(tmp_path)
+    add_ready(loop_service)
+    worker_service = FakeMakerService()
+    engine = LoopEngine(
+        {"loop": {"require_worktree_isolation": True}},
+        loop_service,
+        worker_service=worker_service,
+        broker_client=FakeBrokerClient("running"),
+    )
+
+    result = _run(engine.tick())
+    item = loop_service.get("I-1")
+
+    assert result.items_dispatched == 0
+    assert result.items_blocked == 1
+    assert item.state is LoopItemState.BLOCKED
+    assert item.attempts == ()
+    assert item.blocker == "maker_worktree_unavailable"
 
 
 def test_tick_attaches_accepted_loop_verdict_to_goal_service(tmp_path):
@@ -211,7 +329,7 @@ def test_tick_attaches_accepted_loop_verdict_to_goal_service(tmp_path):
         goal_service=goal_service,
     )
 
-    result = engine.tick()
+    result = _run(engine.tick())
 
     assert goal_service.calls[0]["goal_id"] == "G123"
     assert goal_service.calls[0]["evidence"]["type"] == "loop_verdict"
@@ -224,12 +342,12 @@ def test_tick_handles_rejected_verdict_and_retry_exhaustion(tmp_path):
     broker = FakeBrokerClient({"*": {"status": "completed", "result": MakerResult("maker done")}})
     engine = LoopEngine({}, loop_service, verifier_service=make_verifier(Verdict.REJECTED), worker_service=make_worker_service(), broker_client=broker)
 
-    first = engine.tick()
+    first = _run(engine.tick())
     assert first.items_verified == 1
     assert loop_service.get("I-1").state is LoopItemState.REJECTED
 
     loop_service.ready("I-1")
-    second = engine.tick()
+    second = _run(engine.tick())
 
     assert second.items_verified == 1
     assert second.items_blocked == 1
@@ -242,7 +360,7 @@ def test_tick_with_no_verifier_blocks_awaiting_verdict(tmp_path):
     add_awaiting(loop_service)
     engine = LoopEngine({}, loop_service, verifier_service=None, broker_client=FakeBrokerClient("running"))
 
-    result = engine.tick(allow_active_attempts=True)
+    result = _run(engine.tick(allow_active_attempts=True))
 
     assert result.items_blocked == 1
     assert loop_service.get("I-1").state is LoopItemState.BLOCKED
@@ -261,7 +379,7 @@ def test_tick_dispatching_item_uses_worker_service_and_reaches_done(tmp_path):
         broker_client=FakeBrokerClient("completed"),
     )
 
-    result = engine.tick(allow_active_attempts=True)
+    result = _run(engine.tick(allow_active_attempts=True))
 
     assert worker_service.started == [("I-1", 1, None)]
     assert worker_service.awaited == [(VerifierHandle(task_id="real-I-1-1", worker_name="maker"), 1800)]
@@ -280,7 +398,7 @@ def test_tick_maker_dispatch_error_blocks_item(tmp_path):
         broker_client=FakeBrokerClient("completed"),
     )
 
-    result = engine.tick(allow_active_attempts=True)
+    result = _run(engine.tick(allow_active_attempts=True))
 
     assert result.items_blocked == 1
     assert "I-1: maker_dispatch_error" in result.notes
@@ -295,10 +413,10 @@ def test_tick_maker_result_timeout_blocks_item(tmp_path):
         {},
         loop_service,
         worker_service=FakeMakerService(collect_error=MakerTimeoutError("too slow")),
-        broker_client=FakeBrokerClient("completed"),
+        broker_client=FakeBrokerClient("running"),
     )
 
-    result = engine.tick(allow_active_attempts=True)
+    result = _run(engine.tick(allow_active_attempts=True))
 
     assert result.items_blocked == 1
     assert "I-1: maker_timeout" in result.notes
@@ -312,7 +430,7 @@ def test_tick_without_worker_service_blocks_dispatching_items_once(tmp_path):
     add_reserved_dispatching(loop_service, "I-2")
     engine = LoopEngine({}, loop_service, broker_client=None)
 
-    result = engine.tick(allow_active_attempts=True)
+    result = _run(engine.tick(allow_active_attempts=True))
 
     assert result.items_blocked == 2
     assert result.errors == []
@@ -327,7 +445,7 @@ def test_tick_without_worker_service_flags_dispatching_item_without_crash(tmp_pa
     add_reserved_dispatching(loop_service)
     engine = LoopEngine({}, loop_service, worker_service=None, broker_client=None)
 
-    result = engine.tick(allow_active_attempts=True)
+    result = _run(engine.tick(allow_active_attempts=True))
 
     assert result.items_blocked == 1
     assert result.errors == []
@@ -347,7 +465,7 @@ def test_tick_real_worker_service_collect_timeout_blocks_item(tmp_path):
         broker_client=FakeBrokerClient("completed"),
     )
 
-    result = engine.tick(allow_active_attempts=True)
+    result = _run(engine.tick(allow_active_attempts=True))
 
     assert gateway.maker_dispatches
     assert result.items_blocked == 1
@@ -359,9 +477,9 @@ def test_tick_passes_run_checks_to_verifier_path(tmp_path):
     loop_service = make_loop(tmp_path)
     add_verifying(loop_service)
     verifier = RecordingVerifierService()
-    engine = LoopEngine({"run_checks": True}, loop_service, verifier_service=verifier, broker_client=FakeBrokerClient("completed"))
+    engine = LoopEngine({"run_checks": True}, loop_service, verifier_service=verifier, broker_client=FakeBrokerClient("running"))
 
-    result = engine.tick(allow_active_attempts=True)
+    result = _run(engine.tick(allow_active_attempts=True))
 
     assert result.items_verified == 1
     assert verifier.calls[0]["run_checks"] is True
@@ -376,7 +494,7 @@ def test_tick_with_no_broker_blocks_open_broker_states(tmp_path):
     add_verifying(loop_service, "V-1")
     engine = LoopEngine({}, loop_service, verifier_service=make_verifier(), worker_service=make_worker_service(), broker_client=None)
 
-    result = engine.tick(allow_active_attempts=True)
+    result = _run(engine.tick(allow_active_attempts=True))
 
     assert result.items_blocked == 3
     assert loop_service.get("D-1").blocker == "broker_unavailable"
@@ -389,7 +507,7 @@ def test_ready_item_without_broker_is_blocked_once_and_notes_broker_unavailable(
     add_ready(loop_service)
     engine = LoopEngine({}, loop_service, verifier_service=make_verifier(), worker_service=make_worker_service(), broker_client=None)
 
-    result = engine.tick()
+    result = _run(engine.tick())
 
     assert result.items_dispatched == 1
     assert result.items_blocked == 1
@@ -398,21 +516,19 @@ def test_ready_item_without_broker_is_blocked_once_and_notes_broker_unavailable(
     assert loop_service.get("I-1").blocker == "broker_unavailable"
 
 
-def test_tick_from_active_event_loop_reports_documented_sync_constraint(tmp_path):
+def test_tick_runs_inside_active_event_loop(tmp_path):
     loop_service = make_loop(tmp_path)
     add_ready(loop_service)
     broker = FakeBrokerClient({"*": {"status": "completed", "result": MakerResult("maker done")}})
     engine = LoopEngine({}, loop_service, verifier_service=make_verifier(), worker_service=make_worker_service(), broker_client=broker)
 
     async def run_tick_inside_event_loop():
-        return engine.tick()
+        return await engine.tick()
 
     result = asyncio.run(run_tick_inside_event_loop())
 
-    assert result.items_done == 0
-    assert result.errors == [
-        "advance failed: LoopEngine.tick() must be called from sync code; do not call it from an active event loop"
-    ]
+    assert result.items_done == 1
+    assert result.errors == []
 
 
 def test_loop_engine_does_not_mutate_loop_service_broker(tmp_path):
@@ -421,16 +537,16 @@ def test_loop_engine_does_not_mutate_loop_service_broker(tmp_path):
     broker = FakeBrokerClient({"*": {"status": "completed", "result": MakerResult("maker done")}})
     engine = LoopEngine({}, loop_service, verifier_service=make_verifier(), worker_service=make_worker_service(), broker_client=broker)
 
-    engine.tick()
+    _run(engine.tick())
 
     assert loop_service.broker is None
 
 
 def test_run_processes_max_steps(tmp_path):
     loop_service = make_loop(tmp_path)
-    engine = LoopEngine({}, loop_service, clock=fake_clock, sleeper=lambda seconds: None)
+    engine = LoopEngine({}, loop_service, clock=fake_clock, sleeper=_noop_sleeper)
 
-    summary = engine.run(max_steps=3, interval_seconds=0)
+    summary = _run(engine.run(max_steps=3, interval_seconds=0))
 
     assert summary.steps == 3
     assert summary.ticks == 3
@@ -441,12 +557,12 @@ def test_run_respects_stop_from_sleeper(tmp_path):
     loop_service = make_loop(tmp_path)
     engine = LoopEngine({}, loop_service, clock=fake_clock)
 
-    def sleeper(seconds):
+    async def sleeper(_seconds):
         engine.stop()
 
     engine.sleeper = sleeper
 
-    summary = engine.run(max_steps=10, interval_seconds=0)
+    summary = _run(engine.run(max_steps=10, interval_seconds=0))
 
     assert summary.ticks == 1
     assert engine.stopped is True
@@ -459,16 +575,37 @@ def test_run_stops_on_first_tick_error(tmp_path):
         loop_service,
         triage_service=RaisingTriageService(),
         clock=fake_clock,
-        sleeper=lambda seconds: (_ for _ in ()).throw(AssertionError("sleep should not run after an error")),
     )
 
-    summary = engine.run(max_steps=5, interval_seconds=0)
+    async def raising_sleeper(_seconds):
+        raise AssertionError("sleep should not run after an error")
+
+    engine.sleeper = raising_sleeper
+
+    summary = _run(engine.run(max_steps=5, interval_seconds=0))
 
     assert summary.steps == 1
     assert summary.ticks == 1
     assert summary.stopped is True
     assert summary.stop_reason == "error"
     assert summary.errors == ["triage failed: triage boom"]
+
+
+def test_run_records_cancellation_as_stopped(tmp_path):
+    loop_service = make_loop(tmp_path)
+    engine = LoopEngine({}, loop_service, clock=fake_clock)
+
+    async def cancelling_sleeper(_seconds):
+        raise asyncio.CancelledError()
+
+    engine.sleeper = cancelling_sleeper
+
+    summary = _run(engine.run(max_steps=5, interval_seconds=0))
+
+    assert summary.ticks == 1
+    assert summary.stopped is True
+    assert summary.stop_reason == "cancelled"
+    assert engine.stopped is True
 
 
 def test_tick_records_triage_errors_and_continues(tmp_path):
@@ -484,7 +621,7 @@ def test_tick_records_triage_errors_and_continues(tmp_path):
         broker_client=broker,
     )
 
-    result = engine.tick()
+    result = _run(engine.tick())
 
     assert result.errors == ["triage failed: triage boom"]
     assert result.items_done == 1
@@ -505,7 +642,7 @@ def test_tick_dispatches_multiple_ready_items_up_to_limit(tmp_path):
         broker_client=broker,
     )
 
-    result = engine.tick()
+    result = _run(engine.tick())
 
     assert result.items_dispatched == 2
     assert result.items_done == 2

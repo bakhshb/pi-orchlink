@@ -8,12 +8,6 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request, Security
 from fastapi.security import APIKeyHeader
 
-from orchlink.broker.checkpoint import (
-    checkpoint_path,
-    load_checkpoint,
-    reconcile_checkpoint,
-    record_lease,
-)
 from orchlink.broker.dto import (
     ActivityBody,
     CancelWorkBody,
@@ -27,6 +21,7 @@ from orchlink.broker.dto import (
 )
 from orchlink.broker.journal import Journal
 from orchlink.broker.route_adapter import BrokerRouteAdapter
+from orchlink.broker.service import BrokerService
 from orchlink.broker.response_models import (
     ActivityListResponse,
     ActivityRecordResponse,
@@ -48,20 +43,14 @@ from orchlink.broker.response_models import (
 )
 from orchlink.core.envelope import ENVELOPE_VERSION, ENVELOPE_VERSION_HEADER, AgentRegistration, MessageEnvelope
 from orchlink.broker.settings import Settings, get_settings
-from orchlink.version import get_version
+from orchlink.core.broker_metadata import BROKER_CAPABILITIES, BROKER_VERSION
 from orchlink.broker.storage import JsonlMessageStore, MemoryMessageStore, MessageStore
 
 
-VERSION = get_version()
-BROKER_CAPABILITIES = [
-    "project_header_scope",
-    "task_activity_endpoint",
-    "scoped_task_results",
-    "status_filters",
-    "session_leases",
-    "session_readiness",
-    "session_lease_fencing",
-]
+# Re-exported for backward compatibility. The single source of truth now lives
+# in :mod:`orchlink.core.broker_metadata` so CLI and runtime clients do not
+# need to import this module's HTTP application construction.
+VERSION = BROKER_VERSION
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
@@ -84,7 +73,7 @@ def get_store(request: Request) -> MessageStore:
 
 
 def get_adapter(request: Request) -> BrokerRouteAdapter:
-    return BrokerRouteAdapter(request.app.state.store)
+    return BrokerRouteAdapter(request.app.state.service)
 
 
 def request_project_id(request: Request, explicit: str | None = None) -> str | None:
@@ -119,49 +108,13 @@ def _audit_journal_path(settings: Settings) -> Path | None:
     return Path(settings.store_path).expanduser().with_name("audit.jsonl")
 
 
-def _checkpoint_project_root(settings: Settings) -> Path:
-    """Infer the project root from the configured broker store path."""
-    store_path = Path(settings.store_path).expanduser()
-    if not store_path.is_absolute():
-        store_path = Path.cwd() / store_path
-    # Default shape is <project>/.orch/run/orchlink-journal.jsonl.
-    try:
-        return store_path.parent.parent.parent
-    except IndexError:
-        return Path.cwd()
-
-
-def _record_checkpoint_from_wire(settings: Settings, item: dict[str, Any], status: str) -> None:
-    task_id = item.get("task_id")
-    lease = item.get("lease") or {}
-    if not task_id or not lease:
-        return
-    record_lease(
-        _checkpoint_project_root(settings),
-        str(task_id),
-        int(lease.get("epoch") or 0),
-        str(lease.get("holder") or ""),
-        status=status,  # type: ignore[arg-type]
-    )
-
-
-def _record_recently_settled(settings: Settings, task_id: str, epoch: int | None, holder: str | None) -> None:
-    if epoch is None or holder is None:
-        checkpoint = load_checkpoint(checkpoint_path(_checkpoint_project_root(settings)))
-        prior = next((lease for lease in checkpoint.in_flight if lease.task_id == task_id), None)
-        if prior is None:
-            return
-        epoch = prior.epoch
-        holder = prior.holder
-    record_lease(_checkpoint_project_root(settings), task_id, epoch, holder, "recently_settled")
-
-
 def create_app(
     store: MessageStore | None = None,
     settings: Settings | None = None,
 ) -> FastAPI:
     settings_obj = settings or get_settings()
     store_obj = store or create_store(settings_obj)
+    service_obj = BrokerService(store_obj, settings=settings_obj)
 
     async def maybe_schedule_auto_stop() -> None:
         if not settings_obj.auto_stop or app.state.shutdown_scheduled:
@@ -181,7 +134,7 @@ def create_app(
     async def session_expiry_loop() -> None:
         while True:
             await asyncio.sleep(max(1, min(5, settings_obj.session_heartbeat_interval_seconds)))
-            expired = await app.state.store.expire_sessions()
+            expired = await app.state.service.expire_sessions()
             if expired:
                 await maybe_schedule_auto_stop()
 
@@ -192,6 +145,7 @@ def create_app(
                 "Refusing to start Orchlink broker with a missing or default API key. "
                 "Start through `orch broker run` in an initialized project or set ORCHLINK_API_KEY."
             )
+        app_obj.state.drifted_leases = service_obj.startup_reconcile_checkpoint()
         if settings_obj.auto_stop or settings_obj.require_peer_sessions:
             app_obj.state.session_expiry_task = asyncio.create_task(session_expiry_loop())
         try:
@@ -212,6 +166,8 @@ def create_app(
 
     app.state.settings = settings_obj
     app.state.store = store_obj
+    app.state.service = service_obj
+    app.state.drifted_leases = []
     app.state.shutdown_scheduled = False
     # Observability-only audit journal (M1). Attached to the store so every
     # broker event is mirrored. Never the source of truth.
@@ -219,10 +175,6 @@ def create_app(
     attach_journal = getattr(store_obj, "attach_journal", None)
     if callable(attach_journal):
         attach_journal(journal)
-
-    checkpoint = load_checkpoint(checkpoint_path(_checkpoint_project_root(settings_obj)))
-    app.state.drifted_leases = reconcile_checkpoint(checkpoint, store_obj.current_job_leases())
-    store_obj.append_checkpoint_drifts(app.state.drifted_leases)
 
     secure_router = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
 
@@ -321,7 +273,6 @@ def create_app(
         )
         if message is None:
             return {"status": "empty"}
-        _record_checkpoint_from_wire(settings_obj, message, "in_flight")
         return {"status": "message", "message": message}
 
     @secure_router.post("/messages/{message_id}/reply", response_model=BrokerResponse)
@@ -346,9 +297,6 @@ def create_app(
             lease_holder=lease_holder,
             session_lease_id=session_lease_id,
         )
-        task_id = reply.task_id
-        if task_id and str(result.get("status") or "") == "reply_received":
-            _record_recently_settled(settings_obj, str(task_id), lease_epoch, lease_holder)
         return result
 
     @secure_router.post("/messages/{message_id}/status", response_model=BrokerResponse)
@@ -379,8 +327,6 @@ def create_app(
             str(body.reason or ""),
             project_id=project_id,
         )
-        if str(result.get("status") or "") == "cancelled":
-            _record_recently_settled(settings_obj, item_id, None, None)
         await maybe_schedule_auto_stop()
         return result
 
@@ -397,11 +343,9 @@ def create_app(
             epoch = int(body.epoch or 0)
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="epoch must be an integer") from exc
-        result = await broker.heartbeat_job(
+        return await broker.heartbeat_job(
             item_id, holder, epoch, project_id=project_id, heartbeat_ms=body.heartbeat_ms
         )
-        _record_checkpoint_from_wire(settings_obj, {"task_id": item_id, "lease": result.get("lease")}, "in_flight")
-        return result
 
     @secure_router.post("/jobs/{item_id}/reclaim", response_model=BrokerResponse)
     async def reclaim_job(
@@ -412,9 +356,7 @@ def create_app(
     ) -> dict[str, Any]:
         project_id = request_project_id(request, str(body.project_id or "") or None)
         holder = str(body.holder or "")
-        result = await broker.reclaim_job(item_id, holder, project_id=project_id)
-        _record_checkpoint_from_wire(settings_obj, {"task_id": item_id, "lease": result.get("lease")}, "in_flight")
-        return result
+        return await broker.reclaim_job(item_id, holder, project_id=project_id)
 
     @secure_router.post("/conversations/{conversation_id}/close", response_model=BrokerResponse)
     async def close_conversation(

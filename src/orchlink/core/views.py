@@ -112,6 +112,7 @@ def session_acquire_from_wire(data: dict[str, Any] | SessionAcquire) -> SessionA
         thinking=str(data["thinking"]) if data.get("thinking") is not None else None,
         supervisor_pid=data.get("supervisor_pid"),
         pi_pid=data.get("pi_pid"),
+        project_dir=str(data["project_dir"]) if data.get("project_dir") is not None else None,
     )
 
 
@@ -135,6 +136,7 @@ def session_heartbeat_from_wire(
         supervisor_pid=data.get("supervisor_pid"),
         pi_pid=data.get("pi_pid"),
         worker_name=str(data["worker_name"]) if data.get("worker_name") is not None else None,
+        project_dir=str(data["project_dir"]) if data.get("project_dir") is not None else None,
     )
 
 
@@ -169,6 +171,7 @@ def session_from_wire(data: dict[str, Any]) -> Session:
         thinking=data.get("thinking"),
         supervisor_pid=data.get("supervisor_pid"),
         pi_pid=data.get("pi_pid"),
+        project_dir=str(data["project_dir"]) if data.get("project_dir") is not None else None,
         settled_work=list(data.get("settled_work") or []),
     )
 
@@ -177,7 +180,10 @@ def session_to_wire(session: Session) -> dict[str, Any]:
     """Serialize a canonical `Session` into the API/wire dict shape."""
     from dataclasses import asdict
 
-    return asdict(session)
+    wire = asdict(session)
+    if wire.get("project_dir") is None:
+        wire.pop("project_dir", None)
+    return wire
 
 
 def task_job_payload_from_wire(data: dict[str, Any]) -> TaskJobPayload:

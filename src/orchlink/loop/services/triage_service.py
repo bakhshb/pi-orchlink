@@ -5,14 +5,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-if TYPE_CHECKING:
-    from orchlink.loop.adapters.connectors.base import Connector
 from orchlink.loop.domain.item import LoopItem
 from orchlink.loop.domain.skill import Skill
 from orchlink.loop.domain.worktree import Worktree
+from orchlink.loop.ports import Connector
 from orchlink.loop.services.loop_service import ItemCandidate as LoopItemCandidate
 from orchlink.loop.services.loop_service import LoopService
 
@@ -39,6 +37,7 @@ class ItemCandidate:
     Canonical source_type values are: manual, github, linear, local_git.
     The legacy alias "git" is accepted and normalized to "local_git".
     """
+
     id: str
     source_type: str
     source_ref: str
@@ -48,6 +47,9 @@ class ItemCandidate:
     suggested_skill: SkillRef | None
     suggested_worktree: Worktree | None
     goal_id: str | None
+    source_url: str | None
+    source_context: str
+    source_metadata: dict[str, Any]
 
     def __init__(
         self,
@@ -63,6 +65,9 @@ class ItemCandidate:
         suggested_worktree: Worktree | None = None,
         worktree: Worktree | None = None,
         goal_id: str | None = None,
+        source_url: str | None = None,
+        source_context: str = "",
+        source_metadata: dict[str, Any] | None = None,
     ) -> None:
         candidate_id = id or item_id
         if not candidate_id:
@@ -75,10 +80,17 @@ class ItemCandidate:
         object.__setattr__(self, "source_ref", source_ref)
         object.__setattr__(self, "title", title or objective or candidate_id)
         object.__setattr__(self, "objective", objective or title or candidate_id)
-        object.__setattr__(self, "priority", priority if isinstance(priority, Priority) else Priority(str(priority)))
+        object.__setattr__(
+            self, "priority", priority if isinstance(priority, Priority) else Priority(str(priority))
+        )
         object.__setattr__(self, "suggested_skill", suggested_skill)
-        object.__setattr__(self, "suggested_worktree", suggested_worktree if suggested_worktree is not None else worktree)
+        object.__setattr__(
+            self, "suggested_worktree", suggested_worktree if suggested_worktree is not None else worktree
+        )
         object.__setattr__(self, "goal_id", goal_id)
+        object.__setattr__(self, "source_url", source_url or source_ref or None)
+        object.__setattr__(self, "source_context", source_context)
+        object.__setattr__(self, "source_metadata", dict(source_metadata or {}))
 
     @property
     def item_id(self) -> str:
@@ -101,66 +113,8 @@ class ItemCandidate:
         return f"{self.source_type}:{self.source_ref}"
 
 
-def build_project_connectors(
-    config: dict[str, Any] | None,
-    project_dir: Path | str,
-    *,
-    secrets: object | None = None,
-    github_http_client: object | None = None,
-    linear_http_client: object | None = None,
-) -> list["Connector"]:
-    """Build read-only project connectors for CLI triage.
-
-    Missing connector config falls back to local git. Invalid configured
-    connectors are skipped rather than failing foreground watch.
-    """
-    from orchlink.loop.adapters.connectors import ConnectorSecretGateway, GitHubConnector, LinearConnector, LocalGitConnector
-
-    raw_configs = _configured_connector_dicts(config or {})
-    if not raw_configs:
-        return [LocalGitConnector(Path(project_dir))]
-
-    secret_gateway = secrets or ConnectorSecretGateway()
-    connectors: list["Connector"] = []
-    for raw in raw_configs:
-        name = str(raw.get("name") or "").strip().lower()
-        try:
-            if name == "github":
-                connectors.append(GitHubConnector(raw, secrets=secret_gateway, http_client=github_http_client))
-            elif name == "linear":
-                connectors.append(LinearConnector(raw, secrets=secret_gateway, http_client=linear_http_client))
-        except Exception as exc:
-            log.warning("loop triage connector %s config skipped: %s", name or "unknown", exc)
-    return connectors
-
-
-def _configured_connector_dicts(config: dict[str, Any]) -> list[dict[str, Any]]:
-    loop_config = config.get("loop") if isinstance(config.get("loop"), dict) else {}
-    raw = loop_config.get("connectors") if isinstance(loop_config, dict) else None
-    if raw is None:
-        raw = config.get("connectors")
-    if raw is None:
-        return []
-    if isinstance(raw, list):
-        return [dict(item) for item in raw if isinstance(item, dict) and item.get("name") in {"github", "linear"}]
-    if isinstance(raw, dict):
-        configs: list[dict[str, Any]] = []
-        for name in ("github", "linear"):
-            value = raw.get(name)
-            if value is None or value is False:
-                continue
-            if isinstance(value, dict):
-                data = dict(value)
-            else:
-                data = {}
-            data.setdefault("name", name)
-            configs.append(data)
-        return configs
-    return []
-
-
 class TriageService:
-    def __init__(self, config: dict | None, loop_service: LoopService, connectors: list["Connector"]) -> None:
+    def __init__(self, config: dict | None, loop_service: LoopService, connectors: list[Connector]) -> None:
         self.config = dict(config or {})
         self.loop_service = loop_service
         self.connectors = list(connectors)
@@ -190,6 +144,10 @@ class TriageService:
                 source_type=candidate.source_type,
                 source_ref=candidate.source_ref,
                 goal_id=candidate.goal_id,
+                objective=candidate.objective,
+                source_url=candidate.source_url,
+                source_context=candidate.source_context,
+                source_metadata=candidate.source_metadata,
                 worktree=candidate.suggested_worktree,
                 skill=Skill(name=candidate.suggested_skill.name, path=candidate.suggested_skill.path)
                 if candidate.suggested_skill is not None

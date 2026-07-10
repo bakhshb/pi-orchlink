@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Protocol, TypeAlias
+from typing import Any, Iterable, TypeAlias
 
-from orchlink.loop.adapters.state_repo import LoopStateRepo
 from orchlink.loop.domain.errors import IllegalTransition, VerifierMismatch
+from orchlink.loop.ports import BrokerStatusPort, BrokerTaskStatus, GoalEvidencePort, LoopRepository
 from orchlink.loop.domain.item import (
     LoopAttempt,
     LoopItem,
     LoopItemState,
     MakerResult,
+    RESERVED_TASK_PREFIX,
     WorkerAssignment,
 )
 from orchlink.loop.domain.skill import Skill
-from orchlink.loop.domain.verdict import ReasonCode, Verdict, VerifierVerdict, utc_now
+from orchlink.loop.domain.verdict import ReasonCode, Verdict, VerifierVerdict, parse_verdict_text, utc_now
 from orchlink.loop.domain.worktree import Worktree
 
 ItemId: TypeAlias = str
@@ -26,8 +27,6 @@ _RECOVER_BROKER_UNSET = object()
 
 DEFAULT_RESERVATION_GRACE = timedelta(minutes=10)
 DEFAULT_TASK_TIMEOUT = timedelta(hours=2)
-RESERVED_TASK_PREFIX = "reserved:"
-"""Internal sentinel prefix for reserved attempts; never send these ids to a real broker."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +36,10 @@ class ItemCandidate:
     source_type: str | None = None
     source_ref: str | None = None
     goal_id: str | None = None
+    objective: str = ""
+    source_url: str | None = None
+    source_context: str = ""
+    source_metadata: dict[str, Any] = field(default_factory=dict)
     worktree: Worktree | None = None
     skill: Skill | None = None
 
@@ -85,27 +88,35 @@ class RecoveryReport:
     notes: list[str]
 
 
-@dataclass(frozen=True, slots=True)
-class BrokerTaskStatus:
-    status: str
-    result: MakerResult | VerifierVerdict | None = None
+# Backward-compatible aliases for the broker port contract.
+RecoverableBroker = BrokerStatusPort
 
 
-class RecoverableBroker(Protocol):
-    def get_task_status(self, task_id: str) -> BrokerTaskStatus | str | dict[str, Any] | None:
-        ...
+_SECRET_METADATA_KEYS = {"authorization", "token", "access_token", "api_key", "secret", "headers"}
 
-    def get_session_active(self, lease_id: str) -> bool | None:
-        ...
+
+def _safe_source_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, value in dict(metadata or {}).items():
+        normalized = str(key).lower().replace("-", "_")
+        if normalized in _SECRET_METADATA_KEYS or any(part in normalized for part in ("token", "secret", "api_key", "authorization")):
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            safe[str(key)] = value
+        elif isinstance(value, list):
+            safe[str(key)] = [item for item in value if isinstance(item, (str, int, float, bool)) or item is None]
+        elif isinstance(value, dict):
+            safe[str(key)] = _safe_source_metadata(value)
+    return safe
 
 
 class LoopService:
     def __init__(
         self,
         config: dict[str, Any] | None,
-        repo: LoopStateRepo,
+        repo: LoopRepository,
         *,
-        broker: RecoverableBroker | None = None,
+        broker: BrokerStatusPort | None = None,
     ) -> None:
         self.config = dict(config or {})
         self.repo = repo
@@ -123,12 +134,15 @@ class LoopService:
                     item_id=candidate.item_id,
                     title=candidate.title,
                     source=candidate.source,
+                    source_url=candidate.source_url,
+                    objective=candidate.objective or candidate.title,
+                    source_context=candidate.source_context,
+                    source_metadata=_safe_source_metadata(candidate.source_metadata),
                     goal_id=candidate.goal_id,
                     worktree=candidate.worktree,
                     skill=candidate.skill,
                     created_at=now,
                     updated_at=now,
-                    _state=LoopItemState.TRIAGED,
                 )
                 state.add_item(item)
                 existing.add(item.item_id)
@@ -150,6 +164,7 @@ class LoopService:
         *,
         maker_worker: str,
         worktree: Worktree | None,
+        session_lease_id: str | None = None,
     ) -> DispatchReservation:
         with self.repo.transaction("loop:next") as state:
             item = state.item(item_id)
@@ -158,6 +173,7 @@ class LoopService:
             maker = WorkerAssignment(
                 worker_name=maker_worker,
                 task_id=f"reserved:{item.item_id}:{len(item.attempts) + 1}",
+                session_lease_id=session_lease_id,
                 project_dir=worktree.path if worktree is not None else None,
             )
             updated = item.dispatch(maker)
@@ -171,14 +187,7 @@ class LoopService:
         with self.repo.transaction("loop:mark_dispatched") as state:
             item = state.item(item_id)
             self._require_attempt(item, attempt_no, "mark_dispatched")
-            if item.state is not LoopItemState.DISPATCHING:
-                raise IllegalTransition(item.state, "mark_dispatched")
-            if task_id.startswith(RESERVED_TASK_PREFIX):
-                raise ValueError(f"real broker task ids must not start with {RESERVED_TASK_PREFIX!r}")
-            attempt = item.attempts[-1]
-            maker = replace(attempt.maker, task_id=task_id, dispatched_at=utc_now())
-            updated_attempt = replace(attempt, maker=maker)
-            updated = replace(item, attempts=(*item.attempts[:-1], updated_attempt), updated_at=utc_now())
+            updated = item.record_broker_task(task_id)
             state.replace_item(updated)
             return updated
 
@@ -186,14 +195,7 @@ class LoopService:
         with self.repo.transaction("loop:rollback_dispatch") as state:
             item = state.item(item_id)
             self._require_attempt(item, attempt_no, "rollback_dispatch")
-            if item.state is not LoopItemState.DISPATCHING:
-                raise IllegalTransition(item.state, "rollback_dispatch")
-            updated = replace(
-                item,
-                attempts=item.attempts[:-1],
-                _state=LoopItemState.READY,
-                updated_at=utc_now(),
-            )
+            updated = item.rollback_dispatch()
             state.replace_item(updated)
             return updated
 
@@ -201,9 +203,7 @@ class LoopService:
         with self.repo.transaction("loop:mark_running") as state:
             item = state.item(item_id)
             self._require_attempt(item, attempt_no, "mark_running")
-            if item.state is not LoopItemState.DISPATCHING:
-                raise IllegalTransition(item.state, "mark_running")
-            updated = replace(item, _state=LoopItemState.RUNNING, updated_at=utc_now())
+            updated = item.confirm_dispatch_running()
             state.replace_item(updated)
             return updated
 
@@ -221,6 +221,7 @@ class LoopService:
         *,
         attempt_no: int,
         verifier_worker: str,
+        allow_same_worker: bool = False,
     ) -> VerificationReservation:
         with self.repo.transaction("loop:reserve_verification") as state:
             item = state.item(item_id)
@@ -229,9 +230,9 @@ class LoopService:
                 worker_name=verifier_worker,
                 task_id=f"verify:{item.item_id}:{attempt_no}",
             )
-            # Separation is enforced at apply_verdict so callers can reserve first
-            # and get a deterministic VerifierMismatch at the verdict gate.
-            updated = item.start_verification(verifier, allow_same_worker=True)
+            if verifier.same_worker(item.attempts[-1].maker) and not allow_same_worker:
+                raise VerifierMismatch("verifier worker must differ from maker worker")
+            updated = item.start_verification(verifier, allow_same_worker=allow_same_worker)
             attempt = updated.attempts[-1]
             state.replace_item(updated)
             return VerificationReservation(updated, attempt)
@@ -252,17 +253,14 @@ class LoopService:
             attempt = item.attempts[-1]
             if attempt.verifier is None:
                 raise IllegalTransition(item.state, "apply_verdict")
-            same_worker = attempt.verifier.same_worker(attempt.maker)
-            if same_worker and not allow_same_worker:
+            # Same-worker authorization is fixed at reservation; retain this
+            # argument for caller compatibility but never use it to authorize a verdict.
+            _ = allow_same_worker
+            if self._same_worker_override_required(attempt) and not attempt.same_worker_verifier_override:
                 raise VerifierMismatch("verifier worker must differ from maker worker")
-            updated = item.apply_verdict(verdict)
-            note = None
-            if verdict.verdict is Verdict.REJECTED and len(updated.attempts) >= updated.retry_policy.max_attempts:
-                updated = replace(updated, _state=LoopItemState.BLOCKED, blocker="retry_exhausted", updated_at=utc_now())
-            if same_worker and allow_same_worker:
-                note = "same_worker_verifier_override"
+            updated, note = self._apply_verifier_verdict(item, verdict)
             state.replace_item(updated)
-            return VerdictApplication(updated, lower_confidence=bool(same_worker and allow_same_worker), note=note)
+            return VerdictApplication(updated, lower_confidence=note is not None, note=note)
 
     def cancel(self, item_id: ItemId, *, reason: str) -> LoopItem:
         with self.repo.transaction("loop:cancel") as state:
@@ -290,7 +288,7 @@ class LoopService:
             state.replace_item(updated)
             return updated
 
-    def attach_evidence_to_goal(self, item_id: ItemId, *, goal_service: object) -> bool:
+    def attach_evidence_to_goal(self, item_id: ItemId, *, goal_service: GoalEvidencePort | None) -> bool:
         with self.repo.transaction("loop:attach_goal_evidence") as state:
             item = state.item(item_id)
             if goal_service is None or item.goal_id is None or item.state is not LoopItemState.DONE:
@@ -302,10 +300,7 @@ class LoopService:
             evidence_id = f"goal:{item.goal_id}:loop:{item.item_id}:attempt:{attempt.number}:accepted"
             if evidence_id in item.attached_evidence_ids:
                 return True
-            attach_evidence = getattr(goal_service, "attach_evidence", None)
-            if attach_evidence is None:
-                return False
-            attach_evidence(
+            goal_service.attach_evidence(
                 goal_id=item.goal_id,
                 evidence={
                     "type": "loop_verdict",
@@ -321,11 +316,11 @@ class LoopService:
                     "summary": f"Loop item {item.item_id} accepted by {verdict.verifier_worker}.",
                 },
             )
-            updated = replace(item, attached_evidence_ids=(*item.attached_evidence_ids, evidence_id))
+            updated = item.attach_accepted_evidence_id(evidence_id)
             state.replace_item(updated)
             return True
 
-    def recover(self, broker_client: RecoverableBroker | None | object = _RECOVER_BROKER_UNSET) -> RecoveryReport:
+    def recover(self, broker_client: BrokerStatusPort | None = _RECOVER_BROKER_UNSET) -> RecoveryReport:
         changed = 0
         blocked = 0
         resumed = 0
@@ -364,11 +359,28 @@ class LoopService:
                 return item
         return None
 
+    def _apply_verifier_verdict(self, item: LoopItem, verdict: VerifierVerdict) -> tuple[LoopItem, str | None]:
+        """Apply a verifier verdict with retry-exhaustion blocking and same-worker note.
+
+        Shared by the normal ``apply_verdict`` path and recovery so both honor the
+        REJECTED-at-budget ``retry_exhausted`` block and the same-worker
+        lower-confidence note. Returns the updated item and the note (or None).
+        """
+        attempt = item.attempts[-1]
+        same_worker = attempt.verifier is not None and attempt.verifier.same_worker(attempt.maker)
+        updated = item.apply_verdict(verdict)
+        note = None
+        if verdict.verdict is Verdict.REJECTED and len(updated.attempts) >= updated.retry_policy.max_attempts:
+            updated = updated.block_retry_exhausted()
+        if same_worker and attempt.same_worker_verifier_override:
+            note = "same_worker_verifier_override"
+        return updated, note
+
     def _recover_item(
         self,
         item: LoopItem,
         notes: list[str],
-        broker: RecoverableBroker | None,
+        broker: BrokerStatusPort | None,
         *,
         unavailable_reason: str,
     ) -> LoopItem:
@@ -381,30 +393,50 @@ class LoopService:
             if self._is_synthetic_reserved_task_id(attempt.maker.task_id):
                 if self._reservation_expired(attempt):
                     notes.append(f"{item.item_id}: dispatch reservation expired")
-                    return replace(item, attempts=item.attempts[:-1], _state=LoopItemState.READY, updated_at=utc_now())
+                    return item.rollback_dispatch()
                 return item
-            status = self._task_status(attempt.maker.task_id, broker)
-            if status is None:
+            snapshot = self._task_snapshot(attempt.maker.task_id, broker)
+            if snapshot is None or self._is_missing_status(snapshot.status):
                 notes.append(f"{item.item_id}: dispatch task missing")
-                return replace(item, attempts=item.attempts[:-1], _state=LoopItemState.READY, updated_at=utc_now())
-            notes.append(f"{item.item_id}: dispatch task found")
-            if attempt.maker.dispatched_at is None:
-                attempt = replace(attempt, maker=replace(attempt.maker, dispatched_at=utc_now()))
-                item = replace(item, attempts=(*item.attempts[:-1], attempt))
-            return replace(item, _state=LoopItemState.RUNNING, updated_at=utc_now())
-
-        if item.state is LoopItemState.RUNNING:
-            status = self._task_status(attempt.maker.task_id, broker)
-            if status == "cancelled":
+                return item.rollback_dispatch()
+            if self._is_cancelled_status(snapshot.status):
                 notes.append(f"{item.item_id}: task_cancelled")
                 return self._block_item(item, "task_cancelled")
-            if status in {"timeout", "timed_out"}:
+            if self._is_timeout_status(snapshot.status):
                 notes.append(f"{item.item_id}: task_timeout")
                 return self._block_item(item, "task_timeout")
-            if status in {"completed", "result"}:
-                return item.collect_result(MakerResult("recovered result"))
+            if self._is_failed_status(snapshot.status):
+                notes.append(f"{item.item_id}: task_failed")
+                return self._block_item(item, "task_failed")
+            if self._is_done_status(snapshot.status):
+                maker_result = self._maker_result_from_snapshot(snapshot)
+                if maker_result is None:
+                    notes.append(f"{item.item_id}: task_empty_result")
+                    return self._block_item(item, "task_empty_result")
+                return item.broker_sent(task_id=attempt.maker.task_id).collect_result(maker_result)
+            notes.append(f"{item.item_id}: dispatch task found")
+            return item.confirm_dispatch_running()
+
+        if item.state is LoopItemState.RUNNING:
+            snapshot = self._task_snapshot(attempt.maker.task_id, broker)
+            status = snapshot.status if snapshot is not None else None
+            if self._is_cancelled_status(status):
+                notes.append(f"{item.item_id}: task_cancelled")
+                return self._block_item(item, "task_cancelled")
+            if self._is_timeout_status(status):
+                notes.append(f"{item.item_id}: task_timeout")
+                return self._block_item(item, "task_timeout")
+            if self._is_failed_status(status):
+                notes.append(f"{item.item_id}: task_failed")
+                return self._block_item(item, "task_failed")
+            if self._is_done_status(status):
+                maker_result = self._maker_result_from_snapshot(snapshot)
+                if maker_result is None:
+                    notes.append(f"{item.item_id}: task_empty_result")
+                    return self._block_item(item, "task_empty_result")
+                return item.collect_result(maker_result)
             if (
-                status is None
+                snapshot is None
                 and attempt.maker.session_lease_id
                 and broker.get_session_active(attempt.maker.session_lease_id) is False
                 and self._running_past_grace(attempt)
@@ -417,16 +449,44 @@ class LoopService:
             return item
 
         if item.state is LoopItemState.VERIFYING:
-            status = self._task_status(attempt.verifier.task_id if attempt.verifier else None, broker)
-            if isinstance(status, VerifierVerdict):
-                return item.apply_verdict(status)
-            if status in {"cancelled", "failed", None}:
-                notes.append(f"{item.item_id}: verifier_stale")
-                return self._block_item(item, "verifier_stale")
+            if self._same_worker_override_required(attempt) and not attempt.same_worker_verifier_override:
+                notes.append(f"{item.item_id}: verifier_same_worker_override_missing")
+                return self._block_item(item, "verifier_same_worker_override_missing")
+            snapshot = self._task_snapshot(attempt.verifier.task_id if attempt.verifier else None, broker)
+            status = snapshot.status if snapshot is not None else None
+            verdict = self._verifier_verdict_from_snapshot(snapshot, attempt)
+            if verdict is not None:
+                updated, note = self._apply_verifier_verdict(item, verdict)
+                if note is not None:
+                    notes.append(f"{item.item_id}: {note}")
+                return updated
+            if snapshot is None or self._is_missing_status(status):
+                notes.append(f"{item.item_id}: verifier_missing")
+                return self._block_item(item, "verifier_missing")
+            if self._is_cancelled_status(status):
+                notes.append(f"{item.item_id}: verifier_cancelled")
+                return self._block_item(item, "verifier_cancelled")
+            if self._is_timeout_status(status):
+                notes.append(f"{item.item_id}: verifier_timeout")
+                return self._block_item(item, "verifier_timeout")
+            if self._is_failed_status(status):
+                notes.append(f"{item.item_id}: verifier_failed")
+                return self._block_item(item, "verifier_failed")
+            if self._is_done_status(status):
+                # Completed without a usable verdict: fail closed. A present but
+                # unparseable payload is distinct from an absent one for triage.
+                if self._has_verifier_payload(snapshot):
+                    notes.append(f"{item.item_id}: verifier_malformed_result")
+                    return self._block_item(item, "verifier_malformed_result")
+                notes.append(f"{item.item_id}: verifier_empty_result")
+                return self._block_item(item, "verifier_empty_result")
         return item
 
     def _block_item(self, item: LoopItem, reason: str) -> LoopItem:
-        return replace(item, _state=LoopItemState.BLOCKED, blocker=reason, updated_at=utc_now())
+        return item.block(reason)
+
+    def _same_worker_override_required(self, attempt: LoopAttempt) -> bool:
+        return bool(attempt.verifier is not None and attempt.verifier.same_worker(attempt.maker))
 
     def _reservation_expired(self, attempt: LoopAttempt) -> bool:
         if attempt.reserved_at is None:
@@ -439,27 +499,89 @@ class LoopService:
             return False
         return utc_now() - self._aware(started) >= DEFAULT_TASK_TIMEOUT
 
-    def _task_status(self, task_id: str | None, broker: RecoverableBroker | None) -> str | VerifierVerdict | None:
+    def _task_status(self, task_id: str | None, broker: BrokerStatusPort | None) -> str | VerifierVerdict | None:
+        snapshot = self._task_snapshot(task_id, broker)
+        if snapshot is None:
+            return None
+        if isinstance(snapshot.result, VerifierVerdict):
+            return snapshot.result
+        return snapshot.status
+
+    def _task_snapshot(self, task_id: str | None, broker: BrokerStatusPort | None) -> BrokerTaskStatus | None:
         if task_id is None or broker is None:
             return None
-        raw = broker.get_task_status(task_id)
-        if raw is None:
+        return broker.get_task_status(task_id)
+
+    def _maker_result_from_snapshot(self, snapshot: BrokerTaskStatus | None) -> MakerResult | None:
+        if snapshot is None:
             return None
+        raw = snapshot.result
+        if isinstance(raw, MakerResult):
+            return raw if raw.result.strip() else None
+        text = self._result_text(raw)
+        return MakerResult(text) if text else None
+
+    def _verifier_verdict_from_snapshot(
+        self,
+        snapshot: BrokerTaskStatus | None,
+        attempt: LoopAttempt,
+    ) -> VerifierVerdict | None:
+        """Parse a verifier verdict from a broker snapshot, or None if unusable.
+
+        Accepts an already-parsed ``VerifierVerdict`` (e.g. test fakes) or the
+        verdict-text string the HTTP broker client extracts from the worker reply.
+        Returns None for absent or malformed payloads so callers fail closed.
+        """
+        if snapshot is None:
+            return None
+        raw = snapshot.result
         if isinstance(raw, VerifierVerdict):
-            return raw
-        if isinstance(raw, BrokerTaskStatus):
-            if isinstance(raw.result, VerifierVerdict):
-                return raw.result
-            return raw.status.lower()
+            verdict = raw
+        elif isinstance(raw, str) and raw.strip():
+            try:
+                verdict = parse_verdict_text(raw)
+            except ValueError:
+                return None
+        else:
+            return None
+        # The broker reply came from the assigned verifier; trust the persisted
+        # assignment for worker/task identity so a missing or mistyped
+        # VERIFIER_WORKER field cannot cause a spurious VerifierMismatch.
+        if attempt.verifier is not None:
+            verdict = replace(verdict, verifier_worker=attempt.verifier.worker_name, task_id=attempt.verifier.task_id)
+        return verdict
+
+    def _has_verifier_payload(self, snapshot: BrokerTaskStatus | None) -> bool:
+        if snapshot is None:
+            return False
+        raw = snapshot.result
+        if isinstance(raw, VerifierVerdict):
+            return True
+        return isinstance(raw, str) and bool(raw.strip())
+
+    def _result_text(self, raw: Any) -> str:
+        if raw is None:
+            return ""
         if isinstance(raw, str):
-            return raw.lower()
-        if isinstance(raw, dict):
-            if isinstance(raw.get("result"), VerifierVerdict):
-                return raw["result"]
-            status = raw.get("status")
-            return str(status).lower() if status is not None else None
-        status = getattr(raw, "status", None)
-        return str(status).lower() if status is not None else None
+            return raw.strip()
+        if isinstance(raw, MakerResult):
+            return raw.result.strip()
+        return ""
+
+    def _is_done_status(self, status: str | None) -> bool:
+        return status in {"done", "completed", "complete", "result", "succeeded", "success"}
+
+    def _is_cancelled_status(self, status: str | None) -> bool:
+        return status in {"cancelled", "canceled"}
+
+    def _is_timeout_status(self, status: str | None) -> bool:
+        return status in {"timeout", "timed_out", "timed-out"}
+
+    def _is_failed_status(self, status: str | None) -> bool:
+        return status in {"failed", "failure", "error"}
+
+    def _is_missing_status(self, status: str | None) -> bool:
+        return status in {None, "", "missing", "not_found", "not-found", "unknown"}
 
     def _is_synthetic_reserved_task_id(self, task_id: str | None) -> bool:
         return task_id is None or str(task_id).startswith(RESERVED_TASK_PREFIX)

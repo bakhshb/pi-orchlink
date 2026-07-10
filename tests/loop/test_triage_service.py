@@ -5,8 +5,8 @@ import asyncio
 from orchlink.loop.adapters.connectors import ConnectorSecretGateway, LocalGitConnector
 from orchlink.loop.adapters.state_repo import LoopStateRepo
 from orchlink.loop.domain import LoopItemState
+from orchlink.loop.runtime import build_project_connectors
 from orchlink.loop.services import ItemCandidate, LoopService, SkillRef, TriageService
-from orchlink.loop.services.triage_service import build_project_connectors
 
 
 class FakeConnector:
@@ -41,6 +41,37 @@ def test_run_once_creates_items_from_single_connector(tmp_path):
 
     assert [item.item_id for item in created] == ["C-1"]
     assert loop_service.get("C-1").state is LoopItemState.TRIAGED
+
+
+def test_run_once_preserves_source_context_and_sanitizes_secret_metadata(tmp_path):
+    loop_service, triage = make_service(
+        tmp_path,
+        [
+            FakeConnector(
+                [
+                    ItemCandidate(
+                        id="C-1",
+                        source_type="github",
+                        source_ref="https://github.test/issues/1",
+                        title="Issue title",
+                        objective="Fix issue",
+                        source_context="Issue body",
+                        source_metadata={"number": 1, "authorization": "Bearer secret", "labels": ["bug"]},
+                    )
+                ]
+            )
+        ],
+    )
+
+    asyncio.run(triage.run_once())
+    item = loop_service.get("C-1")
+    content = LoopStateRepo(tmp_path).state_path.read_text(encoding="utf-8")
+
+    assert item.objective == "Fix issue"
+    assert item.source_url == "https://github.test/issues/1"
+    assert item.source_context == "Issue body"
+    assert item.source_metadata == {"number": 1, "labels": ["bug"]}
+    assert "Bearer secret" not in content
 
 
 def test_run_once_skips_duplicates_by_source_ref_and_does_not_overwrite(tmp_path):

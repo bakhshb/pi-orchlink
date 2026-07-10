@@ -8,9 +8,8 @@ file regardless of whether it is using the in-memory or jsonl store, so
 even when the journal backend is memory-only.
 
 The module is pure: no broker imports, no HTTP imports, no storage imports.
-Callers (``orchlink.broker.main``, ``orchlink.broker.storage.memory``,
-``orchlink.broker.storage.jsonl``) call :func:`record_lease` from each lease
-transition they observe.
+Callers use :func:`record_lease` from the broker service boundary for each
+lease transition they observe.
 """
 
 from __future__ import annotations
@@ -18,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +28,8 @@ CHECKPOINT_VERSION = 1
 
 LeaseStatus = Literal["in_flight", "recently_settled"]
 _KNOWN_STATUSES = ("in_flight", "recently_settled")
+_STATUS_ORDER: dict[LeaseStatus, int] = {"in_flight": 0, "recently_settled": 1}
+_CHECKPOINT_LOCK = threading.RLock()
 
 
 @dataclass
@@ -45,11 +47,14 @@ class CheckpointLease:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "CheckpointLease":
+        status = str(data["status"])
+        if status not in _KNOWN_STATUSES:
+            raise ValueError(f"Unknown lease status: {status!r}")
         return cls(
             task_id=str(data["task_id"]),
             epoch=int(data["epoch"]),
             holder=str(data["holder"]),
-            status=str(data["status"]),
+            status=status,  # type: ignore[arg-type]
             updated_at=str(data["updated_at"]),
         )
 
@@ -175,14 +180,35 @@ def _atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
-def _upsert_lease(checkpoint: Checkpoint, lease: CheckpointLease) -> None:
-    """Replace any existing entry for ``lease.task_id`` and append the new one."""
+def _lease_order(lease: CheckpointLease) -> tuple[int, int]:
+    """Ordering key for same-task checkpoint transitions.
+
+    Epoch is the primary version. Within the same epoch, a settlement is later
+    than delivery/in-flight. This prevents a delayed delivery checkpoint from
+    resurrecting work that was already settled while still allowing a reclaimed
+    higher-epoch lease to become in-flight again.
+    """
+    return int(lease.epoch), _STATUS_ORDER[lease.status]
+
+
+def _should_replace_lease(existing: CheckpointLease | None, lease: CheckpointLease) -> bool:
+    if existing is None:
+        return True
+    return _lease_order(lease) >= _lease_order(existing)
+
+
+def _upsert_lease(checkpoint: Checkpoint, lease: CheckpointLease) -> bool:
+    """Apply an ordered same-task lease transition and preserve other entries."""
+    existing = next((item for item in checkpoint.leases if item.task_id == lease.task_id), None)
+    if not _should_replace_lease(existing, lease):
+        return False
     checkpoint.leases = [
-        existing
-        for existing in checkpoint.leases
-        if existing.task_id != lease.task_id
+        item
+        for item in checkpoint.leases
+        if item.task_id != lease.task_id
     ]
     checkpoint.leases.append(lease)
+    return True
 
 
 def record_lease(
@@ -206,19 +232,21 @@ def record_lease(
             f"Unknown lease status: {status!r}; expected one of {_KNOWN_STATUSES}"
         )
     path = checkpoint_path(project_root)
-    checkpoint = load_checkpoint(path)
-    _upsert_lease(
-        checkpoint,
-        CheckpointLease(
-            task_id=str(task_id),
-            epoch=int(epoch),
-            holder=str(holder),
-            status=status,
-            updated_at=_now_iso(),
-        ),
-    )
-    dump_checkpoint(path, checkpoint)
-    return checkpoint
+    with _CHECKPOINT_LOCK:
+        checkpoint = load_checkpoint(path)
+        changed = _upsert_lease(
+            checkpoint,
+            CheckpointLease(
+                task_id=str(task_id),
+                epoch=int(epoch),
+                holder=str(holder),
+                status=status,
+                updated_at=_now_iso(),
+            ),
+        )
+        if changed:
+            dump_checkpoint(path, checkpoint)
+        return checkpoint
 
 
 def list_leases(checkpoint: Checkpoint) -> Iterable[CheckpointLease]:

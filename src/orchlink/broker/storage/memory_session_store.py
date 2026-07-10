@@ -160,6 +160,7 @@ class MemorySessionStore:
             thinking=command.thinking,
             supervisor_pid=command.supervisor_pid,
             pi_pid=command.pi_pid,
+            project_dir=command.project_dir,
         )
         self._state.sessions[lease_id] = stored
         wire = session_to_wire(stored)
@@ -186,7 +187,7 @@ class MemorySessionStore:
         if command.ready is True:
             updated = updated.mark_ready(now)
         metadata: dict[str, Any] = {}
-        for key in ("runtime_mode", "backend", "model", "thinking", "supervisor_pid", "pi_pid", "worker_name"):
+        for key in ("runtime_mode", "backend", "model", "thinking", "supervisor_pid", "pi_pid", "worker_name", "project_dir"):
             value = getattr(command, key)
             if value not in {None, ""}:
                 metadata[key] = value

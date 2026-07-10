@@ -329,6 +329,7 @@ class SessionAcquire:
     thinking: str | None = None
     supervisor_pid: int | None = None
     pi_pid: int | None = None
+    project_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -345,6 +346,7 @@ class SessionHeartbeat:
     supervisor_pid: int | None = None
     pi_pid: int | None = None
     worker_name: str | None = None
+    project_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -381,6 +383,7 @@ class Session:
     thinking: str | None = None
     supervisor_pid: int | None = None
     pi_pid: int | None = None
+    project_dir: str | None = None
     settled_work: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:

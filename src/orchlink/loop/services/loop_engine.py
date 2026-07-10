@@ -3,32 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
-import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Protocol
+from typing import Any, Awaitable, Callable
 
 from orchlink.loop.domain.errors import IllegalTransition
-from orchlink.loop.domain.item import LoopAttempt, LoopItem, LoopItemState, MakerResult
-from orchlink.loop.domain.verdict import ReasonCode, Verdict, VerifierVerdict
+from orchlink.loop.domain.item import LoopAttempt, LoopItem, LoopItemState
+from orchlink.loop.domain.verdict import ReasonCode, Verdict
+from orchlink.loop.ports import BrokerStatusPort, GoalEvidencePort, WorkerGateway
 from orchlink.loop.services.loop_service import LoopService
 from orchlink.loop.services.objective_check_service import ObjectiveCheckService
 from orchlink.loop.services.triage_service import TriageService
-from orchlink.loop.services.verifier_service import VerifierHandle, VerifierService, WorkerGateway, WorkerGatewayUnavailable
-from orchlink.loop.services.worker_service import MakerDispatchError, MakerTimeoutError, MakerUnreachable, WorkerService
+from orchlink.loop.services.verifier_service import VerifierHandle, VerifierService, WorkerGatewayUnavailable
+from orchlink.loop.services.worker_service import MakerDispatchError, MakerTimeoutError, MakerUnreachable, MakerWorktreeUnavailable, WorkerService
 
 log = logging.getLogger(__name__)
-
-
-class BrokerClient(Protocol):
-    def get_task_status(self, task_id: str) -> Any | None:
-        ...
-
-    def get_session_active(self, lease_id: str) -> bool | None:
-        ...
-
 
 @dataclass(slots=True)
 class TickResult:
@@ -61,9 +51,9 @@ class LoopEngine:
     """Caller-driven foreground loop engine.
 
     The engine does not start background workers, threads, processes, cron jobs, or
-    schedulers. Callers drive it with ``tick()`` or ``run()``. Call ``tick()``
-    from synchronous code; async connector/verifier calls are driven internally,
-    so do not call it from an active event loop.
+    schedulers, and it never creates an event loop. Callers drive it with
+    ``await tick()`` or ``await run()`` from inside an active event loop; the one
+    synchronous wrapper that owns the event loop lives at the Typer CLI edge.
     """
 
     _ACTIVE_STATES = {
@@ -81,10 +71,10 @@ class LoopEngine:
         verifier_service: VerifierService | None = None,
         worker_gateway: WorkerGateway | None = None,
         worker_service: WorkerService | None = None,
-        broker_client: BrokerClient | None = None,
-        goal_service: object | None = None,
+        broker_client: BrokerStatusPort | None = None,
+        goal_service: GoalEvidencePort | None = None,
         clock: Callable[[], datetime] | None = None,
-        sleeper: Callable[[float], None] | None = None,
+        sleeper: Callable[[float], Awaitable[None]] | None = None,
     ) -> None:
         self.config = dict(config or {})
         self.loop_service = loop_service
@@ -95,14 +85,14 @@ class LoopEngine:
         self.broker_client = broker_client
         self.goal_service = goal_service
         self.clock = clock or (lambda: datetime.now(timezone.utc))
-        self.sleeper = sleeper or time.sleep
+        self.sleeper = sleeper or asyncio.sleep
         self.stopped = False
         self._tick_items_verified = 0
         self._tick_items_blocked = 0
         self._tick_items_done = 0
         self._tick_notes: list[str] = []
 
-    def run(
+    async def run(
         self,
         *,
         max_steps: int = 10,
@@ -112,11 +102,11 @@ class LoopEngine:
         summary = RunSummary()
         while not self.stopped and summary.steps < max_steps:
             try:
-                result = self.tick(allow_active_attempts=allow_active_attempts)
-            except KeyboardInterrupt:
+                result = await self.tick(allow_active_attempts=allow_active_attempts)
+            except (KeyboardInterrupt, asyncio.CancelledError):
                 summary.stopped = True
-                summary.stop_reason = "keyboard_interrupt"
-                summary.notes.append("stopped by KeyboardInterrupt")
+                summary.stop_reason = "cancelled"
+                summary.notes.append("stopped by cancellation")
                 self.stop()
                 break
             except Exception as exc:
@@ -149,24 +139,17 @@ class LoopEngine:
             if summary.steps >= max_steps:
                 break
             try:
-                self.sleeper(interval_seconds)
-            except KeyboardInterrupt:
+                await self.sleeper(interval_seconds)
+            except (KeyboardInterrupt, asyncio.CancelledError):
                 summary.stopped = True
-                summary.stop_reason = "keyboard_interrupt"
-                summary.notes.append("stopped by KeyboardInterrupt")
+                summary.stop_reason = "cancelled"
+                summary.notes.append("stopped by cancellation")
                 self.stop()
                 break
         return summary
 
-    def tick(self, *, allow_active_attempts: bool = False) -> TickResult:
+    async def tick(self, *, allow_active_attempts: bool = False) -> TickResult:
         result = TickResult()
-        has_active_attempts = self._has_active_attempts()
-        if has_active_attempts and not allow_active_attempts:
-            result.notes.append("active attempts present; refused dispatch/advance (set allow_active_attempts=True)")
-            return result
-        if has_active_attempts and allow_active_attempts:
-            log.warning("loop engine running with active attempts present")
-
         self._tick_items_verified = 0
         self._tick_items_blocked = 0
         self._tick_items_done = 0
@@ -177,19 +160,30 @@ class LoopEngine:
         except Exception as exc:
             result.errors.append(f"recover failed: {exc}")
 
+        has_active_attempts = self._has_active_attempts()
+        if has_active_attempts and not allow_active_attempts:
+            result.items_verified = self._tick_items_verified
+            result.items_blocked = self._tick_items_blocked
+            result.items_done = self._tick_items_done
+            result.notes.extend(self._tick_notes)
+            result.notes.append("active attempts present; refused dispatch/advance (set allow_active_attempts=True)")
+            return result
+        if has_active_attempts and allow_active_attempts:
+            log.warning("loop engine running with active attempts present")
+
         try:
-            result.triaged = self._triage_once()
+            result.triaged = await self._triage_once()
         except Exception as exc:
             result.errors.append(f"triage failed: {exc}")
 
         limit = int(self.config.get("per_tick_dispatch_limit", self.config.get("dispatch_limit", 10)))
         try:
-            result.items_dispatched = self._dispatch_ready(limit=limit)
+            result.items_dispatched = await self._dispatch_ready(limit=limit)
         except Exception as exc:
             result.errors.append(f"dispatch failed: {exc}")
 
         try:
-            result.items_advanced = self._advance_open_attempts(limit=limit)
+            result.items_advanced = await self._advance_open_attempts(limit=limit)
         except Exception as exc:
             result.errors.append(f"advance failed: {exc}")
 
@@ -215,40 +209,59 @@ class LoopEngine:
                 self._note_once("broker_unavailable")
         return report.items_changed
 
-    def _triage_once(self) -> int:
+    async def _triage_once(self) -> int:
         if self.triage_service is None:
             return 0
-        created = self._await_if_needed(self.triage_service.run_once())
+        created = await self.triage_service.run_once()
         return len(created)
 
-    def _dispatch_ready(self, limit: int) -> int:
+    async def _dispatch_ready(self, limit: int) -> int:
         dispatched = 0
         maker_worker = str(self.config.get("maker_worker", "maker"))
+        require_worktree = self._require_worktree_isolation()
         for item in self.loop_service.ls():
             if dispatched >= limit:
                 break
             if item.state is not LoopItemState.READY:
                 continue
+            worktree = item.worktree
+            session_lease_id = None
+            if require_worktree:
+                if self.worker_service is None:
+                    self._block_maker_failure(item, "maker_worktree_unavailable")
+                    continue
+                try:
+                    maker_worktree = await self.worker_service.resolve_maker_worktree(maker_worker)
+                except (MakerWorktreeUnavailable, MakerUnreachable, WorkerGatewayUnavailable):
+                    self._block_maker_failure(item, "maker_worktree_unavailable")
+                    continue
+                worktree = maker_worktree.worktree
+                session_lease_id = maker_worktree.session_lease_id
             try:
-                self.loop_service.next_item(item.item_id, maker_worker=maker_worker, worktree=item.worktree)
+                self.loop_service.next_item(
+                    item.item_id,
+                    maker_worker=maker_worker,
+                    worktree=worktree,
+                    session_lease_id=session_lease_id,
+                )
             except IllegalTransition:
                 continue
             dispatched += 1
         return dispatched
 
-    def _advance_open_attempts(self, limit: int) -> int:
+    async def _advance_open_attempts(self, limit: int) -> int:
         advanced_items = 0
         for item in self.loop_service.ls():
             if advanced_items >= limit:
                 break
             if item.state not in self._ACTIVE_STATES:
                 continue
-            advanced = self._advance_item_until_waiting(item.item_id)
+            advanced = await self._advance_item_until_waiting(item.item_id)
             if advanced:
                 advanced_items += 1
         return advanced_items
 
-    def _advance_item_until_waiting(self, item_id: str) -> int:
+    async def _advance_item_until_waiting(self, item_id: str) -> int:
         advanced = 0
         while True:
             item = self.loop_service.get(item_id)
@@ -257,13 +270,13 @@ class LoopEngine:
             attempt = item.attempts[-1]
 
             if item.state is LoopItemState.DISPATCHING:
-                if self._dispatch_maker(item, attempt):
+                if await self._dispatch_maker(item, attempt):
                     advanced += 1
                     continue
                 return advanced + 1
 
             if item.state is LoopItemState.RUNNING:
-                if self._collect_maker_result(item, attempt):
+                if await self._collect_maker_result(item, attempt):
                     advanced += 1
                     continue
                 return advanced + 1
@@ -286,6 +299,7 @@ class LoopEngine:
                     item.item_id,
                     attempt_no=attempt.number,
                     verifier_worker=verifier_worker,
+                    allow_same_worker=allow_same_worker,
                 )
                 advanced += 1
                 continue
@@ -305,22 +319,18 @@ class LoopEngine:
                     continue
                 run_checks = bool(self.config.get("run_checks", False))
                 if run_checks:
-                    verdict = self._await_if_needed(
-                        self.verifier_service.dispatch_and_collect(
-                            item,
-                            attempt,
-                            worktree=item.worktree,
-                            run_checks=True,
-                            check_service=ObjectiveCheckService(self.config),
-                        )
+                    verdict = await self.verifier_service.dispatch_and_collect(
+                        item,
+                        attempt,
+                        worktree=item.worktree,
+                        run_checks=True,
+                        check_service=ObjectiveCheckService(self.config),
                     )
                 else:
-                    verdict = self._await_if_needed(
-                        self.verifier_service.dispatch_and_collect(
-                            item,
-                            attempt,
-                            worktree=item.worktree,
-                        )
+                    verdict = await self.verifier_service.dispatch_and_collect(
+                        item,
+                        attempt,
+                        worktree=item.worktree,
                     )
                 application = self.loop_service.apply_verdict(
                     item.item_id,
@@ -343,17 +353,15 @@ class LoopEngine:
 
             return advanced
 
-    def _dispatch_maker(self, item: LoopItem, attempt: LoopAttempt) -> bool:
+    async def _dispatch_maker(self, item: LoopItem, attempt: LoopAttempt) -> bool:
         if self.worker_service is None:
             self._block_maker_failure(item, "maker_unavailable")
             return False
         try:
-            handle = self._await_if_needed(
-                self.worker_service.start_maker(
-                    item,
-                    attempt,
-                    worktree=item.worktree,
-                )
+            handle = await self.worker_service.start_maker(
+                item,
+                attempt,
+                worktree=item.worktree,
             )
             self.loop_service.mark_dispatched(item.item_id, attempt_no=attempt.number, task_id=handle.task_id)
             self.loop_service.mark_running(item.item_id, attempt_no=attempt.number)
@@ -366,13 +374,13 @@ class LoopEngine:
             self._block_maker_failure(item, "maker_dispatch_error")
         return False
 
-    def _collect_maker_result(self, item: LoopItem, attempt: LoopAttempt) -> bool:
+    async def _collect_maker_result(self, item: LoopItem, attempt: LoopAttempt) -> bool:
         if self.worker_service is None:
             self._block_maker_failure(item, "maker_unavailable")
             return False
         try:
             handle = VerifierHandle(task_id=attempt.maker.task_id or "", worker_name=attempt.maker.worker_name)
-            result = self._await_if_needed(self.worker_service.await_maker_result(handle, timeout_seconds=1800))
+            result = await self.worker_service.await_maker_result(handle, timeout_seconds=1800)
             self.loop_service.collect_maker_result(item.item_id, attempt_no=attempt.number, result=result)
             return True
         except (MakerUnreachable, WorkerGatewayUnavailable):
@@ -388,56 +396,13 @@ class LoopEngine:
         self._tick_items_blocked += 1
         self._note_once(f"{item.item_id}: {reason}")
 
+    def _require_worktree_isolation(self) -> bool:
+        loop_config = self.config.get("loop") if isinstance(self.config.get("loop"), dict) else {}
+        return bool(self.config.get("require_worktree_isolation") or loop_config.get("require_worktree_isolation"))
+
     def _has_active_attempts(self) -> bool:
         return any(item.state in self._ACTIVE_STATES for item in self.loop_service.ls())
 
     def _note_once(self, note: str) -> None:
         if note not in self._tick_notes:
             self._tick_notes.append(note)
-
-    def _maker_task_id(self, item_id: str, attempt_no: int) -> str:
-        return f"engine:maker:{item_id}:{attempt_no}"
-
-    def _status_name(self, raw: Any | None) -> str | None:
-        if raw is None:
-            return None
-        if isinstance(raw, MakerResult):
-            return "completed"
-        if isinstance(raw, VerifierVerdict):
-            return "completed"
-        if isinstance(raw, str):
-            return raw.lower()
-        if isinstance(raw, dict):
-            status = raw.get("status")
-            if status is None and raw.get("result") is not None:
-                return "completed"
-            return str(status).lower() if status is not None else None
-        status = getattr(raw, "status", None)
-        result = getattr(raw, "result", None)
-        if status is None and result is not None:
-            return "completed"
-        return str(status).lower() if status is not None else None
-
-    def _maker_result(self, raw: Any | None) -> MakerResult:
-        result = raw
-        if isinstance(raw, dict):
-            result = raw.get("result")
-        elif hasattr(raw, "result"):
-            result = getattr(raw, "result")
-        if isinstance(result, MakerResult):
-            return result
-        if isinstance(result, str):
-            return MakerResult(result)
-        return MakerResult("completed")
-
-    def _await_if_needed(self, value: Any) -> Any:
-        if inspect.isawaitable(value):
-            try:
-                asyncio.get_running_loop()
-            except RuntimeError:
-                return asyncio.run(value)
-            close = getattr(value, "close", None)
-            if close is not None:
-                close()
-            raise RuntimeError("LoopEngine.tick() must be called from sync code; do not call it from an active event loop")
-        return value

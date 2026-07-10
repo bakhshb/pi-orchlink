@@ -1,22 +1,12 @@
-"""Connector protocol for loop triage sources."""
+"""Loop triage connector protocol.
+
+The canonical :class:`Connector` protocol lives in :mod:`orchlink.loop.ports`;
+this module re-exports it for backward compatibility with existing connector
+imports.
+"""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Iterable, Protocol
+from orchlink.loop.ports import Connector
 
-if TYPE_CHECKING:
-    from orchlink.loop.services.triage_service import ItemCandidate
-
-
-class Connector(Protocol):
-    """Read-only triage source.
-
-    Real connectors are constructed with non-secret ConnectorConfig and obtain
-    tokens only through ConnectorSecretGateway. Secrets must not be stored in
-    project state or emitted in ItemCandidate values.
-    """
-
-    name: str
-
-    async def discover(self) -> Iterable["ItemCandidate"]:
-        ...
+__all__ = ["Connector"]

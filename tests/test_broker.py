@@ -598,17 +598,20 @@ def test_session_endpoints_and_peer_offline_guard():
     acquired = client.post(
             "/v1/sessions/acquire",
             headers=auth_headers(),
-            json={"project_id": "test", "agent_id": "test.work", "role": "work", "pid": 123},
+            json={"project_id": "test", "agent_id": "test.work", "role": "work", "pid": 123, "project_dir": "/tmp/test-work"},
         )
     assert acquired.status_code == 200
     lease_id = acquired.json()["session"]["lease_id"]
+    assert acquired.json()["session"]["project_dir"] == "/tmp/test-work"
 
-    heartbeat = client.post(f"/v1/sessions/{lease_id}/heartbeat", headers=auth_headers(), json={"project_id": "test"})
+    heartbeat = client.post(f"/v1/sessions/{lease_id}/heartbeat", headers=auth_headers(), json={"project_id": "test", "project_dir": "/tmp/test-work-2"})
     assert heartbeat.status_code == 200
+    assert heartbeat.json()["session"]["project_dir"] == "/tmp/test-work-2"
 
     sessions = client.get("/v1/sessions?project_id=test&active=true", headers=auth_headers())
     assert sessions.status_code == 200
     assert len(sessions.json()["sessions"]) == 1
+    assert sessions.json()["sessions"][0]["project_dir"] == "/tmp/test-work-2"
 
     released = client.post(f"/v1/sessions/{lease_id}/release", headers=auth_headers(), json={"project_id": "test", "reason": "done"})
     assert released.status_code == 200

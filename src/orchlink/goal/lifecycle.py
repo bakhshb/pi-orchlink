@@ -2,13 +2,12 @@
 
 This module owns Goal Mode status/event vocabulary and goal status transition
 validation. Storage, CLI, and runner code may persist or display these values,
-but lifecycle decisions should pass through the helpers here.
+but lifecycle mutations should pass through :mod:`orchlink.goal.policy`.
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
 
 
 class GoalLifecycleError(ValueError):
@@ -140,44 +139,6 @@ def require_goal_transition(current: object, target: object) -> GoalStatus:
     return target_status
 
 
-def transition_goal(goal: Any, target: object) -> None:
-    """Apply a validated goal status transition in place."""
-
-    goal.status = require_goal_transition(goal.status, target)
-
-
-def set_goal_gate(goal: Any, gate: str, status: object) -> None:
-    """Set a goal gate to a typed status.
-
-    ``gate`` is intentionally a boundary string because CLI/storage callers use
-    the public gate names ``ac`` and ``plan``.
-    """
-
-    gate_status = normalize_gate_status(status)
-    if gate == "ac":
-        goal.ac_gate = gate_status
-        return
-    if gate == "plan":
-        goal.plan_gate = gate_status
-        return
-    raise GoalLifecycleError("Gate must be 'ac' or 'plan'.")
-
-
-def refresh_goal_status_from_gates(goal: Any) -> None:
-    """Derive draft/ready status from gate state without touching active goals."""
-
-    current = normalize_goal_status(goal.status)
-    if current == GoalStatus.CANCELLED:
-        return
-    goal.ac_gate = normalize_gate_status(goal.ac_gate)
-    goal.plan_gate = normalize_gate_status(goal.plan_gate)
-    gates_approved = goal.ac_gate == GateStatus.APPROVED and goal.plan_gate == GateStatus.APPROVED
-    if gates_approved and current == GoalStatus.DRAFT:
-        transition_goal(goal, GoalStatus.READY)
-    elif not gates_approved and current == GoalStatus.READY:
-        transition_goal(goal, GoalStatus.DRAFT)
-
-
 __all__ = [
     "ACCEPTANCE_STATUSES",
     "ALLOWED_GOAL_TRANSITIONS",
@@ -195,8 +156,5 @@ __all__ = [
     "normalize_gate_status",
     "normalize_goal_event_type",
     "normalize_goal_status",
-    "refresh_goal_status_from_gates",
     "require_goal_transition",
-    "set_goal_gate",
-    "transition_goal",
 ]

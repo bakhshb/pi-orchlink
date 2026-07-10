@@ -138,6 +138,7 @@ Closeout discipline:
 - If your harness has a native TODO/checkpoint/reminder, you may record the task ID there as a secondary nudge. It does not replace resolving the task or handing it off.
 - Do not set up cron or external timers as the Orchlink reporting mechanism.
 - Do not use shell sleep, repeated timeout waits, or blind `orch jobs --wait --timeout ...` as the primary progress check.
+- When several independent tasks are active, let each injected notification identify the next completed task. Read that exact result with `orch jobs --result <task_id>`, evaluate or repair its now-free scope, and leave the remaining workers running. Do not pick one task and block on it while another result could arrive; use `orch jobs --wait` only for the sole blocker to the next safe action.
 - If the task remains active or may be slow, run `orch jobs --live <task_id>` before deciding it is stuck, blocked, or done.
 - Before any human-facing completion or decision, read terminal async results with `orch jobs --result <task_id>`; use `orch jobs --wait <task_id>` only when you intentionally need to block because that result gates the next action.
 - If an async task is still pending when you must stop or reply, tell the human the task ID, whether it blocks the answer, and the retrieval command.

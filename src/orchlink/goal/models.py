@@ -12,7 +12,6 @@ from orchlink.goal.lifecycle import (
     normalize_acceptance_status,
     normalize_gate_status,
     normalize_goal_status,
-    refresh_goal_status_from_gates,
 )
 
 
@@ -208,7 +207,3 @@ class Goal:
             "ac_status": self.ac_status,
             "blockers": [item.to_dict() for item in self.blockers],
         }
-
-    def refresh_status_from_gates(self) -> None:
-        refresh_goal_status_from_gates(self)
-        self.updated_at = utc_now_iso()

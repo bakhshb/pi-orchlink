@@ -7,7 +7,7 @@ Orchlink is a local coordination layer for Pi coding agents. It connects one lea
 - **Routes tasks between agents.** The lead Pi sends work to named workers (`work`, `review`, `bg-test`) via a local HTTP broker. Each worker is a separate Pi session with its own context.
 - **Tracks work state.** Tasks, talks, sessions, and results are tracked by the broker. The lead reads results, checks whether work is idle, and cancels stale tasks.
 - **Runs Goal Mode.** Create a goal from a PRD, derive acceptance criteria and a plan, dispatch bounded work slices, verify objective checks, record evidence, and sign off subjective criteria.
-- **Runs Loop Mode.** Triage work items, dispatch each to a maker worker in an isolated worktree, verify with a separate verifier worker, run objective checks (tests, lint), and reach `done` only on an accepted verdict.
+- **Runs Loop Mode.** Triage work items, dispatch each to a maker worker, verify with a separate verifier worker, run objective checks (tests, lint), and reach `done` only on an accepted verdict. Worktree isolation can be required per project.
 - **Schedules loop ticks.** Install a crontab or systemd timer that fires `orch loop tick` on a cadence. Each fire is a fresh bounded process, not a daemon.
 - **Isolates parallel workers.** `orch work --worktree-create` creates a `git worktree` per worker so two makers don't touch the same files.
 - **Connects to external tools.** GitHub and Linear connectors discover pull requests, issues, and CI failures as loop candidates. Tokens are loaded from env or external files, never stored in project state.
@@ -102,6 +102,8 @@ orch work --background --new --replace --oneshot
 
 `orch work --background` starts the headless Pi RPC worker named `work`, writes `.orch/run/orch-work.pid` and `.orch/run/orch-work.log`, waits for readiness, and returns. Named workers need no YAML setup; ask the lead Pi for them by name.
 
+Headless RPC workers invoke Pi with `--approve`, which is tool approval suitable for unattended operation. Use them only for scoped local coding tasks you would allow to run without per-tool confirmation. Orchlink coordinates workers; it is not a shell-command sandbox.
+
 ## Ask and Send
 
 You normally use Ask/Send by prompting the lead Pi:
@@ -165,20 +167,27 @@ The lead Pi turns those prompts into `orch loop ...`, `orch work ...`, and file 
 
 ### Loop Mode setup
 
-1. Ask the lead Pi to start the loop workers.
+1. Ask the lead Pi to start the loop workers and require maker isolation.
 
 ```text
-Start the default Loop Mode workers in the background: maker for implementation and review for verification.
+Start the default Loop Mode workers in the background. Create an isolated Git worktree for maker, use review for verification, and require worktree isolation for loop dispatch.
 ```
 
 Manual equivalent:
 
 ```bash
-orch work --background --name maker
+orch work --background --name maker --worktree-create --base main
 orch work --background --name review
 ```
 
-Visible workers are also valid if you want separate terminals; use the same worker names without `--background`.
+The lead enables enforcement in `.orch/project.yaml`:
+
+```yaml
+loop:
+  require_worktree_isolation: true
+```
+
+With this setting, Loop Mode refuses maker dispatch unless the active maker session reports a registered Git worktree outside the project root. Without it, legacy non-isolated dispatch remains allowed. Visible workers are also valid if you want separate terminals; omit `--background` but keep `--worktree-create` for the maker.
 
 2. Ask the lead Pi to configure objective checks.
 
@@ -282,7 +291,7 @@ Loop state lives in `.orch/loop/state.md` as human-readable markdown with a fenc
 Most users ask the lead Pi to start or target workers. These details are for visible worker terminals, debugging, scripting, and agent/manual recovery.
 
 - Each worker name handles one task at a time. Different names run independent work.
-- `orch work --background` starts a headless RPC worker. `--oneshot` exits after one reply.
+- `orch work --background` starts a headless RPC worker with Pi `--approve` for unattended tool use. `--oneshot` exits after one reply.
 - `orch work --worktree-create --base main` creates a `git worktree` for the worker.
 - `orch work --model <model> --thinking <level>` pins a worker's model and thinking.
 - Talk Mode (`orch talk`, `orch say`, `orch close`) is for lead↔worker discussion without file edits.
@@ -377,13 +386,14 @@ broker:
   port: 8788
 ```
 
-One broker can serve multiple projects. Orchlink scopes commands by `project_id` so results from another repo are refused.
+One broker can serve multiple projects only when those projects are configured with the same broker authentication key/API key. Orchlink does not currently implement multi-key broker support. Within a shared-key broker, Orchlink scopes commands by `project_id` so results from another repo are refused.
 
 ## Security
 
 - `orch init` generates a random per-project broker API key. The broker refuses to start with a missing or default `change-me` key.
 - `orch doctor` reports broker bind exposure, API key state, and whether the running broker accepts the project key.
 - `orch broker run` warns when binding to a non-loopback interface.
+- Headless RPC workers run Pi with `--approve` for unattended tool use.
 - Orchlink does not sandbox worker shell commands. Scope worker tasks clearly.
 - Worktree isolation (`--worktree`) changes the working directory but is not a security boundary.
 - Cancellation is best-effort once Pi has started a tool call.
