@@ -1338,47 +1338,49 @@ export default function (pi: ExtensionAPI) {
   }
 
   function renderWorkerTreeWidget(tui: any, theme: any): any {
-    if (!widgetRows.length) {
-      // AC-9: hide when no relevant worker work remains. The widget
-      // surface disappears from the above-editor area.
-      return new Container();
-    }
-    // Capture Pi's TUI render handle so the shared elapsed timer can request
-    // re-renders without per-second broker polling.
+    // Pi invokes this factory once. The returned component must read live
+    // broker-backed rows on every render; a static empty Container created at
+    // session start would remain blank when work begins later.
     if (tui?.requestRender) widgetRequestRender = tui.requestRender.bind(tui);
-    const width = Math.max(20, Number(tui?.terminal?.cols || 80));
-    const lines = renderWorkerTreeLines(width);
-    const accent = (text: string) => (theme?.fg ? theme.fg("accent", text) : text);
-    const dim = (text: string) => (theme?.fg ? theme.fg("dim", text) : text);
-    const statusColor = (text: string, status: string) => {
-      if (!theme?.fg) return text;
-      const s = String(status || "").toUpperCase();
-      if (s === "RUNNING" || s === "IN_PROGRESS") return theme.fg("accent", text);
-      if (s === "DONE" || s === "COMPLETE" || s === "COMPLETED" || s === "SUCCEEDED") return theme.fg("dim", text);
-      if (s === "FAILED" || s === "ERROR" || s === "CANCELLED" || s === "CANCELED" || s === "TIMEOUT") {
-        return theme.fg("error", text);
-      }
-      return theme.fg("warning", text);
+    return {
+      render(availableWidth: number) {
+        // AC-9: an empty render hides the surface when no work remains.
+        if (!widgetRows.length) return [];
+        const width = Math.max(20, Number(availableWidth || tui?.terminal?.cols || 80));
+        const lines = renderWorkerTreeLines(width);
+        const accent = (text: string) => (theme?.fg ? theme.fg("accent", text) : text);
+        const dim = (text: string) => (theme?.fg ? theme.fg("dim", text) : text);
+        const statusColor = (text: string, status: string) => {
+          if (!theme?.fg) return text;
+          const s = String(status || "").toUpperCase();
+          if (s === "RUNNING" || s === "IN_PROGRESS") return theme.fg("accent", text);
+          if (s === "DONE" || s === "COMPLETE" || s === "COMPLETED" || s === "SUCCEEDED") return theme.fg("dim", text);
+          if (s === "FAILED" || s === "ERROR" || s === "CANCELLED" || s === "CANCELED" || s === "TIMEOUT") {
+            return theme.fg("error", text);
+          }
+          return theme.fg("warning", text);
+        };
+        return lines.map((line) => {
+          if (line === "Active workers") return accent(line);
+          if (line === "F8 open workers") return dim(line);
+          if (line.startsWith("+")) return dim(line);
+          // Lead-to-worker row: color the worker name and the status label.
+          if (line.includes(" · ") && !line.startsWith("└─")) {
+            const parts = line.split(" · ");
+            if (parts.length >= 3) {
+              const workerPart = parts[0];
+              const statusPart = parts[parts.length - 1];
+              const statusValue = statusPart.replace(/^[●✓✗○]\s*/, "");
+              parts[0] = accent(workerPart);
+              parts[parts.length - 1] = statusColor(statusPart, statusValue);
+              return parts.join(" · ");
+            }
+          }
+          return line;
+        });
+      },
+      invalidate() {},
     };
-    const coloredLines = lines.map((line) => {
-      if (line === "Active workers") return accent(line);
-      if (line === "F8 open workers") return dim(line);
-      if (line.startsWith("+")) return dim(line);
-      // Lead-to-worker row: color the worker name and the status label.
-      if (line.includes(" · ") && !line.startsWith("└─")) {
-        const parts = line.split(" · ");
-        if (parts.length >= 3) {
-          const workerPart = parts[0];
-          const statusPart = parts[parts.length - 1];
-          const statusValue = statusPart.replace(/^[●✓✗○]\s*/, "");
-          parts[0] = accent(workerPart);
-          parts[parts.length - 1] = statusColor(statusPart, statusValue);
-          return parts.join(" · ");
-        }
-      }
-      return line;
-    });
-    return new Text(coloredLines.join("\n"), 0, 0);
   }
 
   function bindWorkerTreeWidget(ctx: any) {
@@ -1409,6 +1411,9 @@ export default function (pi: ExtensionAPI) {
     widgetRows = rows.filter((row) => Boolean(row.job));
     if (widgetRows.length) ensureWidgetTick();
     else clearWidgetTick();
+    // Status transitions should paint immediately; the shared timer exists
+    // only to advance elapsed time between broker polls.
+    widgetRequestRender?.();
   }
 
   async function openOrchlinkOverlay(ctx: any) {

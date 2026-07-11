@@ -2455,7 +2455,13 @@ process.env.ORCHLINK_PROJECT_ID = "test";
 globalThis.fetch = async () => ({
   ok: true,
   status: 200,
-  json: async () => ({ broker: "ok", sessions: [], jobs: [], activity: [] }),
+  json: async () => ({
+    broker: "ok",
+    sessions: [{ role: "work", status: "ACTIVE", worker_name: "work", agent_id: "test.work", ready: true }],
+    jobs: [{ worker_name: "work", to_agent: "test.work", task_id: "LIVE-1", status: "RUNNING", mode: "DO" }],
+    active_messages: [{ task_id: "LIVE-1", started_at: new Date().toISOString() }],
+    telemetry: [],
+  }),
 });
 const { default: register } = await import("./extension.mts");
 const widgets = [];
@@ -2478,14 +2484,25 @@ const ctx = {
   },
 };
 await events.session_start({}, ctx);
-// Drive the factory once with a mock TUI/theme to prove it is callable.
-const factoryResult = widgets[0]?.factory({ terminal: { cols: 80 } }, { fg: (_c, t) => t });
+// Pi constructs the component while the session is idle. The scheduled poll
+// then discovers work; the same component must render the new live rows.
+let renderRequests = 0;
+const factoryResult = widgets[0]?.factory(
+  { terminal: { cols: 80 }, requestRender: () => { renderRequests += 1; } },
+  { fg: (_c, t) => t },
+);
+const initialLines = factoryResult.render(80);
+await new Promise((resolve) => setTimeout(resolve, 50));
+const liveLines = factoryResult.render(80);
 const widgetName = factoryResult?.constructor?.name;
 await events.session_shutdown({});
 console.log(JSON.stringify({
   widgets,
   shortcuts,
   widgetName,
+  initialLines,
+  liveLines,
+  renderRequests,
 }));
 '''
     )
@@ -2501,7 +2518,11 @@ console.log(JSON.stringify({
     assert len(state["widgets"]) == 1, state["widgets"]
     assert state["widgets"][0]["key"] == "orchlink-worker-tree"
     assert state["widgets"][0]["options"]["placement"] == "aboveEditor"
-    assert state["widgetName"] in ("Container", "Text")
+    assert state["widgetName"] == "Object"
+    assert state["initialLines"] == []
+    assert state["liveLines"][0] == "Active workers"
+    assert any("LIVE-1" in line for line in state["liveLines"])
+    assert state["renderRequests"] > 0
     assert any(s["key"] == "f8" for s in state["shortcuts"]), state["shortcuts"]
 
 
