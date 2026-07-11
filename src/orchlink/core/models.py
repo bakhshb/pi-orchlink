@@ -79,8 +79,7 @@ class TranscriptTruncation:
         self.truncated_before_sequence = truncated_before_sequence
 
     def to_event(self, project_id: str, task_id: str) -> dict[str, Any]:
-        return {
-            "seq": self.truncated_before_sequence,
+        return {            "seq": self.truncated_before_sequence,
             "time": datetime.now(timezone.utc).isoformat(),
             "project_id": project_id,
             "task_id": task_id,
@@ -571,6 +570,54 @@ class ReplyResult:
 
 
 @dataclass(frozen=True)
+class TaskTelemetry:
+    """Latest-state, lease-fenced telemetry for a single task (G019 AC-5).
+
+    Storage shape: a single record per ``(project_id, task_id)``. New
+    telemetry updates REPLACE the previous record rather than append. This
+    keeps ``tool_count`` and context metrics truthful (no unbounded
+    heartbeat history) and lets the lead UI render elapsed-time from a
+    durable capture without polling.
+
+    Lease-fence contract: every record carries the
+    ``lease_epoch`` / ``lease_holder`` / ``session_lease_id`` it was
+    published under, and the storage layer rejects updates whose lease
+    fences don't match the active job/session lease at the broker. Stale or
+    terminal-task updates are never persisted.
+
+    Privacy boundary: this record carries numeric metrics only — no prompt
+    body, hidden reasoning, tool arguments, raw tool output, provider data,
+    environment, secret, or authorization data is allowed on the wire or in
+    the snapshot.
+    """
+
+    project_id: str
+    task_id: str
+    worker_name: str = ""
+    # Context metrics — tolerate unknown by leaving them None.
+    tokens: int | None = None
+    context_window: int | None = None
+    percent: float | None = None
+    # Tool-call count for the *current* task. Source-of-truth invariant:
+    # worker-side ``tool_execution_start``, never lead-side, never negative.
+    tool_count: int = 0
+    # Fence metadata echoed in the wire shape so a replay can refuse stale
+    # records without re-querying the store.
+    lease_epoch: int = 0
+    lease_holder: str = ""
+    session_lease_id: str | None = None
+    # Snapshot capture timestamp (ISO-8601 UTC). Used for the elapsed-time
+    # fallback when ``started_at`` is missing on a fresh task.
+    updated_at: str | None = None
+
+    def to_wire_dict(self) -> dict[str, Any]:
+        from orchlink.core.views import task_telemetry_to_wire
+
+        return task_telemetry_to_wire(self)
+
+
+
+@dataclass(frozen=True)
 class WaitBlocker:
     """Typed waiter result for cancellation/timeout/missing work."""
 
@@ -700,14 +747,22 @@ class StoredMessage:
     """Broker storage record for an active Orchlink message.
 
     The record owns a validated `MessageEnvelope` plus broker lifecycle
-    metadata (`status`, `created_at`, `queued_at`, `updated_at`). JSON/dict
-    projection belongs in `orchlink.core.views.stored_message_to_wire`.
+    metadata (`status`, `created_at`, `queued_at`, `started_at`, `updated_at`).
+    JSON/dict projection belongs in `orchlink.core.views.stored_message_to_wire`.
+
+    `started_at` is set exactly once: the first time the broker transitions the
+    message into RUNNING. Once set, it survives subsequent status refreshes
+    (heartbeat, IN_PROGRESS, RECLAIMABLE -> RUNNING cycles) and is durable
+    across broker JSONL replay and restart. Workers and the lead UI use this
+    as the authoritative "since when has this task been running" timestamp
+    for elapsed-time rendering.
     """
 
     envelope: MessageEnvelope
     status: str
     created_at: str | None = None
     queued_at: str | None = None
+    started_at: str | None = None
     updated_at: str | None = None
 
     @classmethod
@@ -734,7 +789,17 @@ class StoredMessage:
         return stored_message_to_wire(self)
 
     def with_status(self, status: str, now: str) -> "StoredMessage":
-        """Return a new StoredMessage with the given broker status and updated_at."""
+        """Return a new StoredMessage with the given broker status and updated_at.
+
+        ``started_at`` is set idempotently: the first call that transitions
+        ``status`` to ``"RUNNING"`` captures ``now`` as the authoritative
+        started_at. Subsequent calls — including RECLAIMABLE -> RUNNING
+        cycles, status refresh, and heartbeat — never overwrite it. Any
+        non-RUNNING transition leaves ``started_at`` alone.
+        """
+        normalized = str(status or "").upper()
+        if normalized == "RUNNING" and self.started_at is None:
+            return replace(self, status=status, started_at=now, updated_at=now)
         return replace(self, status=status, updated_at=now)
 
 

@@ -638,6 +638,243 @@ def test_stored_message_with_status_returns_new_instance_with_updated_status():
     assert original.updated_at == "2026-01-01T00:00:00+00:00"
 
 
+# --- G019 AC-4: durable started_at semantics ---------------------------------
+
+
+def _make_envelope(**overrides: object):
+    from orchlink.core.envelope import MessageEnvelope
+
+    fields: dict[str, object] = {
+        "message_id": "msg-ac4",
+        "correlation_id": "req-ac4",
+        "conversation_id": "C-ac4",
+        "from_agent": "demo.lead",
+        "to_agent": "demo.work",
+        "type": "TASK",
+    }
+    fields.update(overrides)
+    return MessageEnvelope(**fields)  # type: ignore[arg-type]
+
+
+def test_stored_message_started_at_is_none_until_first_running():
+    from orchlink.core.models import StoredMessage
+
+    sm = StoredMessage.from_envelope(_make_envelope(), now="2026-01-01T00:00:00+00:00")
+    assert sm.started_at is None
+    # Wire shape round-trips the None explicitly so consumers can distinguish
+    # "not yet started" from "field absent" after JSONL replay.
+    wire = sm.to_wire_dict()
+    assert "started_at" in wire
+    assert wire["started_at"] is None
+
+
+def test_stored_message_started_at_set_exactly_once_on_first_running():
+    """AC-4: ``with_status("RUNNING", t1)`` captures t1 as started_at on the
+    first call. Subsequent calls — including additional RUNNING transitions
+    (RECLAIMABLE -> RUNNING), IN_PROGRESS refresh, and heartbeat — never
+    overwrite the original capture. ``updated_at`` does advance.
+    """
+    from orchlink.core.models import StoredMessage
+
+    sm = StoredMessage.from_envelope(_make_envelope(), now="2026-01-01T00:00:00+00:00")
+    assert sm.started_at is None
+
+    # First RUNNING sets the timestamp.
+    t1 = "2026-01-01T00:00:01+00:00"
+    sm = sm.with_status("RUNNING", now=t1)
+    assert sm.status == "RUNNING"
+    assert sm.started_at == t1
+    assert sm.updated_at == t1
+
+    # A second RUNNING (e.g. RECLAIMABLE -> RUNNING) leaves started_at alone.
+    t2 = "2026-01-01T00:05:00+00:00"
+    sm2 = sm.with_status("RUNNING", now=t2)
+    assert sm2.started_at == t1, "second RUNNING must not overwrite started_at"
+    assert sm2.updated_at == t2
+
+    # IN_PROGRESS refresh also leaves started_at alone and may even come
+    # after the original RUNNING capture.
+    t3 = "2026-01-01T00:01:00+00:00"
+    sm3 = sm2.with_status("IN_PROGRESS", now=t3)
+    assert sm3.started_at == t1
+    assert sm3.updated_at == t3
+
+    # Back to RUNNING (a heartbeat-driven reassumption) still does not move
+    # started_at.
+    t4 = "2026-01-01T00:02:00+00:00"
+    sm4 = sm3.with_status("RUNNING", now=t4)
+    assert sm4.started_at == t1
+    assert sm4.updated_at == t4
+
+    # Original is untouched (frozen/immutable semantics hold).
+    assert sm.started_at == t1
+
+
+def test_stored_message_started_at_survives_jsonl_wire_round_trip():
+    """AC-4: `started_at` is part of the durable wire shape. Round-tripping
+    through to_wire_dict -> from_wire preserves it so a broker restart
+    (which always rehydrates from JSONL) keeps the same authoritative
+    "first RUNNING" timestamp.
+    """
+    from orchlink.core.models import StoredMessage
+    from orchlink.core.views import stored_message_from_wire, stored_message_to_wire
+
+    t1 = "2026-01-01T00:00:01+00:00"
+    sm = StoredMessage.from_envelope(_make_envelope(), now="2026-01-01T00:00:00+00:00").with_status("RUNNING", now=t1)
+    wire = stored_message_to_wire(sm)
+    assert wire["started_at"] == t1
+
+    restored = stored_message_from_wire(wire)
+    assert restored.started_at == t1
+
+    # A subsequent heartbeat DURING the same session must not move started_at.
+    hb = restored.with_status("IN_PROGRESS", now="2026-01-01T00:00:02+00:00")
+    assert hb.started_at == t1
+    hb_wire = stored_message_to_wire(hb)
+    assert hb_wire["started_at"] == t1
+    hb_restored = stored_message_from_wire(hb_wire)
+    assert hb_restored.started_at == t1
+
+
+def test_stored_message_started_at_survives_jsonl_snapshot_replay(tmp_path):
+    """AC-4: ``started_at`` set when the broker first transitions a stored
+    message into RUNNING survives close-and-reopen (broker restart). The
+    persistence path uses ``stored_message_to_wire`` so this is the canonical
+    durability contract for the JsonlMessageStore.
+    """
+    import asyncio
+    import json
+    import os
+
+    from orchlink.broker.storage.jsonl import JsonlMessageStore
+    from orchlink.core.models import StoredMessage
+    from orchlink.core.views import stored_message_to_wire
+
+    async def run() -> None:
+        path = os.path.join(str(tmp_path), "started-at.jsonl")
+        t_queued = "2026-01-01T00:00:00+00:00"
+        t_first_running = "2026-01-01T00:00:01+00:00"
+        t_post_restart_refresh = "2026-01-01T00:01:30+00:00"
+
+        # Phase 1: build a stored message that simulates a broker having
+        # moved QUEUED -> RUNNING at t_first_running, then persist a
+        # minimal JSONL journal record containing the snapshot.
+        sm = (
+            StoredMessage
+            .from_envelope(_make_envelope(message_id="msg-ac4-restart"), now=t_queued)
+            .with_status("RUNNING", now=t_first_running)
+        )
+        assert sm.started_at == t_first_running
+        record = {
+            "time": t_first_running,
+            "operation": "enqueue_message",
+            "request": {},
+            "result": {},
+            "snapshot": {
+                "active_messages": {sm.envelope.message_id: stored_message_to_wire(sm)},
+                "agents": {},
+                "tasks": {},
+                "task_jobs": {},
+                "results_by_task": {},
+                "conversations": {},
+                "talk_jobs": {},
+                "events": [],
+                "activity": [],
+                "sessions": {},
+                "next_event_id": 0,
+                "next_activity_id": 0,
+            },
+        }
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
+
+        # Phase 2: reopen the store (= broker restart).
+        restarted = JsonlMessageStore(path=path)
+        internal_state = getattr(restarted, "_state", None)
+        assert internal_state is not None
+        stored_after = internal_state.active_messages.get(sm.envelope.message_id)
+        assert stored_after is not None
+        # ``started_at`` round-tripped through JSONL replay.
+        assert stored_after.started_at == t_first_running, (
+            f"started_at must survive JSONL close-and-reopen; "
+            f"got {stored_after.started_at!r}, expected {t_first_running!r}"
+        )
+        # Sanity: other lifecycle timestamps are present too.
+        assert stored_after.created_at == t_queued
+        assert stored_after.queued_at == t_queued
+
+        # Phase 3: a downstream post-restart RUNNING transition (e.g. a
+        # heartbeat-driven reassumption) must NOT overwrite the durable
+        # started_at. ``updated_at`` advances; ``started_at`` is frozen.
+        advanced = stored_after.with_status("RUNNING", now=t_post_restart_refresh)
+        assert advanced.started_at == t_first_running, (
+            f"started_at must NOT move on a post-restart RUNNING transition; "
+            f"got {advanced.started_at!r}, expected {t_first_running!r}"
+        )
+        assert advanced.updated_at == t_post_restart_refresh
+        # And it must not move on a status refresh either.
+        refreshed = advanced.with_status("IN_PROGRESS", now="2026-01-01T00:02:00+00:00")
+        assert refreshed.started_at == t_first_running
+
+    asyncio.run(run())
+
+
+def test_stored_message_started_at_survives_update_message_status_heartbeat():
+    """AC-4 heartbeat guarantee: ``update_message_status`` (which is what a
+    worker calls to drive heartbeat-driven status refresh) must not move
+    ``started_at`` once it has been captured. This pins the contract through
+    the broker's public update_message_status path, not just the domain
+    helper, so a future refactor of the storage layer that re-introduces
+    ``update_message_status_locked`` and forgets to preserve the
+    started_at invariant is caught here.
+    """
+    import asyncio
+
+    from orchlink.broker.storage.memory import MemoryMessageStore
+
+    async def run() -> None:
+        store = MemoryMessageStore()
+        envelope = _make_envelope(message_id="msg-ac4-heartbeat")
+        # Initial enqueue lands the message in QUEUED.
+        await store.enqueue_message(envelope)
+        # Move it into RUNNING — the first such transition captures
+        # started_at. The exact capture time is owned by ``_now()`` so we
+        # only pin ``first_started_at`` after the call rather than a literal.
+        await store.update_message_status(envelope.message_id, "RUNNING")
+        stored = store._state.active_messages[envelope.message_id]
+        first_started_at = stored.started_at
+        assert first_started_at is not None, "first RUNNING must set started_at"
+        assert first_started_at == stored.updated_at
+
+        # Heartbeat-driven status refresh: RUNNING -> IN_PROGRESS (a real
+        # worker reports IN_PROGRESS during long runs) must not move
+        # started_at. ``updated_at`` advances, started_at stays.
+        await store.update_message_status(envelope.message_id, "IN_PROGRESS")
+        stored2 = store._state.active_messages[envelope.message_id]
+        assert stored2.started_at == first_started_at, (
+            f"status refresh must not move started_at; got {stored2.started_at!r}, "
+            f"expected {first_started_at!r}"
+        )
+
+        # IN_PROGRESS -> RUNNING reassumption (a heartbeat-driven switch
+        # back to RUNNING) is also a no-op for started_at.
+        await store.update_message_status(envelope.message_id, "RUNNING")
+        stored3 = store._state.active_messages[envelope.message_id]
+        assert stored3.started_at == first_started_at
+
+        # And the wire projection still carries started_at from the
+        # original capture.
+        listed = await store.list_active_messages(project_id="default")
+        match = next(
+            (row for row in listed if row.get("message_id") == envelope.message_id),
+            None,
+        )
+        assert match is not None
+        assert match["started_at"] == first_started_at
+
+    asyncio.run(run())
+
+
 # --- G005 AC-1: Conversation domain object ---
 
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from orchlink.core.models import TranscriptBatch
+    from orchlink.core.models import TaskTelemetry, TranscriptBatch
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -156,6 +156,38 @@ class JournalAppendBody(BrokerBody):
     meta: dict[str, Any] | None = None
 
 
+class TaskTelemetryBody(BrokerBody):
+    """Worker-submitted telemetry payload (G019 AC-5).
+
+    Privacy boundary: the body accepts ONLY numeric metrics, the worker
+    name, and lease metadata. There is no path for a worker to send prompt
+    body, hidden reasoning, tool arguments, raw tool output, provider data,
+    environment value, secret, or authorization data through this DTO.
+    """
+
+    project_id: str | None = None
+    worker_name: str | None = None
+    tokens: int | None = None
+    context_window: int | None = None
+    percent: float | None = None
+    tool_count: int = 0
+
+    def to_command(self) -> "TaskTelemetry":
+        # Imported locally to avoid the TYPE_CHECKING runtime-import
+        # cycle; the broker startup imports TaskTelemetry normally.
+        from orchlink.core.models import TaskTelemetry
+
+        return TaskTelemetry(
+            project_id=str(self.project_id or "default"),
+            task_id="",  # task_id comes from the URL path on the broker side.
+            worker_name=str(self.worker_name or ""),
+            tokens=self.tokens,
+            context_window=self.context_window,
+            percent=self.percent,
+            tool_count=max(0, int(self.tool_count or 0)),
+        )
+
+
 __all__ = [
     "ActivityBody",
     "BrokerBody",
@@ -167,6 +199,7 @@ __all__ = [
     "SessionAcquireBody",
     "SessionHeartbeatBody",
     "SessionReleaseBody",
+    "TaskTelemetryBody",
     "TranscriptBatchBody",
     "TranscriptEventBody",
 ]

@@ -730,7 +730,10 @@ def test_jsonl_stored_message_domain_object_on_disk_field_set_is_stable(tmp_path
             "conversation_id", "task_id", "from_agent", "to_agent", "type",
             "status", "turn", "max_turns", "requires_reply", "timeout_seconds",
             "delivery", "payload", "meta",
-            "created_at", "queued_at", "updated_at",
+            # `started_at` is part of the durable wire shape (G019 AC-4):
+            # it is set on the first QUEUED -> RUNNING transition and survives
+            # JSONL replay, status refresh, and broker restart.
+            "created_at", "queued_at", "started_at", "updated_at",
         }
         actual_keys = set(on_disk.keys())
         # On-disk keys are exactly the expected envelope + broker fields.

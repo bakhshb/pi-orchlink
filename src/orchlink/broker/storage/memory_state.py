@@ -170,6 +170,11 @@ class InMemoryBrokerState:
     transcript_batch_ids: dict[str, set[str]] = field(default_factory=dict)
     transcript_waiters: dict[str, list[Any]] = field(default_factory=dict)
     transcript_truncated_before: dict[str, int] = field(default_factory=dict)
+    # G019 AC-5: per-task latest-state telemetry record. Keyed by
+    # ``"<project_id>:<task_id>"``. Each telemetry update REPLACES the
+    # previous record rather than appending, so the storage shape is
+    # bounded regardless of heartbeat frequency.
+    telemetry_by_task: dict[str, Any] = field(default_factory=dict)
 
 
 __all__ = [

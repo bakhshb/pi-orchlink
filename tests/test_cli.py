@@ -107,6 +107,35 @@ def test_send_default_is_async(monkeypatch, tmp_path):
     assert "Async mode" in result.output
 
 
+def test_send_foreground_json_returns_handle_with_blocking_delivery(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    def fake_send_worker_sync(**kwargs):
+        assert kwargs["wait"] is False
+        assert kwargs["delivery"] == "blocking"
+        return {
+            "status": "PENDING",
+            "to_agent": "work",
+            "task_id": "T-FG",
+            "correlation_id": "req-fg",
+            "conversation_id": "demo-tasks",
+        }
+
+    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
+
+    result = runner.invoke(
+        cli_main.app,
+        ["send", "work", "-t", "T-FG", "-m", "Inspect tests.", "--async-json", "--foreground-json"],
+    )
+
+    assert result.exit_code == 0
+    handle = __import__("json").loads(result.output.strip())
+    assert handle["task_id"] == "T-FG"
+    assert handle["correlation_id"] == "req-fg"
+
+
 def test_send_wait_blocks(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)

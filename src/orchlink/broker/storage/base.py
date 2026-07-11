@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, Union
 
 from orchlink.core.envelope import AgentRegistration, MessageEnvelope
-from orchlink.core.models import Agent, SessionAcquire, SessionHeartbeat, StoredMessage, WorkerActivityInput, TranscriptBatch
+from orchlink.core.models import Agent, SessionAcquire, SessionHeartbeat, StoredMessage, TaskTelemetry, WorkerActivityInput, TranscriptBatch
 
 
 # Storage inputs are typed inside the broker. Wire dictionaries are decoded at
@@ -13,6 +13,7 @@ SessionAcquireInput = SessionAcquire
 SessionHeartbeatInput = SessionHeartbeat
 ActivityInput = WorkerActivityInput
 TranscriptBatchInput = Union[TranscriptBatch, dict[str, Any]]
+TaskTelemetryInput = Union[TaskTelemetry, dict[str, Any]]
 
 
 class MessageStoreBusy(RuntimeError):
@@ -227,5 +228,34 @@ class MessageStore(ABC):
     ) -> dict[str, Any]:
         raise NotImplementedError
 
+    # --- Telemetry (G019 AC-5) --------------------------------------------
 
-__all__ = ["ActivityInput", "AgentInput", "LeaseConflictError", "MessageInput", "MessageStore", "MessageStoreBusy", "SessionAcquireInput", "SessionHeartbeatInput", "TranscriptBatchInput"]
+    @abstractmethod
+    async def record_task_telemetry(
+        self,
+        telemetry: TaskTelemetryInput,
+        *,
+        agent_id: str,
+        session_lease_id: str | None = None,
+        lease_epoch: int | None = None,
+        lease_holder: str | None = None,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_task_telemetry(
+        self,
+        task_id: str,
+        project_id: str,
+    ) -> dict[str, Any] | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_task_telemetry(
+        self,
+        project_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError
+
+
+__all__ = ["ActivityInput", "AgentInput", "LeaseConflictError", "MessageInput", "MessageStore", "MessageStoreBusy", "SessionAcquireInput", "SessionHeartbeatInput", "TaskTelemetryInput", "TranscriptBatchInput"]

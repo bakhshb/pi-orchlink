@@ -270,13 +270,22 @@ class MemoryWorkQueue:
             self.store_task_result_locked(result)
         if is_talk_message_type(envelope.type):
             self._job_projector.touch_conversation_locked(reply_context, "OPEN" if job_status == "DONE" else job_status)
-        reply_inbox = self._state.inboxes.setdefault(str(envelope.to_agent), asyncio.Queue())
+        # Blocking delivery is consumed through wait/task-result APIs by the
+        # foreground caller. Do not also enqueue it into the lead agent inbox,
+        # which would create a second unsolicited chat notification after the
+        # native Pi tool has already returned the same authoritative result.
+        reply_inbox = None
+        if str(envelope.delivery or "async").lower() != "blocking":
+            reply_inbox = self._state.inboxes.setdefault(str(envelope.to_agent), asyncio.Queue())
         self._event_log.append_event_locked(
             self._event_log.event_context("reply_received", reply_wire, job_status)
         )
         if future is not None and not future.done():
             future.set_result(ReplyResult(correlation_id=str(correlation_id), reply=reply))
-        return {"status": "reply_received", "correlation_id": correlation_id}, reply_inbox, reply
+        return {
+            "status": "reply_received",
+            "correlation_id": correlation_id,
+        }, reply_inbox, reply if reply_inbox is not None else None
 
     def update_message_status_locked(self, message_id: str, normalized_status: str) -> dict[str, Any]:
         stored = self._state.active_messages.get(message_id)

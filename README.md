@@ -120,7 +120,11 @@ The lead Pi turns those prompts into blocking or async `orch send` calls and ret
 
 ## Watch background workers in Pi
 
-Run `/orchlink` in the lead Pi to open a compact worker list. Select an active worker and press Enter or `f` to follow its visible assistant output.
+By default, native `delegate_worker` behaves like a foreground Pi subagent: its tool call remains pending, receives partial progress through Pi's `onUpdate` path, and completes only when the broker returns the authoritative worker result. The row shows an animated running state, task status, tool-call count, worker-session context usage, and elapsed time; expand it to see privacy-filtered visible worker output.
+
+For genuinely independent work, `async: true` returns a tracking handle immediately. A compact worker activity tree stays fixed above the editor for both foreground and background tasks, so active work remains visible while the transcript scrolls. That handle is not the worker's final result and must be reconciled later. Both modes submit through the same `orch send` client and local broker.
+
+Press `F8` to open the detailed worker panel, or run `/orchlink` as the universal fallback. Select an active worker and press Enter or `f` to follow its visible assistant output. Broker status refreshes once per second by default; set `ORCHLINK_MONITOR_POLL_SECONDS` to tune it down to 0.5 seconds. Set `ORCHLINK_WORKERS_KEY` before starting Pi to override the default shortcut.
 
 Follow controls appear only when applicable:
 

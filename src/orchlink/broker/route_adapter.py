@@ -13,7 +13,8 @@ from fastapi import HTTPException
 
 from orchlink.broker.service import BrokerService
 from orchlink.broker.storage import MessageStoreBusy
-from orchlink.broker.storage.base import ActivityInput, AgentInput, LeaseConflictError, MessageInput, MessageStore, SessionAcquireInput, SessionHeartbeatInput, TranscriptBatchInput
+from orchlink.broker.storage.base import ActivityInput, AgentInput, LeaseConflictError, MessageInput, MessageStore, SessionAcquireInput, SessionHeartbeatInput, TaskTelemetryInput, TranscriptBatchInput
+from orchlink.broker.storage.memory_telemetry_store import TelemetryRejected
 from orchlink.core.envelope import MessageEnvelope
 from orchlink.core.models import TranscriptBatch
 
@@ -223,5 +224,53 @@ class BrokerRouteAdapter:
         return await self.service.wait_transcript_events(
             task_id, project_id, after=after, limit=limit, wait_seconds=wait_seconds
         )
+
+    # --- Telemetry (G019 AC-5) --------------------------------------------
+
+    async def record_task_telemetry(
+        self,
+        task_id: str,
+        telemetry: TaskTelemetryInput,
+        *,
+        project_id: str,
+        agent_id: str,
+        session_lease_id: str | None = None,
+        lease_epoch: int | None = None,
+        lease_holder: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return await self.service.record_task_telemetry(
+                task_id,
+                telemetry,
+                project_id=project_id,
+                agent_id=agent_id,
+                session_lease_id=session_lease_id,
+                lease_epoch=lease_epoch,
+                lease_holder=lease_holder,
+            )
+        except TelemetryRejected as exc:
+            # Lease / terminal rejections are 409 Conflict; the worker
+            # surfaces the structured ``reason`` via the response body so
+            # both Pi and the terminal CLI can observe why a write was
+            # dropped.
+            raise HTTPException(
+                status_code=409,
+                detail={"reason": exc.reason, "message": str(exc)},
+            ) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async def get_task_telemetry(
+        self,
+        task_id: str,
+        project_id: str,
+    ) -> dict[str, Any] | None:
+        return await self.service.get_task_telemetry(task_id, project_id=project_id)
+
+    async def list_task_telemetry(
+        self,
+        project_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return await self.service.list_task_telemetry(project_id=project_id)
 
 __all__ = ["BrokerRouteAdapter"]

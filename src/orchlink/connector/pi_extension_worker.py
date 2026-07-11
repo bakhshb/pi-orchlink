@@ -283,6 +283,13 @@ export default function (pi: ExtensionAPI) {
   let currentLeaseEpoch: number = 0;
   let leaseLost = false;
   let workerCtx: any;
+  // G019 AC-6: worker-side tool-call count. Tracked from
+  // ``tool_execution_start`` events (which carry ``event.toolCallId``);
+  // counted once per unique toolCallId so parallel tool calls surface
+  // individually while accidental replays do not double-count. Reset on every
+  // accepted task. The counter is published to task telemetry after each start.
+  let taskToolCallIds: Set<string> = new Set();
+  let taskToolCount: number = 0;
   // G018 visible-assistant transcript buffering.
   let transcriptBuffer = "";
   let transcriptFlushTimer: ReturnType<typeof setTimeout> | undefined;
@@ -506,11 +513,80 @@ export default function (pi: ExtensionAPI) {
     }
   }
 
+  // G019 AC-6 + AC-7: publish the worker's latest telemetry as a
+  // lease-fenced record under the same broker telemetry endpoint.
+  // Wire failures are logged and swallowed so telemetry transport is
+  // best-effort and never a source of truth for task success, retry,
+  // timeout, cancellation, or result authority.
+  type ContextUsageSnapshot = {
+    tokens: number | null;
+    contextWindow: number | null;
+    percent: number | null;
+  };
+
+  function readContextUsage(ctx: any): ContextUsageSnapshot | null {
+    if (!ctx || typeof ctx.getContextUsage !== "function") return null;
+    let usage: any = null;
+    try {
+      usage = ctx.getContextUsage();
+    } catch {
+      return null;
+    }
+    if (!usage || typeof usage !== "object") return null;
+    const tokens = Number.isFinite(usage.tokens) ? Number(usage.tokens) : null;
+    const contextWindow = Number.isFinite(usage.contextWindow) ? Number(usage.contextWindow) : null;
+    const percent = Number.isFinite(usage.percent) ? Number(usage.percent) : null;
+    return { tokens, contextWindow, percent };
+  }
+
+  function taskContextUsage(): ContextUsageSnapshot | null {
+    return readContextUsage(workerCtx);
+  }
+
+  async function postCurrentTelemetry(extra: Record<string, unknown> = {}) {
+    if (!currentTask || !currentTask.task_id) return;
+    if (taskToolCount < 0) taskToolCount = 0; // defensive non-negative invariant
+    const usage = taskContextUsage();
+    const body: Record<string, unknown> = {
+      project_id: projectId,
+      worker_name: agentId,
+      // AC-6: non-negative integer tool count.
+      tool_count: Math.max(0, Math.floor(taskToolCount)),
+    };
+    if (usage) {
+      // AC-7: optional numeric context metrics; tolerate unavailable by
+      // omitting each individual field rather than guessing. The widget
+      // renders ``ctx N/M (P%)`` only when ``tokens`` and ``contextWindow``
+      // are both present, otherwise it falls back to the literal
+      // ``ctx —`` per AC-7.
+      if (usage.tokens !== null) body.tokens = usage.tokens;
+      if (usage.contextWindow !== null) body.context_window = usage.contextWindow;
+      if (usage.percent !== null) body.percent = usage.percent;
+    }
+    for (const key of Object.keys(extra)) {
+      body[key] = extra[key];
+    }
+    const headers: Record<string, string> = {};
+    if (currentLeaseEpoch) headers["x-orchlink-lease-epoch"] = String(currentLeaseEpoch);
+    if (currentTask?.lease?.holder) headers["x-orchlink-lease-holder"] = String(currentTask.lease.holder);
+    if (sessionLeaseId) headers["x-orchlink-session-lease-id"] = String(sessionLeaseId);
+    try {
+      await postJson(
+        `/v1/tasks/${encodeURIComponent(String(currentTask.task_id))}/telemetry`,
+        body,
+        headers,
+      );
+    } catch (error: any) {
+      console.error(`[orchlink] telemetry publish failed: ${error?.message || error}`);
+    }
+  }
+
   function scheduleActivityHeartbeat(delayMs = activityHeartbeatMs) {
     clearActivityHeartbeat();
     if (stopped || role !== "work" || !currentTask) return;
     activityTimer = setTimeout(() => {
       void postCurrentActivity("heartbeat", "Worker still active.", { phase: "working" })
+        .then(() => postCurrentTelemetry())
         .then(() => renewJobLease(String(currentTask?.task_id || ""), currentLeaseEpoch))
         .then((lease) => {
           if (lease && lease.status === 409) {
@@ -663,6 +739,12 @@ export default function (pi: ExtensionAPI) {
     if (!isOrchlinkWorkerPrompt(event.text)) return;
     currentTask = pendingTask;
     pendingTask = undefined;
+    // G019 AC-6: every accepted task resets the worker-side tool-call
+    // counter. The count is always sourced from the worker process,
+    // never from a lead-side ``pi.on("tool_execution_start")`` listener,
+    // so resetting here guards the invariant that counts are per-task.
+    taskToolCallIds = new Set();
+    taskToolCount = 0;
     resetTranscriptState();
     transcriptBatchId = 0;
     rememberAbortContext(ctx);
@@ -674,8 +756,27 @@ export default function (pi: ExtensionAPI) {
       console.error(`[orchlink] status update failed: ${error?.message || error}`);
     });
     void postCurrentActivity("started", "Worker accepted the task.", { phase: "started" });
+    // G019 AC-7: capture the worker's initial session-context usage so the
+    // lead sees a non-empty ``ctx N/M (P%)`` row from the moment the
+    // task is accepted. The publish is best-effort and never blocks the
+    // accept flow.
+    void postCurrentTelemetry();
     scheduleActivityHeartbeat(1000);
     scheduleCancelCheck(1000, ctx);
+  });
+
+  pi.on("tool_execution_start", async (event, ctx) => {
+    if (role !== "work" || !currentTask) return;
+    rememberAbortContext(ctx);
+    // Count only executions Pi has actually started, not mutable/blockable
+    // pre-execution ``tool_call`` hooks. Built-in and custom tools share this
+    // event, and unique IDs prevent accidental replay from double-counting.
+    const toolCallId = String((event as any).toolCallId || "");
+    if (toolCallId && !taskToolCallIds.has(toolCallId)) {
+      taskToolCallIds.add(toolCallId);
+      taskToolCount = Math.max(0, taskToolCount + 1);
+      void postCurrentTelemetry();
+    }
   });
 
   pi.on("tool_call", async (event, ctx) => {

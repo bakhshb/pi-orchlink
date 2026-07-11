@@ -253,21 +253,27 @@ Pass criteria:
 - `orch stop --name bg-test` stops/releases only the named background worker.
 - The bad model command exits non-zero before starting a worker, prints `Pi model is not registered or available`, and lists available models when Pi can provide them.
 
-## 5b. Pi `/orchlink` follow panel
+## 5b. Pi native delegation, inline worker tree, and `/orchlink` follow panel
 
-Goal: prove the lead Pi can follow visible output from multiple background workers without affecting their tasks.
+Goal: prove the lead Pi delegates through the existing broker, presents bounded worker telemetry, and follows visible output without affecting tasks.
 
-1. Keep the visible lead Pi open.
-2. Start two named background workers and send each a task long enough to stream several visible messages.
-3. In the lead Pi, run `/orchlink`.
-4. Confirm the list shows one compact row per worker, then select an active worker and press Enter or `f`.
-5. Scroll inside the panel with the mouse wheel. Also test Up/Down for one-line scrolling and Page Up/Page Down for page scrolling. Confirm the header changes to `PAUSED`.
-6. Let more output arrive while paused, then press End and confirm the view jumps to the newest output and returns to `LIVE`.
-7. Use Tab and Shift-Tab to switch workers, then switch back and confirm transcript cursor and scroll position remain separate. The switch hint should appear only when multiple active workers exist.
-8. Press Escape to return to the list and `q` to close the panel. Confirm mouse scrolling returns to normal terminal behavior after the panel closes.
+1. Keep the visible lead Pi open and run `/reload`.
+2. Ask the lead in natural language to delegate a long dependent task. Confirm the native `delegate_worker` tool itself remains pending with Pi's pending background while the worker runs; it must not first settle to success and then simulate activity afterward.
+3. Confirm partial `onUpdate` results drive an animated inline row with status, tool count, `ctx` usage (or `ctx —`), and elapsed time. Expand the tool row and confirm visible assistant progress appears while prompt bodies, raw tool arguments/output, reasoning, correlation IDs, and secrets do not. Confirm the tool settles only when the authoritative broker result is available in the final tool result.
+4. Repeat with `async: true`. Confirm this explicit background mode returns a tracking handle immediately and the fixed above-editor tree shows the active worker summary without transcript bodies. Confirm both foreground and background tasks remain visible there while transcript entries scroll and status/tool activity appears within about one second.
+5. Start enough named workers to confirm only three detailed branches appear and overflow becomes `+N more`; narrow the pane and confirm rows stay within its width.
+6. Press `F8` to open the worker panel. Also run `/orchlink` to confirm the fallback remains available. Set `ORCHLINK_WORKERS_KEY=f9`, reload, and confirm F9 works; a reserved override such as `ctrl+b` must be refused without breaking `/orchlink`.
+7. Confirm the list shows one compact row per worker, then select an active worker and press Enter or `f`.
+8. Scroll inside the panel with the mouse wheel. Also test Up/Down for one-line scrolling and Page Up/Page Down for page scrolling. Confirm the header changes to `PAUSED`.
+9. Let more output arrive while paused, then press End and confirm the view jumps to the newest output and returns to `LIVE`.
+10. Use Tab and Shift-Tab to switch workers, then switch back and confirm transcript cursor and scroll position remain separate. The switch hint should appear only when multiple active workers exist.
+11. Press Escape to return to the list and `q` to close the panel. Confirm mouse scrolling returns to normal terminal behavior after the panel closes.
 
 Pass criteria:
 
+- Default native delegation uses Pi partial tool updates and remains genuinely pending until its authoritative broker result returns; explicit `async: true` alone returns an immediate background tracking handle.
+- The above-editor activity tree is theme-colored, bounded, responsive, broker-driven, refreshed within about one second, includes all active foreground and background work, and is hidden when no relevant work remains.
+- `F8` works in Herdr without consuming its `Ctrl+B` prefix; `/orchlink` remains usable as fallback.
 - The overlay uses most of the terminal without overflowing a narrow terminal.
 - Visible assistant text arrives before the task completes; thinking and raw tool output do not appear.
 - Markdown headings, emphasis, lists, and fenced code blocks use Pi's normal colors and syntax highlighting.

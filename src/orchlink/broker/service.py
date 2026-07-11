@@ -30,7 +30,7 @@ from orchlink.broker.checkpoint import (
     record_lease,
 )
 from orchlink.broker.settings import Settings
-from orchlink.broker.storage.base import ActivityInput, AgentInput, MessageInput, MessageStore, SessionAcquireInput, SessionHeartbeatInput
+from orchlink.broker.storage.base import ActivityInput, AgentInput, MessageInput, MessageStore, SessionAcquireInput, SessionHeartbeatInput, TaskTelemetryInput
 from orchlink.core.envelope import MessageEnvelope
 
 
@@ -296,6 +296,61 @@ class BrokerService:
         return await self.store.wait_transcript_events(
             task_id, project_id, after=after, limit=limit, wait_seconds=wait_seconds
         )
+
+    # --- Telemetry (G019 AC-5) --------------------------------------------
+
+    async def record_task_telemetry(
+        self,
+        task_id: str,
+        payload: TaskTelemetryInput,
+        *,
+        project_id: str,
+        agent_id: str,
+        session_lease_id: str | None = None,
+        lease_epoch: int | None = None,
+        lease_holder: str | None = None,
+    ) -> dict[str, Any]:
+        from orchlink.core.models import TaskTelemetry
+        from orchlink.core.views import task_telemetry_from_wire
+
+        if isinstance(payload, TaskTelemetry):
+            telemetry = payload
+        else:
+            telemetry = task_telemetry_from_wire(dict(payload))
+        # The path task_id is authoritative; ignore any task_id embedded in
+        # the body so a misbehaving worker cannot route telemetry to a
+        # different task. The body-derived project_id is the same as the
+        # header-provided project_id because the route enforces cross-
+        # project guard parity with the transcript endpoint.
+        telemetry = TaskTelemetry(
+            project_id=str(telemetry.project_id or project_id or "default"),
+            task_id=str(task_id),
+            worker_name=telemetry.worker_name,
+            tokens=telemetry.tokens,
+            context_window=telemetry.context_window,
+            percent=telemetry.percent,
+            tool_count=max(0, int(telemetry.tool_count or 0)),
+        )
+        return await self.store.record_task_telemetry(
+            telemetry,
+            agent_id=agent_id,
+            session_lease_id=session_lease_id,
+            lease_epoch=lease_epoch,
+            lease_holder=lease_holder,
+        )
+
+    async def get_task_telemetry(
+        self,
+        task_id: str,
+        project_id: str,
+    ) -> dict[str, Any] | None:
+        return await self.store.get_task_telemetry(task_id, project_id=project_id)
+
+    async def list_task_telemetry(
+        self,
+        project_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return await self.store.list_task_telemetry(project_id=project_id)
 
     # ------------------------------------------------------------------
     # Checkpoint ordering seam

@@ -293,9 +293,17 @@ Expected behavior:
 - lead may continue only on a separate scope
 - lead must reconcile the worker result before dependent final steps
 
-### 7.5 Follow background workers in the lead Pi
+### 7.5 Native delegation and background worker visibility
 
-The lead Pi exposes `/orchlink` as a read-only TUI overlay. It shows a compact worker list, then follows visible assistant output for a selected active task.
+The lead Pi registers a lead-only `delegate_worker` tool. Both execution modes submit through the canonical `orch send` client and existing local broker.
+
+Foreground is the default and follows Pi's native subagent contract: `execute()` remains pending, broker progress is emitted as partial `AgentToolResult` values through `onUpdate`, and the final tool result is returned only after terminal broker completion. Its inline row shows an animated state, task status, tool-call count, worker-session context usage, and elapsed time; expanded mode adds only privacy-filtered visible assistant transcript.
+
+Explicit `async: true` is the background mode. It returns only an accepted tracking handle; the later broker result remains authoritative and must be reconciled separately through notification, `/orchlink`, or `orch jobs --result`.
+
+While any task is active, a bounded activity tree stays fixed above the editor and summarizes each worker name, task, status, tool-call count, worker-session context usage, and elapsed time. It includes both foreground and background tasks so activity remains visible while native tool rows move through the transcript. Context is labeled `ctx` and is not task token spend. The widget is broker-driven, status-only, limited to three detailed workers plus overflow, hidden when no relevant work remains, and refreshed every second by default (`ORCHLINK_MONITOR_POLL_SECONDS`, minimum 0.5 seconds).
+
+`F8` opens the existing read-only `/orchlink` TUI overlay. `ORCHLINK_WORKERS_KEY` may override the shortcut, and `/orchlink` remains the universal fallback. The overlay shows a compact worker list, then follows visible assistant output for a selected active task.
 
 Requirements:
 

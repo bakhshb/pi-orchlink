@@ -16,7 +16,8 @@ Human daily commands:
 - `orch loop ...` exposes Loop Mode state and foreground loop execution.
 - `orch stop` stops tracked background workers and, only when safe, broker processes.
 - `orch update` updates Orchlink. Treat it as a human/operator command unless the human asks you to update.
-- `/orchlink` runs inside the visible lead Pi TUI. It opens the enlarged worker panel; Enter or `f` follows the selected worker, Up/Down and Page keys scroll, End resumes live output, Tab switches workers, Escape returns to the list, and `q` closes without cancelling work.
+- The visible lead Pi registers native `delegate_worker` through the canonical client and broker. Foreground is the default: Pi keeps the tool pending and applies partial `onUpdate` results until the authoritative broker result returns. A bounded activity tree stays fixed above the editor for all active tasks. Explicit `async: true` returns a handle instead; that accepted handle is not the worker result.
+- `F8` opens the enlarged worker panel; `ORCHLINK_WORKERS_KEY` overrides the key and `/orchlink` remains the fallback. Enter or `f` follows the selected worker, Up/Down and Page keys scroll, End resumes live output, Tab switches workers, Escape returns to the list, and `q` closes without cancelling work.
 
 Lead coordination commands:
 

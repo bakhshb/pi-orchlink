@@ -43,6 +43,7 @@ from orchlink.broker.storage.memory_state import (
     InMemoryBrokerState,
     MessageProjectionContext,
 )
+from orchlink.broker.storage.memory_telemetry_store import MemoryTelemetryStore
 from orchlink.broker.storage.memory_transcript_store import MemoryTranscriptStore
 from orchlink.broker.storage.memory_work_queue import MemoryWorkQueue
 from orchlink.core.job_lifecycle import BrokerJobLifecycle
@@ -77,7 +78,6 @@ from orchlink.core.views import (
 )
 from orchlink.core.views import transcript_event_to_wire
 
-
 # Backward-compat re-exports: historic imports and tests reference these
 # names from ``orchlink.broker.storage.memory``. Production code should
 # import them from the focused modules directly.
@@ -94,7 +94,6 @@ __all__ = [
     "MemoryWorkQueue",
     "MessageProjectionContext",
 ]
-
 
 class MemoryMessageStore(MessageStore):
     def __init__(self, require_peer_sessions: bool = False, session_grace_seconds: int = 25) -> None:
@@ -115,28 +114,11 @@ class MemoryMessageStore(MessageStore):
             self._now,
             self._event_log,
         )
-        self._session_store = MemorySessionStore(
-            self._state,
-            self._now,
-            self._parse_time,
-            self._event_log,
-            session_grace_seconds,
-        )
-        self._activity_store = MemoryActivityStore(
-            self._state,
-            self._event_log,
-            self._now,
-            self._apply_activity_to_work_locked,
-        )
-        self._work_queue = MemoryWorkQueue(
-            self._state,
-            self._now,
-            self._event_log,
-            self._session_store,
-            self._job_projector,
-            require_peer_sessions,
-        )
-        self._transcript_store = MemoryTranscriptStore(
+        self._session_store = MemorySessionStore(self._state, self._now, self._parse_time, self._event_log, session_grace_seconds)
+        self._activity_store = MemoryActivityStore(self._state, self._event_log, self._now, self._apply_activity_to_work_locked)
+        self._work_queue = MemoryWorkQueue(self._state, self._now, self._event_log, self._session_store, self._job_projector, require_peer_sessions)
+        self._transcript_store = MemoryTranscriptStore(self._state, self._now, self._session_store, self._job_projector)
+        self._telemetry_store = MemoryTelemetryStore(
             self._state,
             self._now,
             self._session_store,
@@ -817,6 +799,25 @@ class MemoryMessageStore(MessageStore):
         return await self._transcript_store.wait_transcript_events(
             task_id, project_id, after=after, limit=limit, wait_seconds=wait_seconds
         )
+
+    # --- Telemetry (G019 AC-5) ---
+    async def record_task_telemetry(self, telemetry: Any, *, agent_id: str, session_lease_id: str | None = None, lease_epoch: int | None = None, lease_holder: str | None = None) -> dict[str, Any]:
+        async with self._lock:
+            return self._telemetry_store.record_or_replace(
+                telemetry,
+                agent_id=agent_id,
+                session_lease_id=session_lease_id,
+                lease_epoch=lease_epoch,
+                lease_holder=lease_holder,
+            )
+
+    async def get_task_telemetry(self, task_id: str, project_id: str) -> dict[str, Any] | None:
+        async with self._lock:
+            return self._telemetry_store.get_task_telemetry_locked(project_id, task_id)
+
+    async def list_task_telemetry(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        async with self._lock:
+            return self._telemetry_store.list_task_telemetry_locked(project_id=project_id)
 
     async def pending_reply_count(self) -> int:
         async with self._lock:

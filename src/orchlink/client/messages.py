@@ -177,6 +177,7 @@ class WorkerBridge:
         timeout_seconds: int = 1800,
         thinking: str | None = None,
         wait: bool = False,
+        delivery: DeliveryMode | None = None,
     ) -> dict[str, Any]:
         envelope = build_task_envelope(
             config=self.config,
@@ -184,7 +185,7 @@ class WorkerBridge:
             task_id=task_id,
             message=message,
             timeout_seconds=timeout_seconds,
-            delivery="blocking" if wait else "async",
+            delivery=delivery or ("blocking" if wait else "async"),
             thinking=thinking,
         )
         return await post_envelope(self.config, envelope, wait=wait)
@@ -256,8 +257,11 @@ async def send_worker(
     timeout_seconds: int = 1800,
     thinking: str | None = None,
     wait: bool = False,
+    delivery: DeliveryMode | None = None,
 ) -> dict[str, Any]:
-    return await WorkerBridge(config, worker).send(task_id, message, timeout_seconds, thinking=thinking, wait=wait)
+    return await WorkerBridge(config, worker).send(
+        task_id, message, timeout_seconds, thinking=thinking, wait=wait, delivery=delivery
+    )
 
 
 async def start_talk(
@@ -308,6 +312,7 @@ def send_worker_sync(
     timeout_seconds: int = 1800,
     thinking: str | None = None,
     wait: bool = False,
+    delivery: DeliveryMode | None = None,
 ) -> dict[str, Any]:
     return asyncio.run(
         send_worker(
@@ -318,6 +323,7 @@ def send_worker_sync(
             timeout_seconds=timeout_seconds,
             thinking=thinking,
             wait=wait,
+            delivery=delivery,
         )
     )
 

@@ -103,6 +103,11 @@ class BrokerStatusResponse(BrokerResponse):
     jobs: list[dict[str, Any]]
     pending_reply_count: int
     recent_events: list[dict[str, Any]]
+    # G019 AC-8: latest worker telemetry records, one per task. Additive;
+    # older callers ignore it. Drives the inline worker tree's tool-count
+    # and session-context rendering through the existing status poll.
+    telemetry_count: int = 0
+    telemetry: list[dict[str, Any]] = []
 
 
 class JournalResponse(BrokerResponse):
@@ -115,6 +120,23 @@ class JournalAppendResponse(BrokerResponse):
     status: str
     seq: int | None = None
 
+
+
+
+class TaskTelemetryResponse(BrokerResponse):
+    """Result of a task telemetry update (G019 AC-5).
+
+    ``status`` is one of ``"recorded"`` or ``"rejected"``. When
+    ``"rejected"``, ``reason`` carries a stable machine-readable code:
+    ``"stale-job-lease"``, ``"stale-session-lease"``, ``"terminal-task"``,
+    ``"unknown-task"``, ``"internal-error"``, or ``"invalid-task"``.
+    """
+
+    status: str = "recorded"
+    reason: str | None = None
+    task_id: str | None = None
+    project_id: str | None = None
+    updated_at: str | None = None
 
 __all__ = [
     "ActivityListResponse",
@@ -133,6 +155,7 @@ __all__ = [
     "SessionsResponse",
     "TaskActivityResponse",
     "TaskResultResponse",
+    "TaskTelemetryResponse",
     "TranscriptListResponse",
     "WaitReplyResponse",
 ]

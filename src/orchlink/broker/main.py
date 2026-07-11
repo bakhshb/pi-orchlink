@@ -14,10 +14,10 @@ from orchlink.broker.dto import (
     JobHeartbeatBody,
     JobReclaimBody,
     JournalAppendBody,
-    MessageStatusBody,
-    SessionAcquireBody,
+    MessageStatusBody,    SessionAcquireBody,
     SessionHeartbeatBody,
     SessionReleaseBody,
+    TaskTelemetryBody,
     TranscriptBatchBody,
 )
 from orchlink.broker.journal import Journal
@@ -40,6 +40,7 @@ from orchlink.broker.response_models import (
     SessionsResponse,
     TaskActivityResponse,
     TaskResultResponse,
+    TaskTelemetryResponse,
     TranscriptListResponse,
     WaitReplyResponse,
 )
@@ -515,6 +516,79 @@ def create_app(
             return await broker.wait_transcript_events(task_id, project_id, after=after, limit=limit, wait_seconds=wait_seconds)
         return await broker.read_transcript_events(task_id, project_id, after=after, limit=limit)
 
+    @secure_router.post("/tasks/{task_id}/telemetry", response_model=TaskTelemetryResponse)
+    async def record_task_telemetry(
+        task_id: str,
+        request: Request,
+        body: TaskTelemetryBody = Body(default_factory=TaskTelemetryBody),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
+    ) -> dict[str, Any]:
+        """Lease-fenced latest-state telemetry write (G019 AC-5).
+
+        Cross-project guard parity with the transcript endpoint: the body's
+        ``project_id`` (when present) must match the ``X-Orchlink-Project-ID``
+        header. The lease-fence headers (``x-orchlink-lease-epoch``,
+        ``x-orchlink-lease-holder``, ``x-orchlink-session-lease-id``) are
+        passed through so the store can reject stale updates before any
+        mutation. Rejections surface as 409 with a structured ``reason`` so
+        a worker can distinguish ``stale-job-lease`` from
+        ``stale-session-lease`` from ``terminal-task``.
+        """
+        header_project = request.headers.get("X-Orchlink-Project-ID")
+        body_project = str(body.project_id or "") or None
+        project_id = request_project_id(request, body_project)
+        if project_id is None:
+            raise HTTPException(status_code=400, detail="Project ID is required.")
+        if (
+            header_project is not None
+            and body_project is not None
+            and str(header_project) != str(body_project)
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="body project_id does not match X-Orchlink-Project-ID header",
+            )
+        # The worker_name doubles as the agent scope for session-lease
+        # validation. It must be present so the session store can confirm
+        # the active lease belongs to the right worker.
+        worker_name = str(body.worker_name or "")
+        if not worker_name:
+            raise HTTPException(status_code=400, detail="worker_name is required.")
+        lease_epoch_header = request.headers.get("x-orchlink-lease-epoch")
+        lease_holder = request.headers.get("x-orchlink-lease-holder")
+        session_lease_id = request.headers.get("x-orchlink-session-lease-id")
+        try:
+            lease_epoch = int(lease_epoch_header) if lease_epoch_header is not None else None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="x-orchlink-lease-epoch must be an integer") from exc
+        return await broker.record_task_telemetry(
+            task_id,
+            body.to_command(),
+            project_id=project_id,
+            agent_id=worker_name,
+            session_lease_id=session_lease_id,
+            lease_epoch=lease_epoch,
+            lease_holder=lease_holder,
+        )
+
+    @secure_router.get("/tasks/{task_id}/telemetry", response_model=TaskTelemetryResponse)
+    async def read_task_telemetry(
+        task_id: str,
+        request: Request,
+        project_id: str | None = Query(default=None),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
+    ) -> dict[str, Any] | None:
+        """Read the latest telemetry record for a task. Returns 404 if no
+        record exists yet.
+        """
+        project_id = request_project_id(request, project_id)
+        if project_id is None:
+            raise HTTPException(status_code=400, detail="Project ID is required.")
+        record = await broker.get_task_telemetry(task_id, project_id=project_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="no telemetry record for task")
+        return record
+
     @secure_router.get("/status", response_model=BrokerStatusResponse)
     async def status(
         request: Request,
@@ -533,10 +607,17 @@ def create_app(
         conversations = await broker.list_conversations(project_id=project_id)
         jobs = await broker.list_jobs(limit=500 if task_id is not None else limit, project_id=project_id)
         events = await broker.list_events(since=since, limit=500 if task_id is not None else limit, project_id=project_id)
+        # G019 AC-8: surface the latest worker telemetry records through the
+        # existing status poll so the above-editor worker tree can render
+        # tool count + session context usage without a second poll. The
+        # records are the same lease-fenced, status-only wire shapes the
+        # telemetry endpoint returns (no bodies, args, or secrets).
+        telemetry = await broker.list_task_telemetry(project_id=project_id)
         if task_id is not None:
             active_messages = [item for item in active_messages if str(item.get("task_id") or "") == task_id]
             jobs = [item for item in jobs if str(item.get("task_id") or "") == task_id][-limit:]
             events = [item for item in events if str(item.get("task_id") or "") == task_id][-limit:]
+            telemetry = [item for item in telemetry if str(item.get("task_id") or "") == task_id]
         pending_reply_count = await broker.pending_reply_count()
         settings: Settings = request.app.state.settings
         return {
@@ -553,6 +634,11 @@ def create_app(
             "conversations": conversations,
             "job_count": len(jobs),
             "jobs": jobs,
+            # G019 AC-8: latest telemetry records (one per task) drive the
+            # inline worker tree's tool-count + ctx rendering. Additive field;
+            # absent on older snapshots and tolerated as an empty list.
+            "telemetry_count": len(telemetry),
+            "telemetry": telemetry,
             "pending_reply_count": pending_reply_count,
             "recent_events": events,
         }

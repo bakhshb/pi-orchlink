@@ -155,6 +155,26 @@ def test_jsonl_store_records_mutating_operations(tmp_path):
     asyncio.run(run())
 
 
+def test_blocking_task_result_is_not_duplicated_into_lead_inbox():
+    async def run():
+        store = MemoryMessageStore()
+        await store.enqueue_message(message_envelope(task_message(delivery="blocking")))
+        await store.get_next_message("demo.work", wait_seconds=1)
+        await store.save_reply(
+            "msg-0001",
+            message_envelope({**reply_message(), "delivery": "blocking"}),
+        )
+
+        unsolicited = await store.get_next_message("demo.lead", wait_seconds=0)
+        result = await store.get_task_result("TEST-001")
+
+        assert unsolicited is None
+        assert result["status"] == "DONE"
+        assert result["reply"]["payload"]["summary"] == "Inspection complete."
+
+    asyncio.run(run())
+
+
 def test_jsonl_store_restores_completed_task_results(tmp_path):
     async def run():
         journal_path = tmp_path / "orchlink.jsonl"

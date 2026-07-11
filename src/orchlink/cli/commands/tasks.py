@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -17,6 +19,28 @@ from orchlink.cli.message_input import resolve_message_option
 
 
 console = Console()
+_stderr_console = Console(stderr=True)
+
+
+def _emit_async_handle(payload: dict[str, Any]) -> None:
+    """Emit the canonical async tracking handle to stdout as a single JSON line.
+
+    Shape is stable for machine callers (notably the Pi ``delegate_worker``
+    tool that uses this mode to bypass the lead terminal entirely). The
+    canonical envelope construction is owned by ``orchlink.client.messages``
+    and reused unchanged — only the output representation is shaped here.
+    """
+    handle = {
+        "worker": str(payload.get("to_agent") or payload.get("worker") or ""),
+        "task_id": str(payload.get("task_id") or ""),
+        "correlation_id": str(payload.get("correlation_id") or ""),
+        "conversation_id": str(payload.get("conversation_id") or ""),
+        "status": str(payload.get("status") or "PENDING"),
+        "accepted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    sys.stdout.write(json.dumps(handle, separators=(",", ":")))
+    sys.stdout.write("\n")
+    sys.stdout.flush()
 
 
 def _print_task_body(body: dict[str, Any]) -> None:
@@ -89,9 +113,15 @@ def _run_send_command(
     timeout: int,
     wait: bool,
     thinking: str | None,
+    async_json: bool,
+    foreground_json: bool,
 ) -> None:
     """Canonical task submission used by ``orch send``."""
     from orchlink.cli.main import print_orch_exception  # late import
+
+    if foreground_json and (not async_json or wait):
+        _stderr_console.print("[Orch] --foreground-json requires --async-json and --no-wait.")
+        raise typer.Exit(2)
 
     try:
         message = resolve_message_option(message, message_file, edit, config, task_id, worker_id, "task")
@@ -109,11 +139,26 @@ def _run_send_command(
             timeout_seconds=timeout,
             wait=wait,
             thinking=thinking,
+            delivery="blocking" if foreground_json else None,
         )
     except (RuntimeError, httpx.HTTPError, ValueError) as exc:
         print_orch_exception(exc)
         raise typer.Exit(1) from exc
 
+    if async_json:
+        # Machine-readable mode: single-line handle to stdout, no human
+        # guidance. Errors go to stderr so a JSON consumer can parse stdout
+        # without spurious noise. ``wait`` mode still goes through Typer's
+        # console so additivity is preserved.
+        if not wait:
+            _emit_async_handle(response)
+        else:
+            # Surface both: the canonical sync reply AND the handle. Machine
+            # callers that only care about the handle can split on the last
+            # JSON line.
+            _emit_async_handle(response)
+            console.print_json(json.dumps(response))
+        return
     if wait:
         console.print_json(json.dumps(response))
     else:
@@ -154,6 +199,28 @@ def register_send(app: typer.Typer) -> None:
             str | None,
             typer.Option("--thinking", help="Override worker thinking for this task: off, minimal, low, medium, high, xhigh."),
         ] = None,
+        async_json: Annotated[
+            bool,
+            typer.Option(
+                "--async-json",
+                help=(
+                    "Emit a stable single-line JSON tracking handle to stdout and suppress "
+                    "human-readable guidance. Used by the Pi delegate_worker tool to reuse "
+                    "the canonical Python envelope builder without duplicating it."
+                ),
+            ),
+        ] = False,
+        foreground_json: Annotated[
+            bool,
+            typer.Option(
+                "--foreground-json",
+                help=(
+                    "Machine integration mode: submit with blocking delivery but return the "
+                    "JSON handle immediately so a native UI can stream broker progress."
+                ),
+                hidden=True,
+            ),
+        ] = False,
     ) -> None:
         config = load_project_or_exit()
         _run_send_command(
@@ -166,4 +233,6 @@ def register_send(app: typer.Typer) -> None:
             timeout,
             wait,
             thinking,
+            async_json,
+            foreground_json,
         )

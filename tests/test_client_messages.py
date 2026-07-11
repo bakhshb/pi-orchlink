@@ -100,6 +100,23 @@ def test_send_worker_accepts_wait_parameter(monkeypatch):
     assert calls[0][1] is True
 
 
+def test_send_worker_can_submit_blocking_delivery_without_waiting(monkeypatch):
+    config = _minimal_config()
+    calls: list[tuple[Any, bool]] = []
+
+    async def fake_post_envelope(cfg, envelope, wait):
+        calls.append((envelope, wait))
+        return {"status": "queued"}
+
+    monkeypatch.setattr("orchlink.client.messages.post_envelope", fake_post_envelope)
+
+    result = asyncio.run(send_worker(config, "work", "T-FG", "hello", wait=False, delivery="blocking"))
+
+    assert result == {"status": "queued"}
+    assert calls[0][0].delivery == "blocking"
+    assert calls[0][1] is False
+
+
 def test_send_worker_sync_accepts_wait_parameter(monkeypatch):
     config = _minimal_config()
     calls: list[tuple[Any, bool]] = []

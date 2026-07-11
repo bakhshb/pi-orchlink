@@ -46,6 +46,7 @@ from orchlink.broker.storage.memory_activity_store import MemoryActivityStore
 from orchlink.broker.storage.memory_event_log import MemoryEventLog
 from orchlink.broker.storage.memory_job_projector import MemoryJobProjector
 from orchlink.broker.storage.memory_session_store import MemorySessionStore
+
 from orchlink.broker.storage.memory_transcript_store import MemoryTranscriptStore
 from orchlink.broker.storage.memory_work_queue import MemoryWorkQueue
 from orchlink.broker.storage.persistence import (
@@ -78,6 +79,8 @@ from orchlink.core.views import (
     task_projection_to_wire,
     task_result_from_wire,
     task_result_to_wire,
+    task_telemetry_from_wire,
+    task_telemetry_to_wire,
     wait_blocker_to_wire,
 )
 T = TypeVar("T")
@@ -309,6 +312,14 @@ class JsonlMessageStore(MemoryMessageStore):
             "sessions": {key: session_to_wire(value) for key, value in self._state.sessions.items()},
             "next_event_id": self._state.next_event_id,
             "next_activity_id": self._state.next_activity_id,
+            # G019 AC-5: latest-state telemetry records live in the main
+            # broker snapshot — they replace in place and are bounded by
+            # the number of distinct active tasks, so an unbounded
+            # heartbeat history is impossible by construction.
+            "telemetry_by_task": {
+                key: task_telemetry_to_wire(telemetry_record)
+                for key, telemetry_record in self._state.telemetry_by_task.items()
+            },
             # NOTE: per G018, transcript state lives only in the adjacent
             # ``.transcript.jsonl`` journal and never in the main broker
             # snapshot. A replayed or partially-corrupt main snapshot must
@@ -335,6 +346,13 @@ class JsonlMessageStore(MemoryMessageStore):
         self._state.events = [broker_event_from_wire(value) for value in (snapshot.get("events") or [])]
         self._state.activity = [activity_record_from_wire(value) for value in (snapshot.get("activity") or [])]
         self._state.sessions = {str(key): session_from_wire(value) for key, value in (snapshot.get("sessions") or {}).items()}
+        # G019 AC-5: telemetry latest-state records are reconstituted via
+        # the same wire validators so a stale or corrupted record cannot
+        # bypass the lease-fence metadata or inject negative tool counts.
+        self._state.telemetry_by_task = {
+            str(key): task_telemetry_from_wire(dict(value))
+            for key, value in (snapshot.get("telemetry_by_task") or {}).items()
+        }
         self._state.next_event_id = int(snapshot.get("next_event_id") or (self._state.events[-1].id + 1 if self._state.events else 1))
         self._state.next_activity_id = int(snapshot.get("next_activity_id") or (self._state.activity[-1].id + 1 if self._state.activity else 1))
         self._state.inboxes = {agent_id: asyncio.Queue() for agent_id in self._state.agents}
@@ -951,3 +969,53 @@ class JsonlMessageStore(MemoryMessageStore):
         return await self._transcript_store.wait_transcript_events(
             task_id, project_id, after=after, limit=limit, wait_seconds=wait_seconds
         )
+
+    # ------------------------------------------------------------------
+    # Telemetry overrides (G019 AC-5)
+    # ------------------------------------------------------------------
+
+    async def record_task_telemetry(
+        self,
+        telemetry: Any,
+        *,
+        agent_id: str,
+        session_lease_id: str | None = None,
+        lease_epoch: int | None = None,
+        lease_holder: str | None = None,
+    ) -> dict[str, Any]:
+        from orchlink.core.models import TaskTelemetry
+        from orchlink.core.views import task_telemetry_from_wire
+
+        if not isinstance(telemetry, TaskTelemetry):
+            telemetry = task_telemetry_from_wire(telemetry)
+
+        async def _mutate() -> dict[str, Any]:
+            self._expire_timed_out_messages_locked()
+            return self._telemetry_store.record_telemetry_locked(
+                telemetry,
+                agent_id=agent_id,
+                session_lease_id=session_lease_id,
+                lease_epoch=lease_epoch,
+                lease_holder=lease_holder,
+            )
+
+        # _recorded runs the mutation, then captures the snapshot and
+        # appends a journal line under the same lock. A rejected mutation
+        # raises before any state mutation, so the journal is never
+        # touched on rejection and the JSONL replay stays stable.
+        return await self._recorded("record_task_telemetry", {}, _mutate)
+
+    async def get_task_telemetry(
+        self,
+        task_id: str,
+        project_id: str,
+    ) -> dict[str, Any] | None:
+        async with self._lock:
+            return self._telemetry_store.get_task_telemetry_locked(project_id, task_id)
+
+    async def list_task_telemetry(
+        self,
+        project_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        async with self._lock:
+            return self._telemetry_store.list_task_telemetry_locked(project_id=project_id)

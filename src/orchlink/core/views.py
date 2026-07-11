@@ -11,7 +11,7 @@ from dataclasses import replace
 from typing import Any
 
 from orchlink.core.envelope import AgentRegistration, MessageEnvelope, envelope_to_dict
-from orchlink.core.models import ActivityRecord, Agent, BrokerEvent, Conversation, Job, JobLease, ReplyResult, Session, SessionAcquire, SessionHeartbeat, SessionRelease, StoredMessage, TalkJobPayload, TaskJobPayload, TaskProjection, TaskResult, WaitBlocker, WorkerActivityInput
+from orchlink.core.models import ActivityRecord, Agent, BrokerEvent, Conversation, Job, JobLease, ReplyResult, Session, SessionAcquire, SessionHeartbeat, SessionRelease, StoredMessage, TalkJobPayload, TaskJobPayload, TaskProjection, TaskResult, TaskTelemetry, WaitBlocker, WorkerActivityInput
 
 
 def task_job_payload_to_wire(payload: TaskJobPayload) -> dict[str, Any]:
@@ -459,6 +459,11 @@ def _stored_message_from_wire_data(data: dict[str, Any], now: str, *, preserve_s
         status=str(data.get("status") or stored.status) if preserve_status else stored.status,
         created_at=data.get("created_at", stored.created_at),
         queued_at=data.get("queued_at", stored.queued_at),
+        # `started_at` round-trips unchanged through JSONL replay / broker
+        # restart. The wire dict always wins over the freshly constructed
+        # `StoredMessage`, so a persisted started_at survives even when the
+        # envelope itself is revalidated from scratch.
+        started_at=data.get("started_at", stored.started_at),
         updated_at=data.get("updated_at", stored.updated_at),
     )
 
@@ -492,6 +497,10 @@ def stored_message_to_wire(message: StoredMessage) -> dict[str, Any]:
         wire.setdefault("created_at", message.created_at)
     if message.queued_at is not None:
         wire["queued_at"] = message.queued_at
+    # `started_at` is the authoritative "first RUNNING" timestamp. Persist it
+    # even when None so a replay never confuses an absent field with one that
+    # exists — downstream consumers use `null`-or-value semantics.
+    wire["started_at"] = message.started_at
     if message.updated_at is not None:
         wire["updated_at"] = message.updated_at
     return wire
@@ -651,3 +660,70 @@ def talk_job_to_wire(job: Job) -> dict[str, Any]:
         "last_activity_tool": payload.get("last_activity_tool"),
         "last_activity_preview": payload.get("last_activity_preview"),
     }
+
+
+def task_telemetry_to_wire(telemetry: "TaskTelemetry") -> dict[str, Any]:
+    """Serialize a ``TaskTelemetry`` latest-state record to wire shape.
+
+    The wire shape carries the durable telemetry contract: numeric metrics,
+    lease fences, and an audit ``updated_at``. No content bodies, no
+    arguments, no secrets — telemetry stays status-only.
+    """
+    return {
+        "project_id": str(telemetry.project_id or "default"),
+        "task_id": str(telemetry.task_id or ""),
+        "worker_name": str(telemetry.worker_name or ""),
+        "tokens": telemetry.tokens,
+        "context_window": telemetry.context_window,
+        "percent": telemetry.percent,
+        "tool_count": int(telemetry.tool_count or 0),
+        "lease_epoch": int(telemetry.lease_epoch or 0),
+        "lease_holder": str(telemetry.lease_holder or ""),
+        "session_lease_id": telemetry.session_lease_id,
+        "updated_at": telemetry.updated_at,
+    }
+
+
+def task_telemetry_from_wire(data: dict[str, Any]) -> "TaskTelemetry":
+    """Restore a ``TaskTelemetry`` domain object from the wire snapshot shape.
+
+    Numeric fields are clamped or coerced to safe ranges so a corrupted
+    snapshot cannot poison the in-memory record: negative ``tool_count`` is
+    normalized to zero, ``tokens`` / ``context_window`` stay ``None`` when
+    missing or invalid, ``percent`` stays ``None`` when missing.
+    """
+    from orchlink.core.models import TaskTelemetry
+
+    raw_tool_count = data.get("tool_count", 0)
+    try:
+        tool_count = max(0, int(raw_tool_count))
+    except (TypeError, ValueError):
+        tool_count = 0
+    raw_tokens = data.get("tokens")
+    try:
+        tokens = int(raw_tokens) if raw_tokens is not None else None
+    except (TypeError, ValueError):
+        tokens = None
+    raw_window = data.get("context_window")
+    try:
+        context_window = int(raw_window) if raw_window is not None else None
+    except (TypeError, ValueError):
+        context_window = None
+    raw_percent = data.get("percent")
+    try:
+        percent = float(raw_percent) if raw_percent is not None else None
+    except (TypeError, ValueError):
+        percent = None
+    return TaskTelemetry(
+        project_id=str(data.get("project_id") or "default"),
+        task_id=str(data.get("task_id") or ""),
+        worker_name=str(data.get("worker_name") or ""),
+        tokens=tokens,
+        context_window=context_window,
+        percent=percent,
+        tool_count=tool_count,
+        lease_epoch=int(data.get("lease_epoch") or 0),
+        lease_holder=str(data.get("lease_holder") or ""),
+        session_lease_id=data.get("session_lease_id"),
+        updated_at=data.get("updated_at"),
+    )
