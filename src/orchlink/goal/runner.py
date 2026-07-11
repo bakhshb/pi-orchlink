@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 
 from orchlink import client
-from orchlink.client import ask_worker_sync
+from orchlink.client import send_worker_sync
 from orchlink.goal.checks import CheckResult, run_objective_checks
 from orchlink.goal.criteria import GoalCriteriaEngine
 from orchlink.goal.dispatcher import (
@@ -59,7 +59,7 @@ class GoalRunner:
         self.criteria = GoalCriteriaEngine(self.store, config=config)
         self.dispatcher = GoalDispatcher(
             config,
-            ask_fn=ask_worker_sync,
+            send_fn=send_worker_sync,
             maker_worker=maker_worker,
             verifier_worker=verifier_worker,
             maker_model=maker_model,

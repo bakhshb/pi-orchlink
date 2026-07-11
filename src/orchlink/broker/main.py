@@ -18,6 +18,7 @@ from orchlink.broker.dto import (
     SessionAcquireBody,
     SessionHeartbeatBody,
     SessionReleaseBody,
+    TranscriptBatchBody,
 )
 from orchlink.broker.journal import Journal
 from orchlink.broker.route_adapter import BrokerRouteAdapter
@@ -39,6 +40,7 @@ from orchlink.broker.response_models import (
     SessionsResponse,
     TaskActivityResponse,
     TaskResultResponse,
+    TranscriptListResponse,
     WaitReplyResponse,
 )
 from orchlink.core.envelope import ENVELOPE_VERSION, ENVELOPE_VERSION_HEADER, AgentRegistration, MessageEnvelope
@@ -449,6 +451,69 @@ def create_app(
         broker: BrokerRouteAdapter = Depends(get_adapter),
     ) -> dict[str, Any]:
         return await broker.wait_for_task(task_id, timeout_seconds, project_id=request_project_id(request, project_id))
+
+    @secure_router.post("/tasks/{task_id}/transcript", response_model=BrokerResponse)
+    async def append_transcript(
+        task_id: str,
+        request: Request,
+        body: TranscriptBatchBody = Body(default_factory=TranscriptBatchBody),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
+    ) -> dict[str, Any]:
+        # Cross-project guard: the body's ``project_id`` (when present) must
+        # match the ``X-Orchlink-Project-ID`` header. A body-only project
+        # still falls through to the header (preserved for callers that
+        # only set one channel). Mismatches are rejected with 403 so a
+        # caller cannot accidentally bypass the project scope.
+        header_project = request.headers.get("X-Orchlink-Project-ID")
+        body_project = str(body.project_id or "") or None
+        project_id = request_project_id(request, body_project)
+        if project_id is None:
+            raise HTTPException(status_code=400, detail="Project ID is required.")
+        if (
+            header_project is not None
+            and body_project is not None
+            and str(header_project) != str(body_project)
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="body project_id does not match X-Orchlink-Project-ID header",
+            )
+        agent_id = str(body.agent_id or "")
+        if not agent_id:
+            raise HTTPException(status_code=400, detail="agent_id is required.")
+        lease_epoch_header = request.headers.get("x-orchlink-lease-epoch")
+        lease_holder = request.headers.get("x-orchlink-lease-holder")
+        session_lease_id = request.headers.get("x-orchlink-session-lease-id")
+        try:
+            lease_epoch = int(lease_epoch_header) if lease_epoch_header is not None else None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="x-orchlink-lease-epoch must be an integer") from exc
+        return await broker.append_transcript_batch(
+            task_id,
+            body.to_command(),
+            project_id=project_id,
+            agent_id=agent_id,
+            session_lease_id=session_lease_id,
+            lease_epoch=lease_epoch,
+            lease_holder=lease_holder,
+        )
+
+    @secure_router.get("/tasks/{task_id}/transcript", response_model=TranscriptListResponse)
+    async def read_transcript(
+        task_id: str,
+        request: Request,
+        after: int = Query(default=0, ge=0),
+        limit: int = Query(default=100, ge=1, le=1000),
+        wait_seconds: int = Query(default=0, ge=0, le=30),
+        project_id: str | None = Query(default=None),
+        broker: BrokerRouteAdapter = Depends(get_adapter),
+    ) -> dict[str, Any]:
+        project_id = request_project_id(request, project_id)
+        if project_id is None:
+            raise HTTPException(status_code=400, detail="Project ID is required.")
+        if wait_seconds > 0:
+            return await broker.wait_transcript_events(task_id, project_id, after=after, limit=limit, wait_seconds=wait_seconds)
+        return await broker.read_transcript_events(task_id, project_id, after=after, limit=limit)
 
     @secure_router.get("/status", response_model=BrokerStatusResponse)
     async def status(

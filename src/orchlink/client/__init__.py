@@ -5,16 +5,13 @@ and lead→worker talk/task envelopes. Domain-layer modules may import this
 package without pulling CLI/Typer dependencies into their import graph.
 """
 
-from orchlink.client.ask import (
+from orchlink.client.messages import (
     THINKING_LEVELS,
     WorkerBridge,
-    ask_worker,
-    ask_worker_sync,
     build_chat_envelope,
     build_task_envelope,
     close_talk,
     close_talk_sync,
-    infer_task_mode,
     normalize_thinking_level,
     post_envelope,
     say_talk,
@@ -39,8 +36,6 @@ __all__ = [
     "BrokerClient",
     "THINKING_LEVELS",
     "WorkerBridge",
-    "ask_worker",
-    "ask_worker_sync",
     "broker_get_sync",
     "broker_post_sync",
     "build_chat_envelope",
@@ -53,7 +48,6 @@ __all__ = [
     "fetch_status",
     "fetch_status_sync",
     "format_event",
-    "infer_task_mode",
     "normalize_thinking_level",
     "post_envelope",
     "say_talk",

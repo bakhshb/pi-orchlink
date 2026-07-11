@@ -16,9 +16,9 @@ Orchlink is a local coordination layer for Pi coding agents. It connects one lea
 
 ## Three modes
 
-![Orchlink modes: Ask/Send, Goal Mode, and Loop Mode](docs/assets/orchlink-modes-v2.svg)
+![Orchlink modes: Send, Goal Mode, and Loop Mode](docs/assets/orchlink-modes-v2.svg)
 
-**Ask/Send** — use this for one question, one review, or one implementation task. The broker records the job and result, but Orchlink does not create a goal, lifecycle state, or verifier step.
+**Send** — use this for one question, one review, or one implementation task. It is asynchronous by default; add `--wait` for a blocking gate. The broker records the job and result, but Orchlink does not create a goal, lifecycle state, or verifier step.
 
 **Goal Mode** — use this for PRD-driven work. Orchlink stores acceptance criteria, a plan, evidence, blockers, and signoff under `.orch/goals/Gxxx/`.
 
@@ -85,7 +85,7 @@ Start a background worker for this project, then ask it to review the auth modul
 Start a background worker named review with model openai/codex-max and thinking xhigh. Use it for review-only tasks.
 ```
 
-The lead Pi can call `orch work --background`, `orch ask`, `orch send`, `orch jobs`, `orch goal ...`, and `orch loop ...` as tools. You normally do not type those commands during agent work.
+The lead Pi can call `orch work --background`, `orch send`, `orch jobs`, `orch goal ...`, and `orch loop ...` as tools. You normally do not type those commands during agent work.
 
 Manual equivalents are useful for visible worker terminals, debugging, scripting, and recovery:
 
@@ -104,19 +104,33 @@ orch work --background --new --replace --oneshot
 
 Headless RPC workers invoke Pi with `--approve`, which is tool approval suitable for unattended operation. Use them only for scoped local coding tasks you would allow to run without per-tool confirmation. Orchlink coordinates workers; it is not a shell-command sandbox.
 
-## Ask and Send
+## Send tasks
 
-You normally use Ask/Send by prompting the lead Pi:
+You normally delegate by prompting the lead Pi:
 
 ```text
-Ask work to review this function before I change it. Keep it short and do not edit files.
+Send work a blocking review of this function before I change it. Keep it short and do not edit files.
 ```
 
 ```text
 Send work an async task to implement the export endpoint. While it works, inspect the API tests yourself. Read the exact worker result before telling me it is done.
 ```
 
-The lead Pi turns those prompts into `orch ask`, `orch send`, and `orch jobs --result` calls. You do not need to type those commands unless you are debugging, scripting, or recovering from an interruption.
+The lead Pi turns those prompts into blocking or async `orch send` calls and retrieves async results with `orch jobs --result`. You do not need to type those commands unless you are debugging, scripting, or recovering from an interruption.
+
+## Watch background workers in Pi
+
+Run `/orchlink` in the lead Pi to open a compact worker list. Select an active worker and press Enter or `f` to follow its visible assistant output.
+
+Follow controls appear only when applicable:
+
+- The mouse wheel scrolls the transcript inside the panel.
+- Up/Down scroll one line; Page Up/Page Down scroll one page.
+- Manual scrolling pauses auto-scroll; End returns to live output.
+- Tab/Shift-Tab switch active workers when more than one is available, without mixing transcript or scroll position.
+- Escape returns to the worker list; `q` closes the panel without cancelling work.
+
+The broker persists a bounded local transcript so switching workers or reopening the panel can resume from the saved cursor. Visible output uses Pi's Markdown theme, including headings, emphasis, and syntax-highlighted code blocks. The follow view excludes model thinking, unknown stream events, provider payloads, secrets, and raw tool output. A truncation marker appears if retained history no longer includes the requested cursor.
 
 ## Goal Mode
 
@@ -351,7 +365,7 @@ Most users prompt the lead Pi instead of typing these during normal work. The le
 | `orch init` | Create or refresh `.orch/`. |
 | `orch lead` | Start or reopen the visible lead Pi session. |
 | `orch work` | Start visible or background named workers. |
-| `orch ask work --wait -t T001 -m "..."` | Ask short gates: review, decision, blocker. |
+| `orch send work --wait -t T001 -m "..."` | Block for a short gate: review, decision, or blocker. |
 | `orch send work -t T002 -m "..."` | Dispatch async implementation, review, tests, or research. |
 | `orch jobs` | List recent task and Talk jobs. |
 | `orch jobs --active` | Show active/open work. |

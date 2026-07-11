@@ -10,21 +10,21 @@ from __future__ import annotations
 import re
 from typing import Any, Callable
 
-from orchlink.client import ask_worker_sync as _default_ask_worker_sync
+from orchlink.client import send_worker_sync as _default_send_worker_sync
 from orchlink.goal.checks import CheckResult
 from orchlink.goal.models import Goal
 from orchlink.goal.worker_reply import compact_worker_result, parse_worker_reply
 
 
-AskFn = Callable[..., dict[str, Any]]
+SendFn = Callable[..., dict[str, Any]]
 
 
 class GoalDispatcher:
     """Send a goal task to a worker and surface typed replies.
 
-    ``ask_fn`` is injectable so tests can monkeypatch
-    ``orchlink.goal.runner.ask_worker_sync`` and have the dispatch pick up the
-    patched function (the runner forwards its module-level ``ask_worker_sync``
+    ``send_fn`` is injectable so tests can monkeypatch
+    ``orchlink.goal.runner.send_worker_sync`` and have the dispatch pick up the
+    patched function (the runner forwards its module-level ``send_worker_sync``
     reference at construction time).
     """
 
@@ -32,14 +32,14 @@ class GoalDispatcher:
         self,
         config: dict[str, Any],
         *,
-        ask_fn: AskFn | None = None,
+        send_fn: SendFn | None = None,
         maker_worker: str = "work",
         verifier_worker: str = "work",
         maker_model: str | None = None,
         verifier_model: str | None = None,
     ) -> None:
         self._config = config
-        self._ask_fn = ask_fn or _default_ask_worker_sync
+        self._send_fn = send_fn or _default_send_worker_sync
         self.maker_worker = maker_worker
         self.verifier_worker = verifier_worker
         self.maker_model = maker_model
@@ -65,7 +65,7 @@ class GoalDispatcher:
             "task_id": task_id,
             "model": resolved_model,
         }
-        return self._ask_fn(
+        return self._send_fn(
             config=self._config,
             worker=resolved_worker,
             task_id=task_id,
@@ -177,7 +177,7 @@ def _acceptance_yaml_block(text: str) -> str:
 
 
 __all__ = [
-    "AskFn",
+    "SendFn",
     "GoalDispatcher",
     "compact_result",
     "format_failed_checks",

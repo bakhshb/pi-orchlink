@@ -26,7 +26,6 @@ from rich.console import Console
 # module scope because command implementations intentionally access them through
 # the CLI app module.
 from orchlink.client import (
-    ask_worker_sync as project_ask_worker_sync,
     close_talk_sync,
     format_event,
     send_worker_sync,
@@ -71,7 +70,6 @@ __all__ = [
     "register_loop_app",
     "next_conversation_id",
     "print_orch_exception",
-    "project_ask_worker_sync",
     "register_project_role_sync",
     "say_talk_sync",
     "send_worker_sync",

@@ -37,10 +37,6 @@ def summarize_chat_topic(message: str, limit: int = 120) -> str:
     return "Talk Mode conversation"
 
 
-def infer_task_mode(message: str, default: str = "PLAN") -> str:
-    return TASK_PROMPT_POLICY.infer_mode(message, default=default)
-
-
 def normalize_thinking_level(value: str | None) -> str | None:
     if value is None:
         return None
@@ -174,13 +170,13 @@ class WorkerBridge:
         self.config = config
         self.worker = worker
 
-    async def ask(
+    async def send(
         self,
         task_id: str,
         message: str,
         timeout_seconds: int = 1800,
-        wait: bool = True,
         thinking: str | None = None,
+        wait: bool = False,
     ) -> dict[str, Any]:
         envelope = build_task_envelope(
             config=self.config,
@@ -192,18 +188,6 @@ class WorkerBridge:
             thinking=thinking,
         )
         return await post_envelope(self.config, envelope, wait=wait)
-
-    async def send(self, task_id: str, message: str, timeout_seconds: int = 1800, thinking: str | None = None) -> dict[str, Any]:
-        envelope = build_task_envelope(
-            config=self.config,
-            worker=self.worker,
-            task_id=task_id,
-            message=message,
-            timeout_seconds=timeout_seconds,
-            delivery="async",
-            thinking=thinking,
-        )
-        return await post_envelope(self.config, envelope, wait=False)
 
     async def start_talk(
         self,
@@ -264,18 +248,6 @@ class WorkerBridge:
         return await post_envelope(self.config, envelope, wait=False)
 
 
-async def ask_worker(
-    config: dict[str, Any],
-    worker: str,
-    task_id: str,
-    message: str,
-    timeout_seconds: int = 1800,
-    wait: bool = True,
-    thinking: str | None = None,
-) -> dict[str, Any]:
-    return await WorkerBridge(config, worker).ask(task_id, message, timeout_seconds, wait=wait, thinking=thinking)
-
-
 async def send_worker(
     config: dict[str, Any],
     worker: str,
@@ -283,8 +255,9 @@ async def send_worker(
     message: str,
     timeout_seconds: int = 1800,
     thinking: str | None = None,
+    wait: bool = False,
 ) -> dict[str, Any]:
-    return await WorkerBridge(config, worker).send(task_id, message, timeout_seconds, thinking=thinking)
+    return await WorkerBridge(config, worker).send(task_id, message, timeout_seconds, thinking=thinking, wait=wait)
 
 
 async def start_talk(
@@ -327,28 +300,6 @@ async def close_talk(
     return await WorkerBridge(config, worker).close_talk(conversation_id, message, turn, max_turns, timeout_seconds)
 
 
-def ask_worker_sync(
-    config: dict[str, Any],
-    worker: str,
-    task_id: str,
-    message: str,
-    timeout_seconds: int = 1800,
-    wait: bool = True,
-    thinking: str | None = None,
-) -> dict[str, Any]:
-    return asyncio.run(
-        ask_worker(
-            config=config,
-            worker=worker,
-            task_id=task_id,
-            message=message,
-            timeout_seconds=timeout_seconds,
-            wait=wait,
-            thinking=thinking,
-        )
-    )
-
-
 def send_worker_sync(
     config: dict[str, Any],
     worker: str,
@@ -356,8 +307,19 @@ def send_worker_sync(
     message: str,
     timeout_seconds: int = 1800,
     thinking: str | None = None,
+    wait: bool = False,
 ) -> dict[str, Any]:
-    return asyncio.run(send_worker(config, worker, task_id, message, timeout_seconds, thinking=thinking))
+    return asyncio.run(
+        send_worker(
+            config=config,
+            worker=worker,
+            task_id=task_id,
+            message=message,
+            timeout_seconds=timeout_seconds,
+            thinking=thinking,
+            wait=wait,
+        )
+    )
 
 
 def start_talk_sync(
@@ -400,13 +362,10 @@ def close_talk_sync(
 
 __all__ = [
     "WorkerBridge",
-    "ask_worker",
-    "ask_worker_sync",
     "build_chat_envelope",
     "build_task_envelope",
     "close_talk",
     "close_talk_sync",
-    "infer_task_mode",
     "normalize_thinking_level",
     "post_envelope",
     "say_talk",

@@ -275,11 +275,18 @@ export default function (pi: ExtensionAPI) {
   const workerThinking = normalizeThinking(env("ORCHLINK_WORKER_THINKING"));
   const supervisorPid = Number(env("ORCHLINK_SUPERVISOR_PID", "0")) || undefined;
   const readyHeartbeatMs = Math.max(1000, Number(env("ORCHLINK_READY_HEARTBEAT_MS", "5000")) || 5000);
+  // G018 visible-transcript buffering limits.
+  const TRANSCRIPT_FLUSH_MS = Math.max(50, Math.min(500, Number(env("ORCHLINK_TRANSCRIPT_FLUSH_MS", "150")) || 150));
+  const TRANSCRIPT_MAX_BYTES = Math.max(256, Math.min(8192, Number(env("ORCHLINK_TRANSCRIPT_MAX_BYTES", "2048")) || 2048));
   // M3 job lease: the worker captures the lease epoch at pickup and renews it
   // via /v1/jobs/{id}/heartbeat. On a 409 (stale/reclaimed) it stops and steers.
   let currentLeaseEpoch: number = 0;
   let leaseLost = false;
   let workerCtx: any;
+  // G018 visible-assistant transcript buffering.
+  let transcriptBuffer = "";
+  let transcriptFlushTimer: ReturnType<typeof setTimeout> | undefined;
+  let transcriptBatchId = 0;
   const recoveryGraceMs = Math.max(1000, Number(env("ORCHLINK_RECOVERABLE_ERROR_GRACE_MS", "180000")) || 180000);
   const activityHeartbeatMs = Math.max(5000, Number(env("ORCHLINK_ACTIVITY_HEARTBEAT_MS", "15000")) || 15000);
 
@@ -372,9 +379,75 @@ export default function (pi: ExtensionAPI) {
     activityTimer = undefined;
   }
 
+  function clearTranscriptFlush() {
+    if (transcriptFlushTimer) clearTimeout(transcriptFlushTimer);
+    transcriptFlushTimer = undefined;
+  }
+
+  function flushTranscriptBuffer(force = false) {
+    const text = transcriptBuffer;
+    transcriptBuffer = "";
+    clearTranscriptFlush();
+    if (!text || role !== "work" || !currentTask || leaseLost) return;
+    const task = currentTask;
+    const batchId = ++transcriptBatchId;
+    const headers: Record<string, string> = {
+      "x-orchlink-project-id": task.project_id || projectId,
+    };
+    if (currentLeaseEpoch) headers["x-orchlink-lease-epoch"] = String(currentLeaseEpoch);
+    if (agentId) headers["x-orchlink-lease-holder"] = agentId;
+    if (sessionLeaseId) headers["x-orchlink-session-lease-id"] = sessionLeaseId;
+    const body = {
+      project_id: task.project_id || projectId,
+      task_id: task.task_id || null,
+      agent_id: agentId,
+      worker_name: env("ORCHLINK_WORKER_NAME") || agentId || "work",
+      batch_id: `batch-${batchId}`,
+      events: [{ kind: "assistant_delta", text }],
+    };
+    postJson(`/v1/tasks/${encodeURIComponent(String(task.task_id || ""))}/transcript`, body, headers).catch((error: any) => {
+      console.error(`[orchlink] transcript post failed: ${error?.message || error}`);
+    });
+  }
+
+  function appendTranscriptDelta(delta: string) {
+    if (!delta || role !== "work" || !currentTask) return;
+    transcriptBuffer += delta;
+    if (Buffer.byteLength(transcriptBuffer, "utf8") >= TRANSCRIPT_MAX_BYTES) {
+      flushTranscriptBuffer(true);
+      return;
+    }
+    clearTranscriptFlush();
+    transcriptFlushTimer = setTimeout(() => flushTranscriptBuffer(), TRANSCRIPT_FLUSH_MS);
+  }
+
+  function finalizeTranscript(reason: string) {
+    flushTranscriptBuffer(true);
+    if (!currentTask) return;
+    const task = currentTask;
+    const headers: Record<string, string> = {
+      "x-orchlink-project-id": task.project_id || projectId,
+    };
+    if (currentLeaseEpoch) headers["x-orchlink-lease-epoch"] = String(currentLeaseEpoch);
+    if (agentId) headers["x-orchlink-lease-holder"] = agentId;
+    if (sessionLeaseId) headers["x-orchlink-session-lease-id"] = sessionLeaseId;
+    const body = {
+      project_id: task.project_id || projectId,
+      task_id: task.task_id || null,
+      agent_id: agentId,
+      worker_name: env("ORCHLINK_WORKER_NAME") || agentId || "work",
+      batch_id: `finalize-${++transcriptBatchId}`,
+      events: [{ kind: "system", text: reason }],
+    };
+    postJson(`/v1/tasks/${encodeURIComponent(String(task.task_id || ""))}/transcript`, body, headers).catch((error: any) => {
+      console.error(`[orchlink] transcript finalize failed: ${error?.message || error}`);
+    });
+  }
+
   function stopAfterOneshotReply(task: OrchMessage) {
     if (!oneshot || role !== "work" || backgroundBackend !== "rpc-supervisor" || isChatRequest(task)) return false;
     stopped = true;
+    resetTranscriptState();
     if (timer) clearTimeout(timer);
     if (readyTimer) clearTimeout(readyTimer);
     clearCancelCheck();
@@ -393,6 +466,11 @@ export default function (pi: ExtensionAPI) {
 
   function clearAbortContext() {
     abortCurrentTurn = undefined;
+  }
+
+  function resetTranscriptState() {
+    transcriptBuffer = "";
+    clearTranscriptFlush();
   }
 
   function abortIfPossible(ctx?: any) {
@@ -458,6 +536,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   async function sendReply(task: OrchMessage, assistantMessage: any, ctx: any) {
+    flushTranscriptBuffer(true);
     let sent = false;
     try {
       const reply = replyEnvelope(task, assistantMessage);
@@ -479,11 +558,13 @@ export default function (pi: ExtensionAPI) {
 
   function deferRecoverableFailure(task: OrchMessage, assistantMessage: any, ctx: any) {
     clearRecoveryTimer();
+    flushTranscriptBuffer(true);
     const label = task.task_id || task.conversation_id || "current work";
     ctx.ui.notify(`Orchlink saw a transient provider error for ${label}; waiting for Pi recovery.`, "info");
     recoveryTimer = setTimeout(() => {
       if (!currentTask || currentTask.message_id !== task.message_id) return;
       currentTask = undefined;
+      resetTranscriptState();
       clearCancelCheck();
       clearActivityHeartbeat();
       clearAbortContext();
@@ -507,6 +588,8 @@ export default function (pi: ExtensionAPI) {
     const status = await currentWorkStatus(currentTask);
     if (!["CANCELLED", "TIMEOUT"].includes(status)) return false;
     cancelNoticeSent = true;
+    flushTranscriptBuffer(true);
+    finalizeTranscript(`task ${status.toLowerCase()}`);
     const label = currentTask.task_id || currentTask.conversation_id || "current work";
     void postCurrentActivity("cancelled", `Broker marked ${label} ${status}; aborting current Pi turn.`, { phase: "cancelled" });
     abortIfPossible(ctx);
@@ -580,6 +663,8 @@ export default function (pi: ExtensionAPI) {
     if (!isOrchlinkWorkerPrompt(event.text)) return;
     currentTask = pendingTask;
     pendingTask = undefined;
+    resetTranscriptState();
+    transcriptBatchId = 0;
     rememberAbortContext(ctx);
     workerCtx = ctx;
     cancelNoticeSent = false;
@@ -596,6 +681,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event, ctx) => {
     if (role !== "work" || !currentTask) return;
     rememberAbortContext(ctx);
+    flushTranscriptBuffer(true);
     if (await checkCurrentTaskCancellation(ctx)) {
       return { block: true, reason: "Orchlink cancelled this work before the tool call started." };
     }
@@ -618,9 +704,18 @@ export default function (pi: ExtensionAPI) {
     void checkCurrentTaskCancellation(ctx).catch((error) => console.error(`[orchlink] cancel check failed: ${error?.message || error}`));
   });
 
+  pi.on("message_update", async (event, _ctx) => {
+    if (role !== "work" || !currentTask) return;
+    const assistantEvent = event.assistantMessageEvent;
+    if (!assistantEvent || assistantEvent.type !== "text_delta") return;
+    const delta = typeof assistantEvent.delta === "string" ? assistantEvent.delta : "";
+    appendTranscriptDelta(delta);
+  });
+
   pi.on("message_end", async (event, ctx) => {
     if (role !== "work" || !currentTask) return;
     if (event.message.role !== "assistant") return;
+    flushTranscriptBuffer(true);
     if ((event.message as any).stopReason === "toolUse") return;
 
     const task = currentTask;
@@ -632,6 +727,7 @@ export default function (pi: ExtensionAPI) {
 
     clearRecoveryTimer();
     currentTask = undefined;
+    resetTranscriptState();
     clearCancelCheck();
     clearActivityHeartbeat();
     clearAbortContext();
@@ -640,6 +736,7 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async () => {
     stopped = true;
+    resetTranscriptState();
     if (timer) clearTimeout(timer);
     if (readyTimer) clearTimeout(readyTimer);
     clearCancelCheck();

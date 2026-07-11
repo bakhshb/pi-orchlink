@@ -42,41 +42,42 @@ def test_message_input_rejects_multiple_sources(message_input):
         message_input.resolve(required=False)
 
 
-def test_project_ask_defaults_to_wait(monkeypatch, tmp_path):
+def test_send_wait_defaults_to_wait(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
 
-    def fake_project_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         assert kwargs["worker"] == "work"
         assert kwargs["task_id"] == "T001"
         assert kwargs["wait"] is True
         assert kwargs["thinking"] is None
         return {"status": "completed", "reply": {"type": "PLAN"}}
 
-    monkeypatch.setattr(cli_main, "project_ask_worker_sync", fake_project_ask_worker_sync)
+    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
 
-    result = runner.invoke(cli_main.app, ["ask", "work", "-t", "T001", "-m", "Return PLAN only."])
+    result = runner.invoke(cli_main.app, ["send", "work", "--wait", "-t", "T001", "-m", "Return PLAN only."])
 
     assert result.exit_code == 0
     assert '"status": "completed"' in result.output
     assert "Async mode" not in result.output
 
 
-def test_project_ask_reads_message_from_stdin(monkeypatch, tmp_path):
+def test_send_wait_reads_message_from_stdin(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
 
-    def fake_project_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         assert kwargs["message"] == "Use `backticks` and $HOME literally.\n"
+        assert kwargs["wait"] is True
         return {"status": "completed", "reply": {"type": "PLAN"}}
 
-    monkeypatch.setattr(cli_main, "project_ask_worker_sync", fake_project_ask_worker_sync)
+    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
 
     result = runner.invoke(
         cli_main.app,
-        ["ask", "work", "-t", "TSTDIN", "-m", "-"],
+        ["send", "work", "--wait", "-t", "TSTDIN", "-m", "-"],
         input="Use `backticks` and $HOME literally.\n",
     )
 
@@ -84,21 +85,62 @@ def test_project_ask_reads_message_from_stdin(monkeypatch, tmp_path):
     assert '"status": "completed"' in result.output
 
 
-def test_project_ask_wait_option_blocks(monkeypatch, tmp_path):
+def test_send_default_is_async(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
 
-    def fake_project_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
+        assert kwargs["worker"] == "work"
+        assert kwargs["task_id"] == "T002"
+        assert kwargs["message"] == "Inspect tests."
+        assert kwargs["thinking"] is None
+        assert kwargs["wait"] is False
+        return {"status": "queued", "message_id": "msg-2"}
+
+    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
+
+    result = runner.invoke(cli_main.app, ["send", "work", "-t", "T002", "-m", "Inspect tests."])
+
+    assert result.exit_code == 0
+    assert "Sent T002" in result.output
+    assert "Async mode" in result.output
+
+
+def test_send_wait_blocks(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    def fake_send_worker_sync(**kwargs):
         assert kwargs["wait"] is True
         return {"status": "completed", "reply": {"type": "PLAN"}}
 
-    monkeypatch.setattr(cli_main, "project_ask_worker_sync", fake_project_ask_worker_sync)
+    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
 
-    result = runner.invoke(cli_main.app, ["ask", "work", "--wait", "-t", "T001", "-m", "Return PLAN only."])
+    result = runner.invoke(cli_main.app, ["send", "work", "--wait", "-t", "T002", "-m", "Inspect tests."])
 
     assert result.exit_code == 0
     assert '"status": "completed"' in result.output
+    assert "Async mode" not in result.output
+
+
+def test_send_no_wait_explicit(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    def fake_send_worker_sync(**kwargs):
+        assert kwargs["wait"] is False
+        return {"status": "queued", "message_id": "msg-nw"}
+
+    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
+
+    result = runner.invoke(cli_main.app, ["send", "work", "--no-wait", "-t", "T002", "-m", "Explicit no wait."])
+
+    assert result.exit_code == 0
+    assert "Sent T002" in result.output
+    assert "Async mode" in result.output
 
 
 def test_send_queues_async_task(monkeypatch, tmp_path):
@@ -111,6 +153,7 @@ def test_send_queues_async_task(monkeypatch, tmp_path):
         assert kwargs["task_id"] == "T002"
         assert kwargs["message"] == "Inspect tests."
         assert kwargs["thinking"] == "medium"
+        assert kwargs["wait"] is False
         return {"status": "queued", "message_id": "msg-2"}
 
     monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
@@ -136,6 +179,7 @@ def test_send_reads_message_from_stdin(monkeypatch, tmp_path):
 
     def fake_send_worker_sync(**kwargs):
         assert kwargs["message"] == "Add one test with `quotes` and $PATH unchanged.\n"
+        assert kwargs["wait"] is False
         return {"status": "queued", "message_id": "msg-stdin"}
 
     monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
@@ -159,6 +203,7 @@ def test_send_reads_message_from_file(monkeypatch, tmp_path):
 
     def fake_send_worker_sync(**kwargs):
         assert kwargs["message"] == "File prompt with `literal` $VARS.\n"
+        assert kwargs["wait"] is False
         return {"status": "queued", "message_id": "msg-file"}
 
     monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
@@ -175,13 +220,13 @@ def test_message_source_options_are_mutually_exclusive(monkeypatch, tmp_path):
     prompt = tmp_path / "prompt.md"
     prompt.write_text("file prompt\n", encoding="utf-8")
 
-    result = runner.invoke(cli_main.app, ["ask", "work", "-t", "TCONFLICT", "-m", "inline", "-F", str(prompt)])
+    result = runner.invoke(cli_main.app, ["send", "work", "-t", "TCONFLICT", "-m", "inline", "-F", str(prompt)])
 
     assert result.exit_code == 1
     assert "Use only one of" in result.output
 
 
-def test_ask_edit_opens_editor_and_sends_body(monkeypatch, tmp_path):
+def test_send_wait_edit_opens_editor_and_sends_body(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
@@ -192,15 +237,16 @@ def test_ask_edit_opens_editor_and_sends_body(monkeypatch, tmp_path):
         encoding="utf-8",
     )
 
-    def fake_project_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         assert kwargs["message"] == "Edited prompt body."
+        assert kwargs["wait"] is True
         return {"status": "completed", "reply": {"type": "PLAN"}}
 
-    monkeypatch.setattr(cli_main, "project_ask_worker_sync", fake_project_ask_worker_sync)
+    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
 
     result = runner.invoke(
         cli_main.app,
-        ["ask", "work", "-t", "TEDIT", "--edit"],
+        ["send", "work", "--wait", "-t", "TEDIT", "--edit"],
         env={"VISUAL": f"python3 {editor}"},
     )
 
@@ -208,42 +254,45 @@ def test_ask_edit_opens_editor_and_sends_body(monkeypatch, tmp_path):
     assert '"status": "completed"' in result.output
 
 
-def test_send_rejects_review_gate_by_default(monkeypatch, tmp_path):
-    init_project(tmp_path, project_id="demo")
-    monkeypatch.chdir(tmp_path)
-
-    def fake_send_worker_sync(**kwargs):
-        raise AssertionError("send should not be called for a review gate")
-
-    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
-
-    result = runner.invoke(cli_main.app, ["send", "work", "-t", "R001", "-m", "Please review my changes."])
-
-    assert result.exit_code == 1
-    assert "REVIEW is a gate" in result.output
-    assert "orch ask work --wait" in result.output
-
-
-def test_send_allows_async_review_when_explicit(monkeypatch, tmp_path):
+def test_send_allows_async_review_by_default(monkeypatch, tmp_path):
     init_project(tmp_path, project_id="demo")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
 
     def fake_send_worker_sync(**kwargs):
-        assert kwargs["task_id"] == "R002"
-        return {"status": "queued", "message_id": "msg-r2"}
+        assert kwargs["task_id"] == "R001"
+        assert kwargs["wait"] is False
+        return {"status": "queued", "message_id": "msg-r1"}
+
+    monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
+
+    result = runner.invoke(cli_main.app, ["send", "work", "-t", "R001", "-m", "Please review my changes."])
+
+    assert result.exit_code == 0
+    assert "Sent R001" in result.output
+    assert "Block only if this now gates you: orch jobs --wait R001" in result.output
+
+
+def test_send_wait_permits_review(monkeypatch, tmp_path):
+    init_project(tmp_path, project_id="demo")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cli_main, "ensure_broker_running", lambda config: None)
+
+    def fake_send_worker_sync(**kwargs):
+        assert kwargs["task_id"] == "R001"
+        assert kwargs["wait"] is True
+        return {"status": "completed", "reply": {"type": "REVIEW", "payload": {"summary": "ok"}}}
 
     monkeypatch.setattr(cli_main, "send_worker_sync", fake_send_worker_sync)
 
     result = runner.invoke(
         cli_main.app,
-        ["send", "work", "-t", "R002", "-m", "Async review of unrelated docs.", "--allow-async-review"],
+        ["send", "work", "--wait", "-t", "R001", "-m", "Please review my changes."],
     )
 
     assert result.exit_code == 0
-    assert "Sent R002" in result.output
-    assert "verify the exact result" in result.output
-    assert "orch jobs --wait R002" in result.output
+    assert '"status": "completed"' in result.output
+    assert "Async mode" not in result.output
 
 
 def test_talk_rejects_empty_message():
@@ -708,7 +757,7 @@ def test_root_help_explains_commands():
 
     assert result.exit_code == 0
     assert "Start or reopen the visible Pi lead session" in result.output
-    assert "Send a task to work and wait" in result.output
+    assert "Send a task to work" in result.output
     assert "Inspect and control tracked work" in result.output
     assert "Run and manage the local Orchlink broker" in result.output
 

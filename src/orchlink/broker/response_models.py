@@ -80,6 +80,13 @@ class TaskResultResponse(BrokerResponse):
     status: str
 
 
+class TranscriptListResponse(BrokerResponse):
+    project_id: str | None = None
+    task_id: str
+    events: list[dict[str, Any]]
+    next_seq: int
+
+
 class BrokerStatusResponse(BrokerResponse):
     broker: str
     broker_host: str | None = None
@@ -126,5 +133,6 @@ __all__ = [
     "SessionsResponse",
     "TaskActivityResponse",
     "TaskResultResponse",
+    "TranscriptListResponse",
     "WaitReplyResponse",
 ]

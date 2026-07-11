@@ -11,9 +11,85 @@ from orchlink.core.envelope import AgentRegistration, MessageEnvelope
 from orchlink.core.states import JOB_STATUS_LIFECYCLE, CANONICAL_TERMINAL_STATUSES, JobStatus, normalize_status, require_transition
 
 
+TranscriptEventKind = Literal["assistant_delta", "tool", "status", "system"]
+
+
+# ... rest of file continues ...
+
 JobKind = Literal["task", "talk"]
 SessionRole = Literal["lead", "work", "worker"]
 AgentRole = Literal["lead", "work", "worker"]
+
+
+@dataclass(frozen=True)
+class TranscriptEvent:
+    """Visible-assistant transcript event for a task."""
+
+    seq: int
+    time: str
+    project_id: str
+    task_id: str
+    agent_id: str | None
+    worker_name: str | None
+    kind: str
+    text: str
+    tool_name: str | None = None
+
+    def to_wire_dict(self) -> dict[str, Any]:
+        return {
+            "seq": self.seq,
+            "time": self.time,
+            "project_id": self.project_id,
+            "task_id": self.task_id,
+            "agent_id": self.agent_id,
+            "worker_name": self.worker_name,
+            "kind": self.kind,
+            "text": self.text,
+            "tool_name": self.tool_name,
+        }
+
+
+@dataclass(frozen=True)
+class TranscriptBatch:
+    """Worker-submitted batch of transcript events before broker sequencing."""
+
+    project_id: str
+    task_id: str
+    agent_id: str | None
+    worker_name: str | None
+    batch_id: str
+    events: list[dict[str, Any]] = field(default_factory=list)
+
+    @classmethod
+    def from_wire(cls, data: dict[str, Any]) -> "TranscriptBatch":
+        return cls(
+            project_id=str(data.get("project_id") or "default"),
+            task_id=str(data.get("task_id") or ""),
+            agent_id=str(data["agent_id"]) if data.get("agent_id") is not None else None,
+            worker_name=str(data["worker_name"]) if data.get("worker_name") is not None else None,
+            batch_id=str(data.get("batch_id") or ""),
+            events=list(data.get("events") or []),
+        )
+
+
+class TranscriptTruncation:
+    """Marker returned when a read cursor predates retained per-task history."""
+
+    def __init__(self, truncated_before_sequence: int) -> None:
+        self.truncated_before_sequence = truncated_before_sequence
+
+    def to_event(self, project_id: str, task_id: str) -> dict[str, Any]:
+        return {
+            "seq": self.truncated_before_sequence,
+            "time": datetime.now(timezone.utc).isoformat(),
+            "project_id": project_id,
+            "task_id": task_id,
+            "agent_id": None,
+            "worker_name": None,
+            "kind": "system",
+            "text": "Earlier transcript history was dropped by retention. This is not the complete output.",
+            "tool_name": None,
+        }
 
 
 class SessionStatus(StrEnum):

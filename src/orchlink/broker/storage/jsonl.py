@@ -42,6 +42,12 @@ from typing import Any, Awaitable, Callable, TypeVar
 from orchlink.broker.state import is_terminal_status
 from orchlink.broker.storage.base import ActivityInput, AgentInput, MessageInput, SessionAcquireInput, SessionHeartbeatInput
 from orchlink.broker.storage.memory import MemoryMessageStore
+from orchlink.broker.storage.memory_activity_store import MemoryActivityStore
+from orchlink.broker.storage.memory_event_log import MemoryEventLog
+from orchlink.broker.storage.memory_job_projector import MemoryJobProjector
+from orchlink.broker.storage.memory_session_store import MemorySessionStore
+from orchlink.broker.storage.memory_transcript_store import MemoryTranscriptStore
+from orchlink.broker.storage.memory_work_queue import MemoryWorkQueue
 from orchlink.broker.storage.persistence import (
     atomic_append_jsonl_line,
     atomic_write_text,
@@ -74,7 +80,6 @@ from orchlink.core.views import (
     task_result_to_wire,
     wait_blocker_to_wire,
 )
-
 T = TypeVar("T")
 
 
@@ -218,6 +223,7 @@ class JsonlMessageStore(MemoryMessageStore):
         super().__init__(require_peer_sessions=require_peer_sessions, session_grace_seconds=session_grace_seconds)
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._transcript_path = self._transcript_path_for(str(self.path))
         # Replace the parent's non-reentrant lock with a re-entrant one so
         # ``_recorded`` can hold the lock across ``mutation -> snapshot ->
         # append -> fsync`` without deadlocking the inherited methods that
@@ -226,7 +232,61 @@ class JsonlMessageStore(MemoryMessageStore):
         self._max_records = max_records if max_records is not None else DEFAULT_MAX_RECORDS
         self._max_bytes = max_bytes if max_bytes is not None else DEFAULT_MAX_BYTES
         self._record_count = 0
+        # Recreate focused components after path is known so the transcript store
+        # receives the derived transcript journal path.
+        self._event_log = MemoryEventLog(self._state, self._now)
+        self._job_projector = MemoryJobProjector(
+            self._state,
+            self._job_lifecycle,
+            self._now,
+            self._event_log,
+        )
+        self._session_store = MemorySessionStore(
+            self._state,
+            self._now,
+            self._parse_time,
+            self._event_log,
+            session_grace_seconds,
+        )
+        self._activity_store = MemoryActivityStore(
+            self._state,
+            self._event_log,
+            self._now,
+            self._apply_activity_to_work_locked,
+        )
+        self._work_queue = MemoryWorkQueue(
+            self._state,
+            self._now,
+            self._event_log,
+            self._session_store,
+            self._job_projector,
+            require_peer_sessions,
+        )
+        self._transcript_store = MemoryTranscriptStore(
+            self._state,
+            self._now,
+            self._session_store,
+            self._job_projector,
+            journal_path=self._transcript_path,
+        )
         self._load_latest_snapshot()
+        # Transcript journal replay/restore after main snapshot loaded.
+        self._load_latest_transcript_snapshot()
+
+    # ------------------------------------------------------------------
+    # Transcript snapshot / restore
+    # ------------------------------------------------------------------
+
+    def _transcript_path_for(self, journal_path: str) -> str:
+        path = Path(journal_path)
+        return str(path.parent / (path.stem + ".transcript.jsonl"))
+
+    def _load_latest_transcript_snapshot(self) -> None:
+        from orchlink.broker.storage.persistence import read_latest_snapshot
+
+        latest = read_latest_snapshot(self._transcript_path)
+        if latest is not None:
+            self._load_transcript_snapshot(latest)
 
     # ------------------------------------------------------------------
     # Snapshot capture / restore
@@ -249,6 +309,11 @@ class JsonlMessageStore(MemoryMessageStore):
             "sessions": {key: session_to_wire(value) for key, value in self._state.sessions.items()},
             "next_event_id": self._state.next_event_id,
             "next_activity_id": self._state.next_activity_id,
+            # NOTE: per G018, transcript state lives only in the adjacent
+            # ``.transcript.jsonl`` journal and never in the main broker
+            # snapshot. A replayed or partially-corrupt main snapshot must
+            # not resurrect transcript events the transcript journal has
+            # already dropped, compacted, or never recorded.
         }
 
     def _restore_snapshot(self, snapshot: dict[str, Any]) -> None:
@@ -391,6 +456,30 @@ class JsonlMessageStore(MemoryMessageStore):
         line = encode_jsonl_record(compact_record) + "\n"
         atomic_write_text(self.path, line)
         self._record_count = 1
+        self._maybe_compact_transcript_locked()
+
+    def _maybe_compact_transcript_locked(self) -> None:
+        """Compact the transcript journal similarly to the main journal."""
+        if not self._transcript_path:
+            return
+        try:
+            from orchlink.broker.storage.persistence import atomic_write_text, encode_jsonl_record, count_complete_jsonl_lines
+
+            file_size = Path(self._transcript_path).stat().st_size
+            record_count = count_complete_jsonl_lines(self._transcript_path)
+            if file_size < self._max_bytes and record_count < self._max_records:
+                return
+            snapshot = self._snapshot_transcripts()
+            compact_record = {
+                "time": self._now(),
+                "operation": "_compact_transcript",
+                "request": {},
+                "result": {"compacted_from": record_count, "compacted_size": file_size},
+                "snapshot": snapshot,
+            }
+            atomic_write_text(self._transcript_path, encode_jsonl_record(compact_record) + "\n")
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Transcript JSONL compaction failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Recorded mutation envelope
@@ -809,4 +898,56 @@ class JsonlMessageStore(MemoryMessageStore):
             "list_sessions",
             {"project_id": project_id, "active": active},
             _call,
+        )
+
+    # ------------------------------------------------------------------
+    # Transcript overrides (G018)
+    # ------------------------------------------------------------------
+
+    async def append_transcript_batch(
+        self,
+        batch: Any,
+        task_id: str,
+        project_id: str,
+        agent_id: str,
+        session_lease_id: str | None = None,
+        lease_epoch: int | None = None,
+        lease_holder: str | None = None,
+    ) -> dict[str, Any]:
+        from orchlink.core.models import TranscriptBatch
+
+        if isinstance(batch, dict):
+            batch = TranscriptBatch.from_wire(batch)
+        async with self._lock:
+            self._expire_timed_out_messages_locked()
+            return self._transcript_store.append_transcript_batch_locked(
+                batch,
+                task_id,
+                project_id,
+                agent_id,
+                session_lease_id=session_lease_id,
+                lease_epoch=lease_epoch,
+                lease_holder=lease_holder,
+            )
+
+    async def read_transcript_events(
+        self,
+        task_id: str,
+        project_id: str,
+        after: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        async with self._lock:
+            return self._transcript_store.read_transcript_events_locked(task_id, project_id, after=after, limit=limit)
+
+    async def wait_transcript_events(
+        self,
+        task_id: str,
+        project_id: str,
+        after: int = 0,
+        limit: int = 100,
+        wait_seconds: int = 0,
+    ) -> dict[str, Any]:
+        return await self._transcript_store.wait_transcript_events(
+            task_id, project_id, after=after, limit=limit, wait_seconds=wait_seconds
         )

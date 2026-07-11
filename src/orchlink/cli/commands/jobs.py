@@ -95,9 +95,9 @@ def _print_conversation_turns(config: dict[str, Any], conversation_id: str) -> N
 
 
 def _print_task_body(body: dict[str, Any]) -> None:
-    from orchlink.cli.commands.ask import _print_task_body as _ask_version
+    from orchlink.cli.commands.tasks import _print_task_body as _tasks_version
 
-    _ask_version(body)
+    _tasks_version(body)
 
 
 def worker_name_for_job(config: dict[str, Any], job: dict[str, Any]) -> str:

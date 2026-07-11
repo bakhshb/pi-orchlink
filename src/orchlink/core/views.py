@@ -422,6 +422,21 @@ def activity_record_to_wire(activity: ActivityRecord) -> dict[str, Any]:
     }
 
 
+def transcript_event_to_wire(event: Any) -> dict[str, Any]:
+    """Serialize a transcript event without reaching into domain internals."""
+    return {
+        "seq": event.seq,
+        "time": event.time,
+        "project_id": event.project_id,
+        "task_id": event.task_id,
+        "agent_id": event.agent_id,
+        "worker_name": event.worker_name,
+        "kind": event.kind,
+        "text": event.text,
+        "tool_name": event.tool_name,
+    }
+
+
 def message_input_to_wire(message: Any) -> dict[str, Any]:
     """Coerce a message boundary value into the broker wire dict shape."""
     from orchlink.core.envelope import MessageEnvelope

@@ -8,16 +8,16 @@ from __future__ import annotations
 
 import typer
 
-from orchlink.cli.commands import ask, broker, diagnose, init, jobs, lead, talk, update
+from orchlink.cli.commands import broker, diagnose, init, jobs, lead, talk, tasks, update
 
-ALL_MODULES = (init, lead, talk, ask, jobs, diagnose, update, broker)
+ALL_MODULES = (init, lead, talk, tasks, jobs, diagnose, update, broker)
 
 
 def register_all(app: typer.Typer) -> None:
     """Register every command group's commands on ``app`` in their original order."""
     init.register_init(app)
     lead.register_lead(app)
-    ask.register_ask(app)
+    tasks.register_send(app)
     jobs.register_jobs(app)
     talk.register_talk(app)
     diagnose.register_diagnose(app)
@@ -27,7 +27,6 @@ def register_all(app: typer.Typer) -> None:
 
 __all__ = [
     "ALL_MODULES",
-    "ask",
     "broker",
     "diagnose",
     "init",
@@ -35,5 +34,6 @@ __all__ = [
     "lead",
     "register_all",
     "talk",
+    "tasks",
     "update",
 ]

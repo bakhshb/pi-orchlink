@@ -7,9 +7,12 @@ store dictionaries.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict
+if TYPE_CHECKING:
+    from orchlink.core.models import TranscriptBatch
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from orchlink.core.models import SessionAcquire, SessionHeartbeat, SessionRelease, WorkerActivityInput
 from orchlink.core.views import (
@@ -115,6 +118,33 @@ class ActivityBody(BrokerBody):
         return worker_activity_from_wire(self.to_store_dict())
 
 
+class TranscriptEventBody(BrokerBody):
+    kind: str | None = "assistant_delta"
+    text: str | None = None
+    tool_name: str | None = None
+
+
+class TranscriptBatchBody(BrokerBody):
+    project_id: str | None = None
+    task_id: str | None = None
+    agent_id: str | None = None
+    worker_name: str | None = None
+    batch_id: str | None = None
+    events: list[TranscriptEventBody] = Field(default_factory=list)
+
+    def to_command(self) -> "TranscriptBatch":
+        from orchlink.core.models import TranscriptBatch
+
+        return TranscriptBatch(
+            project_id=str(self.project_id or "default"),
+            task_id=str(self.task_id or ""),
+            agent_id=str(self.agent_id) if self.agent_id is not None else None,
+            worker_name=str(self.worker_name) if self.worker_name is not None else None,
+            batch_id=str(self.batch_id or ""),
+            events=[event.model_dump(exclude_none=True) for event in self.events],
+        )
+
+
 class JournalAppendBody(BrokerBody):
     project_id: str | None = None
     actor: str | None = None
@@ -137,4 +167,6 @@ __all__ = [
     "SessionAcquireBody",
     "SessionHeartbeatBody",
     "SessionReleaseBody",
+    "TranscriptBatchBody",
+    "TranscriptEventBody",
 ]

@@ -16,11 +16,11 @@ Human daily commands:
 - `orch loop ...` exposes Loop Mode state and foreground loop execution.
 - `orch stop` stops tracked background workers and, only when safe, broker processes.
 - `orch update` updates Orchlink. Treat it as a human/operator command unless the human asks you to update.
+- `/orchlink` runs inside the visible lead Pi TUI. It opens the enlarged worker panel; Enter or `f` follows the selected worker, Up/Down and Page keys scroll, End resumes live output, Tab switches workers, Escape returns to the list, and `q` closes without cancelling work.
 
 Lead coordination commands:
 
-- `orch ask work --wait -t T001 -m "..."` sends a blocking task to `work`. Replace `work` with `review` or `bg-test` when intentionally targeting that worker. Use it for short reviews, decisions, blockers, and discussion that changes your next safe action.
-- `orch send work -t T002 -m "..."` sends async work to one named worker. Prefer it for long/heavy implementation, broad review, tests, or research when you can safely work on a different scope while Pi works.
+- `orch send work -t T002 -m "..."` sends async work to one named worker by default. Add `--wait` for a short review, decision, blocker, or discussion that gates your next safe action. Prefer the async default for long/heavy implementation, broad review, tests, or research when you can safely work on a different scope.
 - `orch jobs --active` shows currently active task and Talk jobs.
 - `orch jobs --idle` is the safety gate. Exit code `0` means no active/blocking worker work; exit code `1` means wait, inspect, or cancel before dependent work.
 - `orch jobs --live T002` shows recent worker activity for a long-running task or Talk conversation.
@@ -41,8 +41,7 @@ This inventory is here so the lead can recognize every top-level `orch` command 
 | `orch lead` | Start/reopen the visible Pi lead session. |
 | `orch work` | Start/reopen a visible or background named Pi worker. |
 | `orch stop` | Stop tracked background workers and, only when safe, broker processes. |
-| `orch ask` | Send blocking worker tasks for reviews, decisions, blockers, or short discussion. |
-| `orch send` | Dispatch async worker tasks when the lead can stay responsive on another scope. |
+| `orch send` | Submit worker tasks asynchronously by default or block with `--wait`. |
 | `orch jobs` | Inspect and control task/Talk jobs: list, active, idle, live, result, wait, cancel. |
 | `orch sessions` | Show lead/worker sessions, runtime, readiness, and lease heartbeat. |
 | `orch talk` | Start Talk Mode with a worker. |
@@ -85,30 +84,30 @@ If `orch work --background` fails, inspect `.orch/run/orch-work.log` (or `.orch/
 
 ## Choosing the right command
 
-1. Need a short review, decision, critique, plan, or blocker answer before you continue safely? Use `orch ask work --wait` or target a specific named worker, e.g. `orch ask review --wait`.
-2. Need long/heavy implementation, broad review, tests, or research while you can work on a separate scope? Use `orch send <name>` like spawn: start it, record the task ID, stay responsive, and keep ownership until you read the exact result with `orch jobs --result` or report it pending. Use `orch jobs --wait` only when that result now blocks your next safe action. Do not use `orch ask --wait` for heavy implementation just to start work.
+1. Need a short review, decision, critique, plan, or blocker answer before you continue safely? Use `orch send work --wait` or target a specific named worker, e.g. `orch send review --wait`.
+2. Need long/heavy implementation, broad review, tests, or research while you can work on a separate scope? Use async `orch send <name>` like spawn: start it, record the task ID, stay responsive, and keep ownership until you read the exact result with `orch jobs --result` or report it pending. Use `orch jobs --wait` only when that result now blocks your next safe action. Do not use `orch send --wait` for heavy implementation just to start work.
 3. Need short peer discussion in a visible lead/work chat? Use Talk Mode: `orch talk`, `orch say`, `orch close`.
 4. Need to know whether it is safe to continue? Use `orch jobs --idle`.
 5. Need to inspect what is active? Use `orch jobs --active`.
 6. Need final output? Prefer `orch jobs --result T002` once terminal; use `orch jobs --wait T002` only if you must block now. Do not rely on the plain jobs list as the result.
 7. Need debug internals? Use `orch broker status`, `orch broker watch`, or `orch broker run` only after normal commands are insufficient.
 
-## Blocking tasks with `ask`
+## Blocking tasks with `send --wait`
 
-Use `ask --wait` for short gate questions where the worker answer can change your next safe action. Do not use it to make long/heavy work synchronous.
+Use `send --wait` for short gate questions where the worker answer can change your next safe action. Do not use it to make long/heavy work synchronous.
 
 ```bash
-orch ask work --wait -t TREV001 -m "Please review my staged parser change. Inspect parser.py and tests/test_parser.py only; do not edit. You may run python3 -m pytest tests/test_parser.py -v. Reply with verdict, risks, files inspected, tests run, and whether I can proceed."
+orch send work --wait -t TREV001 -m "Please review my staged parser change. Inspect parser.py and tests/test_parser.py only; do not edit. You may run python3 -m pytest tests/test_parser.py -v. Reply with verdict, risks, files inspected, tests run, and whether I can proceed."
 ```
 
 For long prompts or text containing backticks, `$VARS`, or quotes, prefer editor or file input:
 
 ```bash
-orch ask work --wait -t TREV001 --edit
-orch ask work --wait -t TREV001 --message-file .orch/prompts/review.md
+orch send work --wait -t TREV001 --edit
+orch send work --wait -t TREV001 --message-file .orch/prompts/review.md
 ```
 
-Do not proceed past a review gate until the exact task result returns. Do not use `ask --wait` for long/heavy implementation tasks that you could dispatch with `send` and check later.
+Do not proceed past a review gate until the exact task result returns. Do not use `send --wait` for long/heavy implementation tasks that you could dispatch asynchronously and check later.
 
 ## Async work with `send`
 
@@ -136,7 +135,7 @@ Rules:
 - Do not send a dependent task while another task or Talk conversation is active.
 - If you no longer need active work, cancel it before assigning new work.
 - Do not stop visible worker terminals from the lead. Stop only tracked background workers; a visible worker should be stopped by the human in its own terminal with Ctrl-C.
-- Do not use async REVIEW as a gate. If a review is unrelated and truly non-blocking, use `orch send --allow-async-review`, then verify the exact result with `orch jobs --result TREV001` or `orch jobs --wait TREV001` before using it.
+- Reviews may start asynchronously. Continue only independent work, then read the exact result with `orch jobs --result TREV001` or block with `orch jobs --wait TREV001` before any dependent action.
 
 ## Task prompt shape
 
@@ -167,7 +166,7 @@ If the worker returns `BLOCKER` or asks a direct question, answer it before movi
 
 ## Reading results safely
 
-For blocking work, read the `orch ask --wait` output.
+For blocking work, read the `orch send --wait` output.
 
 For async work, prefer reading the exact result when it is ready:
 
@@ -183,7 +182,7 @@ Trust only the exact task ID in the current project. Orchlink refuses cross-proj
 
 ## Talk Mode
 
-For an external lead agent, prefer `orch ask --wait` for discussion because the reply prints in the terminal.
+For an external lead agent, prefer `orch send --wait` for discussion because the reply prints in the terminal.
 
 Use Talk Mode only when a visible lead Pi session is running or the human explicitly wants a lead/work chat transcript.
 

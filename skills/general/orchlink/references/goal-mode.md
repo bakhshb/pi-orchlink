@@ -108,7 +108,7 @@ When dispatching goal-related worker work:
 
 - Split scopes clearly: lead owns one slice, worker owns another.
 - Include the goal ID, relevant AC IDs, allowed files, forbidden files, and checks the worker may run.
-- Use `orch ask --wait` for review gates, architecture decisions, blockers, or anything that can change the next step.
+- Use `orch send --wait` for review gates, architecture decisions, blockers, or anything that can change the next step.
 - Use `orch send` only for independent implementation or verification slices while the lead can work elsewhere.
 - After async dispatch, use `orch jobs --active` and `orch jobs --live <task_id>` for progress; do not blind-wait with timeout loops.
 - Reconcile worker evidence before marking an AC verified. Do not accept worker output blindly.

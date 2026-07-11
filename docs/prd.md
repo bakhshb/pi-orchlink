@@ -181,7 +181,7 @@ Humans should be able to use Orchlink without learning broker API details.
 Lead agents use these to coordinate with worker:
 
 ```bash
-orch ask work --wait -t T001 -m "Please review ..."
+orch send work --wait -t T001 -m "Please review ..."
 orch send work -t T002 -m "Implement ..."
 orch talk work -m "one short question" -r 6
 orch say C001 -m "follow-up"
@@ -195,8 +195,8 @@ orch jobs --cancel T002 -m "reason"
 
 Rules:
 
-- `ask --wait` is for short synchronous decisions and review gates.
-- `send` is the default for long/heavy implementation, broad review, tests, or research when lead can work on a different scope.
+- `send --wait` is for short synchronous decisions and review gates.
+- Async `send` is the default for long/heavy implementation, broad review, tests, or research when lead can work on a different scope.
 - `talk` is for visible discussion, not automation glue.
 - `jobs --result` reads completed async output; `jobs --wait` should be used only when the result now blocks the next safe action.
 - `jobs --idle` is a safety check before dependent tests, final conclusions, or new worker assignment.
@@ -269,7 +269,7 @@ Expected behavior:
 ### 7.3 Delegate a blocking review
 
 ```bash
-orch ask work --wait -t T001 -m "Review the plan. Reply with verdict, risks, files inspected, tests run."
+orch send work --wait -t T001 -m "Review the plan. Reply with verdict, risks, files inspected, tests run."
 ```
 
 Expected behavior:
@@ -293,7 +293,25 @@ Expected behavior:
 - lead may continue only on a separate scope
 - lead must reconcile the worker result before dependent final steps
 
-### 7.5 Talk Mode
+### 7.5 Follow background workers in the lead Pi
+
+The lead Pi exposes `/orchlink` as a read-only TUI overlay. It shows a compact worker list, then follows visible assistant output for a selected active task.
+
+Requirements:
+
+- use 92% terminal width, a 60-column minimum when possible, 88% maximum height, and at least a 36-line component budget
+- Enter or `f` follows the selected worker
+- the mouse wheel scrolls inside an overflowing transcript and is released when the panel closes
+- Up/Down scroll one line; Page Up/Page Down scroll one page
+- manual scrolling pauses auto-scroll; End jumps to the latest event and resumes live mode
+- Tab/Shift-Tab switch active workers while preserving task-specific transcript cursors and scroll positions; unavailable controls are hidden
+- Escape returns to the list; `q` closes the overlay without cancelling work
+- persist bounded transcript events separately from broker message snapshots
+- render visible assistant output with Pi's Markdown theme and syntax-highlighted code blocks
+- display only visible assistant text plus bounded status/tool summaries; exclude thinking, unknown stream events, provider data, secrets, and raw tool output
+- abort stale long polls on worker switch, list return, panel close, and Pi shutdown
+
+### 7.6 Talk Mode
 
 ```bash
 orch talk work -m "Should we keep this behavior simple or split it into a new command?" -r 3
@@ -425,10 +443,10 @@ Modes are product behavior, not only prompt text.
 | Mode | Purpose | Edits allowed? | Typical command |
 | --- | --- | --- | --- |
 | TALK | visible discussion, challenge, tradeoff, decision | no | `orch talk`, `orch say`, `orch close` |
-| DISCUSS | reason and recommend inside a task envelope | no | `orch ask/send` |
-| PLAN | inspect if useful, then propose | no | `orch ask/send` |
-| REVIEW | inspect and gate next step | no, unless explicitly allowed | `orch ask --wait` |
-| DO | implement scoped work | yes, only inside scope | `orch send` or `orch ask --wait` |
+| DISCUSS | reason and recommend inside a task envelope | no | `orch send` |
+| PLAN | inspect if useful, then propose | no | `orch send` |
+| REVIEW | inspect and gate next step | no, unless explicitly allowed | `orch send --wait` |
+| DO | implement scoped work | yes, only inside scope | `orch send` |
 
 Mode requirements:
 
@@ -444,7 +462,7 @@ Mode requirements:
 ```text
 Typer CLI
   ├─ human commands: init/lead/work/doctor/jobs/stop/update
-  ├─ agent coordination commands: ask/send/talk/say/close/wait/get/idle/peek/cancel
+  ├─ agent coordination commands: send/talk/say/close/wait/get/idle/peek/cancel
   └─ debug/reference commands: status/watch/task/broker run
 
 Project config
@@ -669,8 +687,8 @@ Lead skill must teach:
 - coordinate with worker, do not merely delegate
 - keep scopes separate
 - distinguish human daily, agent coordination, and debug commands
-- use `ask --wait` for gates
-- use `send` only for independent async work
+- use `send --wait` for gates
+- use async `send` only for independent work
 - use Talk for discussion
 - use `idle` before dependent final steps or another assignment
 - do not stack worker tasks
@@ -735,13 +753,9 @@ Updates the installed package and tells the user to refresh skills/restart sessi
 
 ### Agent coordination commands
 
-#### `orch ask`
-
-Sends work and waits by default. Primary command for review gates and synchronous decisions.
-
 #### `orch send`
 
-Sends async work. Must block REVIEW unless explicitly allowed as non-gating async review.
+Canonical task command. Sends asynchronously by default and blocks with `--wait`. Reviews may start asynchronously; the lead must reconcile the result before crossing any dependent gate.
 
 #### `orch talk`, `orch say`, `orch close`
 
@@ -797,7 +811,7 @@ Orchlink is acceptable for v1 when:
 3. Broker auto-start works for normal commands.
 4. Lead and worker register and maintain session leases.
 5. Named worker offline is detected when peer sessions are required.
-6. `orch ask --wait` completes a request/reply loop.
+6. `orch send --wait` completes a blocking request/reply loop.
 7. `orch send` supports async work without stacking worker work.
 8. `orch talk/say/close` supports visible Talk conversations.
 9. `orch jobs` is the main current-project work browser.
@@ -841,7 +855,6 @@ Orchlink is acceptable for v1 when:
 
 - multiple workers
 - reviewer role
-- full transcript command
 - richer activity views
 - remote broker mode
 - web dashboard

@@ -16,11 +16,11 @@ Human daily commands:
 - `orch loop ...` exposes Loop Mode state and foreground loop execution.
 - `orch stop` stops tracked background workers and, only when safe, broker processes.
 - `orch update` updates Orchlink. Treat it as a human/operator command unless the human asks you to update.
+- `/orchlink` runs inside the visible lead Pi TUI. It opens the enlarged worker panel; Enter or `f` follows the selected worker, Up/Down and Page keys scroll, End resumes live output, Tab switches workers, Escape returns to the list, and `q` closes without cancelling work.
 
 Lead coordination commands:
 
-- `orch ask work --wait -t T001 -m "..."` sends a blocking task to a named worker (`work` by default; e.g. `orch ask review ...`). Use it for short reviews, decisions, discussions, and any answer that changes your next safe action. Use `--edit` or `--message-file` for long/shell-sensitive prompts. Add `--thinking` only when one task needs an explicit thinking override. `orch ask --no-wait` exists, but prefer `orch send` for async work so intent is obvious.
-- `orch send work -t T002 -m "..."` sends async work to one named worker. Prefer it for long/heavy implementation, broad review, tests, or research when you can safely work on a different scope while Pi works. Different worker names can run independent tasks; the same name remains single-flight. Use `--edit` or `--message-file` for long/shell-sensitive prompts. Add `--thinking` only when one task needs an explicit thinking override.
+- `orch send work -t T002 -m "..."` sends async work to one named worker by default. Add `--wait` for a short review, decision, blocker, or other answer that gates your next safe action. Prefer the async default for long/heavy implementation, broad review, tests, or research when you can safely work on a different scope. Different worker names can run independent tasks; the same name remains single-flight. Use `--edit` or `--message-file` for long/shell-sensitive prompts. Add `--thinking` only when one task needs an explicit thinking override.
 - `orch jobs --active` shows currently active task and Talk jobs.
 - `orch jobs --idle` is the safety gate. Run it before dependent tests, final conclusions, or assigning more worker work.
 - `orch jobs --live T002` shows recent worker activity for long-running work. It does not return the final result.
@@ -49,8 +49,7 @@ This inventory is here so the lead can recognize every top-level `orch` command 
 | `orch lead` | Start/reopen the visible Pi lead session. |
 | `orch work` | Start/reopen a visible or background named Pi worker. |
 | `orch stop` | Stop tracked background workers and, only when safe, broker processes. |
-| `orch ask` | Send blocking worker tasks for reviews, decisions, blockers, or short discussion. |
-| `orch send` | Dispatch async worker tasks when the lead can stay responsive on another scope. |
+| `orch send` | Submit worker tasks asynchronously by default or block with `--wait`. |
 | `orch jobs` | Inspect and control task/Talk jobs: list, active, idle, live, result, wait, cancel. |
 | `orch sessions` | Show lead/worker sessions, runtime, readiness, and lease heartbeat. |
 | `orch talk` | Start Talk Mode with a worker. |
@@ -101,22 +100,22 @@ orch lead --new
 orch work --new
 ```
 
-## Blocking tasks with `ask`
+## Blocking tasks with `send --wait`
 
-Use `ask --wait` for short gate questions where the worker answer can change your next safe action. Do not use it to make long/heavy work synchronous.
+Use `send --wait` for short gate questions where the worker answer can change your next safe action. Do not use it to make long/heavy work synchronous.
 
 ```bash
-orch ask work --wait -t TREV001 -m "Please review my staged parser change. Inspect parser.py and tests/test_parser.py only; do not edit. You may run python3 -m pytest tests/test_parser.py -v. Reply with verdict, risks, files inspected, tests run, and whether I can proceed."
+orch send work --wait -t TREV001 -m "Please review my staged parser change. Inspect parser.py and tests/test_parser.py only; do not edit. You may run python3 -m pytest tests/test_parser.py -v. Reply with verdict, risks, files inspected, tests run, and whether I can proceed."
 ```
 
 For long prompts or text containing backticks, `$VARS`, or quotes, prefer editor or file input:
 
 ```bash
-orch ask work --wait -t TREV001 --edit
-orch ask work --wait -t TREV001 --message-file .orch/prompts/review.md
+orch send work --wait -t TREV001 --edit
+orch send work --wait -t TREV001 --message-file .orch/prompts/review.md
 ```
 
-Do not proceed past a review gate until the exact task result returns. Do not use `ask --wait` for long/heavy implementation tasks that you could dispatch with `send` and check later.
+Do not proceed past a review gate until the exact task result returns. Do not use `send --wait` for long/heavy implementation tasks that you could dispatch asynchronously and check later.
 
 ## Async work with `send`
 
@@ -151,11 +150,11 @@ Rules:
 - Do not send a dependent task while another task or Talk conversation is active.
 - If you no longer need active work, cancel it before assigning new work.
 - Do not stop visible worker terminals from the lead. Stop only tracked background workers; a visible worker should be stopped by the human in its own terminal with Ctrl-C.
-- Do not use async REVIEW as a gate. If a review is unrelated and truly non-blocking, use `orch send --allow-async-review`, then verify the exact result with `orch jobs --result TREV001` or `orch jobs --wait TREV001` before using it.
+- Reviews may start asynchronously. Continue only independent work, then read the exact result with `orch jobs --result TREV001` or block with `orch jobs --wait TREV001` before any dependent action.
 
 ## Reading results safely
 
-For blocking work, read the worker reply injected into the lead chat or the exact `orch ask --wait` output if using an external shell.
+For blocking work, read the worker reply injected into the lead chat or the exact `orch send --wait` output if using an external shell.
 
 For async work, prefer reading the exact result when it is ready:
 

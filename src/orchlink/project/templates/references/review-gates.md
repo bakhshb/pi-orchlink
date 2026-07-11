@@ -9,7 +9,7 @@ Treat review requests as a gate when they can change your next action.
 Use:
 
 ```bash
-orch ask work --wait -t TREV001 -m "Please review ..."
+orch send work --wait -t TREV001 -m "Please review ..."
 ```
 
 Do not start dependent full tests, final summaries, packaging, release notes, or cleanup until the review result arrives.

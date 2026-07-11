@@ -19,7 +19,7 @@ These tests pin the next-slice contract that ``src`` must satisfy:
   stops dispatching (one worker call) instead of looping blindly.
 - ``orch goal show <id>`` prints an Evidence section and a Deferred section.
 
-All tests stay broker-free by monkeypatching ``orchlink.goal.runner.ask_worker_sync``;
+All tests stay broker-free by monkeypatching ``orchlink.goal.runner.send_worker_sync``;
 objective ``check`` commands run as real local subprocesses against temp check scripts.
 """
 
@@ -219,7 +219,7 @@ def test_goal_work_refuses_new_dispatch_when_active_task_exists(tmp_path, monkey
     def fail_dispatch(**kwargs):
         raise AssertionError("must not dispatch while active_task_id is set")
 
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", fail_dispatch)
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", fail_dispatch)
 
     first = runner.invoke(cli_main.app, ["goal", "work", "G001", "--max-steps", "2"])
     second = runner.invoke(cli_main.app, ["goal", "work", "G001", "--max-steps", "2"])
@@ -245,12 +245,12 @@ def test_goal_work_marks_done_when_single_core_ac_check_passes(tmp_path, monkeyp
 
     seen = []
 
-    def fake_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         seen.append(kwargs["task_id"])
         assert "Do not claim the whole goal is done" in kwargs["message"]
         return _result_reply(kwargs["task_id"])
 
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", fake_ask_worker_sync)
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", fake_send_worker_sync)
 
     result = runner.invoke(cli_main.app, ["goal", "work", "G001", "--max-steps", "1"])
 
@@ -269,7 +269,7 @@ def test_goal_work_blocks_when_no_objective_checks_exist(tmp_path, monkeypatch):
     _create_ready_goal(tmp_path)
 
     monkeypatch.setattr(
-        "orchlink.goal.runner.ask_worker_sync",
+        "orchlink.goal.runner.send_worker_sync",
         lambda **kwargs: _result_reply(kwargs["task_id"]),
     )
 
@@ -289,11 +289,11 @@ def test_goal_work_core_check_failure_marks_failed_not_deferred(tmp_path, monkey
 
     calls = []
 
-    def fake_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         calls.append(kwargs["task_id"])
         return _result_reply(kwargs["task_id"], summary="attempted")
 
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", fake_ask_worker_sync)
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", fake_send_worker_sync)
 
     result = runner.invoke(cli_main.app, ["goal", "work", "G001", "--max-steps", "1"])
 
@@ -322,11 +322,11 @@ def test_goal_work_verifies_only_unblocked_core_acs_in_dependency_order(tmp_path
 
     calls = []
 
-    def fake_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         calls.append(kwargs["task_id"])
         return _result_reply(kwargs["task_id"])
 
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", fake_ask_worker_sync)
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", fake_send_worker_sync)
 
     result = runner.invoke(cli_main.app, ["goal", "work", "G001", "--max-steps", "5"])
 
@@ -357,11 +357,11 @@ def test_goal_work_defers_noncore_and_does_not_block_goal(tmp_path, monkeypatch)
 
     calls = []
 
-    def fake_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         calls.append(kwargs["task_id"])
         return _result_reply(kwargs["task_id"])
 
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", fake_ask_worker_sync)
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", fake_send_worker_sync)
 
     result = runner.invoke(cli_main.app, ["goal", "work", "G001", "--max-steps", "2"])
 
@@ -388,11 +388,11 @@ def test_goal_work_worker_blocker_reply_stops_and_marks_blocked(tmp_path, monkey
 
     calls = []
 
-    def fake_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         calls.append(kwargs["task_id"])
         return _blocker_reply(kwargs["task_id"], summary="need decision on archived records")
 
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", fake_ask_worker_sync)
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", fake_send_worker_sync)
 
     result = runner.invoke(cli_main.app, ["goal", "work", "G001", "--max-steps", "3"])
 
@@ -422,7 +422,7 @@ def test_goal_show_includes_evidence_and_deferred_summary(tmp_path, monkeypatch)
     )
 
     monkeypatch.setattr(
-        "orchlink.goal.runner.ask_worker_sync",
+        "orchlink.goal.runner.send_worker_sync",
         lambda **kwargs: _result_reply(kwargs["task_id"]),
     )
     runner.invoke(cli_main.app, ["goal", "work", "G001", "--max-steps", "2"])
@@ -445,12 +445,12 @@ def test_goal_derive_command_dispatches_worker_and_writes_artifacts(tmp_path, mo
 
     calls = []
 
-    def fake_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         calls.append(kwargs["task_id"])
         assert "acceptance criteria" in kwargs["message"].lower()
         return _derive_reply(kwargs["task_id"])
 
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", fake_ask_worker_sync)
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", fake_send_worker_sync)
 
     result = runner.invoke(cli_main.app, ["goal", "derive", "G001"])
 
@@ -470,11 +470,11 @@ def test_goal_start_derive_flag_derives_after_create(tmp_path, monkeypatch):
     _init(tmp_path, monkeypatch)
     calls = []
 
-    def fake_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         calls.append(kwargs["task_id"])
         return _derive_reply(kwargs["task_id"])
 
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", fake_ask_worker_sync)
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", fake_send_worker_sync)
 
     result = runner.invoke(cli_main.app, ["goal", "start", "Build", "--text", "Build CSV export", "--derive"])
 
@@ -491,7 +491,7 @@ def test_goal_derive_parses_nested_acceptance_yaml_from_summary(tmp_path, monkey
     _init(tmp_path, monkeypatch)
     (tmp_path / "prd.md").write_text("Build CSV export", encoding="utf-8")
     assert runner.invoke(cli_main.app, ["goal", "start", "Build", "--prd", "prd.md"]).exit_code == 0
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", lambda **kwargs: _nested_derivation_reply(kwargs["task_id"]))
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", lambda **kwargs: _nested_derivation_reply(kwargs["task_id"]))
 
     result = runner.invoke(cli_main.app, ["goal", "derive", "G001"])
 
@@ -514,7 +514,7 @@ def test_goal_work_until_done_flag_is_accepted_and_still_capped(tmp_path, monkey
 
     calls = []
     monkeypatch.setattr(
-        "orchlink.goal.runner.ask_worker_sync",
+        "orchlink.goal.runner.send_worker_sync",
         lambda **kwargs: (calls.append(kwargs["task_id"]), _result_reply(kwargs["task_id"], "attempted"))[1],
     )
 
@@ -534,7 +534,7 @@ def test_goal_work_records_typed_blocker_in_state_and_history(tmp_path, monkeypa
 
     calls = []
     monkeypatch.setattr(
-        "orchlink.goal.runner.ask_worker_sync",
+        "orchlink.goal.runner.send_worker_sync",
         lambda **kwargs: (calls.append(kwargs["task_id"]), _typed_blocker_reply(kwargs["task_id"], btype="decision"))[1],
     )
 
@@ -566,7 +566,7 @@ def test_goal_work_batches_core_subjective_for_signoff_after_objective_core_pass
 
     calls = []
     monkeypatch.setattr(
-        "orchlink.goal.runner.ask_worker_sync",
+        "orchlink.goal.runner.send_worker_sync",
         lambda **kwargs: (calls.append(kwargs["task_id"]), _result_reply(kwargs["task_id"]))[1],
     )
 
@@ -598,7 +598,7 @@ def test_goal_signoff_command_approves_subjective_ac_and_completes_goal(tmp_path
         ],
     )
     monkeypatch.setattr(
-        "orchlink.goal.runner.ask_worker_sync",
+        "orchlink.goal.runner.send_worker_sync",
         lambda **kwargs: _result_reply(kwargs["task_id"]),
     )
     assert runner.invoke(cli_main.app, ["goal", "work", "G001", "--max-steps", "3"]).exit_code == 0
@@ -665,7 +665,7 @@ def test_goal_derive_writes_optional_coverage_artifact(tmp_path, monkeypatch):
 
     calls = []
     monkeypatch.setattr(
-        "orchlink.goal.runner.ask_worker_sync",
+        "orchlink.goal.runner.send_worker_sync",
         lambda **kwargs: (calls.append(kwargs["task_id"]), _derive_reply_with_coverage(kwargs["task_id"]))[1],
     )
 
@@ -716,7 +716,7 @@ def test_goal_audit_dispatches_worker_records_audit_and_does_not_mark_done(tmp_p
 
     calls = []
     monkeypatch.setattr(
-        "orchlink.goal.runner.ask_worker_sync",
+        "orchlink.goal.runner.send_worker_sync",
         lambda **kwargs: (calls.append(kwargs["task_id"]), _audit_reply(kwargs["task_id"]))[1],
     )
 
@@ -740,13 +740,13 @@ def test_goal_audit_preserves_done_status(tmp_path, monkeypatch):
     _create_ready_goal(tmp_path)
     _write_check(tmp_path, "check_ok.py", 0)
     _write_acceptance(tmp_path, [_ac("AC-1", "CSV export works", check="python3 check_ok.py")])
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", lambda **kwargs: _result_reply(kwargs["task_id"]))
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", lambda **kwargs: _result_reply(kwargs["task_id"]))
     assert runner.invoke(cli_main.app, ["goal", "work", "G001", "--max-steps", "1"]).exit_code == 0
     assert _goal(tmp_path)["status"] == "done"
 
     calls = []
     monkeypatch.setattr(
-        "orchlink.goal.runner.ask_worker_sync",
+        "orchlink.goal.runner.send_worker_sync",
         lambda **kwargs: (calls.append(kwargs["task_id"]), _audit_reply(kwargs["task_id"]))[1],
     )
 

@@ -1,6 +1,6 @@
 ---
 name: orchlink
-description: "Use when Hermes is the Orchlink lead for local named Pi workers (`work`, `review`, `bg-test`): coordinate ask/send/talk/goal tasks, review gates, jobs results, cancellation, and stale-state recovery. Must use whenever the user mentions Orchlink, orch commands, Pi workers, background/oneshot workers, review gates, stale sessions, or broker/session recovery."
+description: "Use when Hermes is the Orchlink lead for local named Pi workers (`work`, `review`, `bg-test`): coordinate send/talk/goal tasks, review gates, jobs results, cancellation, and stale-state recovery. Must use whenever the user mentions Orchlink, orch commands, Pi workers, background/oneshot workers, review gates, stale sessions, or broker/session recovery."
 version: 1.1.4
 platforms: [linux, macos, windows]
 metadata:
@@ -16,7 +16,7 @@ Hermes is the lead agent. Named Pi workers such as `work`, `review`, or `bg-test
 
 Treat Orchlink as one local lead/work loop, not as a workflow engine or agent platform. Use terminal commands when available. If Hermes has no terminal access, tell the human the exact `orch ...` command to run and what output to return.
 
-Do not substitute Hermes-native subagents or other Hermes delegation for named Pi workers. Orchlink's own `orch work --background` and `orch work --background --name ...` are the approved background workers; Hermes-native background sessions are not. If the human asks for Orchlink, work must flow through `orch work` plus `orch ask`/`orch send`; otherwise stop and ask whether a non-Orchlink substitute is acceptable.
+Do not substitute Hermes-native subagents or other Hermes delegation for named Pi workers. Orchlink's own `orch work --background` and `orch work --background --name ...` are the approved background workers; Hermes-native background sessions are not. If the human asks for Orchlink, work must flow through `orch work`, `orch send`, and `orch jobs`; otherwise stop and ask whether a non-Orchlink substitute is acceptable.
 
 As an external agent, do not run plain `orch work` yourself; it opens an interactive Pi chat and blocks until the session ends. Use `orch work --background` for a persistent default worker, `orch work --background --new --replace --oneshot` for a fresh task-scoped worker, or `orch work --background --name bg-test --new`/`--test` for isolated background testing while a visible worker is already open.
 
@@ -24,7 +24,7 @@ As an external agent, do not run plain `orch work` yourself; it opens an interac
 
 Load bundled references only when the task needs that detail:
 
-- `references/core.md` — read before non-trivial Orchlink coordination: startup checks, command choice, ask/send/jobs, Talk Mode, prompt shape, and worker replies.
+- `references/core.md` — read before non-trivial Orchlink coordination: startup checks, task submission, jobs, Talk Mode, prompt shape, and worker replies.
 - `references/goal-mode.md` — read before using `orch goal ...` or advising on PRD/plan-driven work.
 - `references/review-gates.md` — read before review gates or expensive test/release steps.
 - `references/recovery.md` — read when sessions, broker state, cancellation, stale results, or debug output are involved.
@@ -59,13 +59,14 @@ Do not start `orch lead` by default. Hermes can act as lead through CLI commands
 
 ## Quick command chooser
 
-1. Need a short review, decision, critique, plan, or blocker answer before continuing safely? Use `orch ask work --wait` or target a specific active worker name such as `review`.
-2. Need long/heavy implementation, broad review, tests, or research? Prefer async `orch send <name>`. Record the task ID, continue only on non-conflicting lead-owned work, and keep ownership until you read the exact result with `orch jobs --result <task_id>` or report it pending. Use `orch jobs --wait <task_id>` only when the result now blocks your next safe action. Do not use `orch ask --wait` just to make heavy work synchronous; that blocks the lead and encourages rushed conclusions.
-3. Need PRD/plan-driven completion with acceptance criteria? Read `references/goal-mode.md`, then use `orch goal ...`.
-4. Need short peer discussion in a visible lead/work chat? Use Talk Mode.
-5. Need to know whether it is safe to continue? Use `orch jobs --idle`.
-6. Need active work details? Use `orch jobs --active`.
-7. Need final output? Prefer `orch jobs --result T002` once terminal; use `orch jobs --wait T002` only if you must block now. Do not rely on the plain jobs list as the result.
+1. Need a short review, decision, critique, plan, or blocker answer before continuing safely? Use `orch send <name> --wait`, targeting a specific active worker such as `review` when appropriate.
+2. Need long/heavy implementation, broad review, tests, or research? Prefer async `orch send <name>`. Record the task ID, continue only on non-conflicting lead-owned work, and keep ownership until you read the exact result with `orch jobs --result <task_id>` or report it pending. Use `orch jobs --wait <task_id>` only when the result now blocks your next safe action. Do not use `orch send --wait` just to make heavy work synchronous; that blocks the lead and encourages rushed conclusions.
+3. Human wants to watch background workers inside Pi? Tell them to run `/orchlink`, select a worker, and press Enter or `f` to follow visible output. The panel supports mouse-wheel and keyboard scrolling, End-to-live, and Tab switching when multiple active workers exist.
+4. Need PRD/plan-driven completion with acceptance criteria? Read `references/goal-mode.md`, then use `orch goal ...`.
+5. Need short peer discussion in a visible lead/work chat? Use Talk Mode.
+6. Need to know whether it is safe to continue? Use `orch jobs --idle`.
+7. Need active work details? Use `orch jobs --active`.
+8. Need final output? Prefer `orch jobs --result T002` once terminal; use `orch jobs --wait T002` only if you must block now. Do not rely on the plain jobs list as the result.
 
 ## Safety rules
 

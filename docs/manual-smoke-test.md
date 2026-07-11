@@ -37,7 +37,7 @@ orch broker watch --help
 orch broker run --help
 
 for cmd in \
-  init lead work ask send talk say close jobs sessions \
+  init lead work send talk say close jobs sessions \
   update stop doctor resume goal broker; do
   orch "$cmd" --help >/tmp/orch-help-$cmd.txt || exit 1
 done
@@ -49,8 +49,8 @@ Pass criteria:
 - Help text distinguishes human commands from debug/agent coordination commands where relevant.
 - `orch jobs --help` documents `--active`, `--idle`, `--live`, `--result`, `--wait`, `--cancel`, `--timeout`, `--no-progress`, `--poll-seconds`, `--status`, `--kind`, `--id`, and `--json`.
 - `orch work --help` documents `--model` and `--thinking`.
-- `orch ask --help`, `orch send --help`, `orch talk --help`, `orch say --help`, and `orch close --help` document clean long-message inputs (`--edit`, `--message-file`, and `-m -`) where applicable.
-- `orch ask --help`, `orch send --help`, `orch talk --help`, and `orch say --help` document per-task/per-turn `--thinking` overrides.
+- `orch send --help`, `orch talk --help`, `orch say --help`, and `orch close --help` document clean long-message inputs (`--edit`, `--message-file`, and `-m -`) where applicable; `send` also documents `--wait/--no-wait`.
+- `orch send --help`, `orch talk --help`, and `orch say --help` document per-task/per-turn `--thinking` overrides.
 - `orch goal --help` lists `start`, `list`, `derive`, `review`, `approve`, `gate`, `work`, `resume`, `show`, `audit`, `signoff`, `trial`, `trials`, and `cancel`.
 
 ## 2. Create a throwaway project
@@ -233,7 +233,7 @@ pi --list-models
 export ORCH_SMOKE_MODEL="provider/model-from-pi-list-models"
 orch work --background --name bg-test --new --model "$ORCH_SMOKE_MODEL" --thinking xhigh --timeout 45
 orch sessions --name bg-test
-orch ask bg-test --wait -t TASK-BG-TEST-001 --thinking low -m "Smoke test only. Reply exactly: bg-test-ok"
+orch send bg-test --wait -t TASK-BG-TEST-001 --thinking low -m "Smoke test only. Reply exactly: bg-test-ok"
 orch stop --name bg-test
 orch sessions --all --name bg-test
 ```
@@ -253,14 +253,38 @@ Pass criteria:
 - `orch stop --name bg-test` stops/releases only the named background worker.
 - The bad model command exits non-zero before starting a worker, prints `Pi model is not registered or available`, and lists available models when Pi can provide them.
 
+## 5b. Pi `/orchlink` follow panel
+
+Goal: prove the lead Pi can follow visible output from multiple background workers without affecting their tasks.
+
+1. Keep the visible lead Pi open.
+2. Start two named background workers and send each a task long enough to stream several visible messages.
+3. In the lead Pi, run `/orchlink`.
+4. Confirm the list shows one compact row per worker, then select an active worker and press Enter or `f`.
+5. Scroll inside the panel with the mouse wheel. Also test Up/Down for one-line scrolling and Page Up/Page Down for page scrolling. Confirm the header changes to `PAUSED`.
+6. Let more output arrive while paused, then press End and confirm the view jumps to the newest output and returns to `LIVE`.
+7. Use Tab and Shift-Tab to switch workers, then switch back and confirm transcript cursor and scroll position remain separate. The switch hint should appear only when multiple active workers exist.
+8. Press Escape to return to the list and `q` to close the panel. Confirm mouse scrolling returns to normal terminal behavior after the panel closes.
+
+Pass criteria:
+
+- The overlay uses most of the terminal without overflowing a narrow terminal.
+- Visible assistant text arrives before the task completes; thinking and raw tool output do not appear.
+- Markdown headings, emphasis, lists, and fenced code blocks use Pi's normal colors and syntax highlighting.
+- Worker name, task ID, status, and live/paused/truncated state remain clear.
+- The mouse wheel scrolls inside the transcript; Up/Down move one line, Page keys move one page, and End resumes live auto-scroll.
+- Switching workers never mixes transcripts or scroll positions.
+- Closing the panel, returning to the list, or switching workers does not cancel either task.
+- Reopening the panel resumes retained transcript history; a stale cursor receives a visible truncation marker.
+
 ## 6. Blocking task, async task, and jobs result paths
 
-Goal: prove `ask`, `send`, `jobs --wait`, `jobs --result`, progress polling, and exact task IDs.
+Goal: prove blocking and async `send`, `jobs --wait`, `jobs --result`, progress polling, and exact task IDs.
 
-Blocking ask:
+Blocking send:
 
 ```bash
-orch ask work --wait -t TASK-BLOCKING-001 -m "Smoke test only. Inspect no files and make no edits. Reply in one sentence confirming you received TASK-BLOCKING-001."
+orch send work --wait -t TASK-BLOCKING-001 -m "Smoke test only. Inspect no files and make no edits. Reply in one sentence confirming you received TASK-BLOCKING-001."
 orch jobs --result TASK-BLOCKING-001
 ```
 
@@ -268,7 +292,7 @@ Message-file input, for prompts that contain shell-sensitive text:
 
 ```bash
 printf '%s\n' 'Smoke test file input only. Inspect no files and make no edits. Confirm you received literal `backticks` and $VARS.' > /tmp/orch-smoke-prompt.txt
-orch ask work --wait -t TASK-MESSAGE-FILE-001 --message-file /tmp/orch-smoke-prompt.txt
+orch send work --wait -t TASK-MESSAGE-FILE-001 --message-file /tmp/orch-smoke-prompt.txt
 orch jobs --result TASK-MESSAGE-FILE-001
 ```
 
@@ -279,13 +303,6 @@ orch send work -t TASK-ASYNC-001 -m "Smoke test only. Inspect no files and make 
 orch jobs --id TASK-ASYNC-001
 orch jobs --wait TASK-ASYNC-001 --timeout 300 --poll-seconds 1
 orch jobs --result TASK-ASYNC-001
-```
-
-Ask without waiting:
-
-```bash
-orch ask work --no-wait -t TASK-ASK-NOWAIT-001 -m "Smoke test for ask --no-wait. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-ASK-NOWAIT-001."
-orch jobs --wait TASK-ASK-NOWAIT-001 --timeout 300 --no-progress
 ```
 
 Wait timeout does not cancel:
@@ -303,56 +320,51 @@ Missing-result and failed-result display:
 orch jobs --result TASK-DOES-NOT-EXIST || true
 orch jobs --wait TASK-DOES-NOT-EXIST --timeout 1 --no-progress || true
 
-orch ask work --wait -t TASK-FAILED-STDERR-001 -m "Smoke test failed-result display. Do not edit files. Run python3 -c 'import sys; sys.stderr.write(\"smoke-stderr\\n\"); sys.exit(3)' and report the command failure, including stderr if your harness exposes it."
+orch send work --wait -t TASK-FAILED-STDERR-001 -m "Smoke test failed-result display. Do not edit files. Run python3 -c 'import sys; sys.stderr.write(\"smoke-stderr\\n\"); sys.exit(3)' and report the command failure, including stderr if your harness exposes it."
 orch jobs --result TASK-FAILED-STDERR-001 || true
 ```
 
 Pass criteria:
 
-- `ask --wait` prints a terminal result.
+- `send --wait` prints a terminal result.
 - `--message-file` reads the message from a UTF-8 file and preserves shell-sensitive prompt text literally. `--edit` and `-m -` are available for interactive/editor and stdin workflows.
 - `send` returns immediately with guidance.
 - `jobs --wait` returns the exact requested task result.
 - `jobs --result` rereads the completed result.
-- `ask --no-wait` behaves like async task submission.
 - Timeout output clearly says the task is still pending unless cancelled or expired.
 - Missing task lookups are explicit and do not return another task's result.
 - Failed task output preserves a useful failure summary; stderr is shown when the worker/harness includes it.
 
 ## 7. Worker BLOCKER and review-gate behavior
 
-Goal: prove unclear work is blocked and review defaults are safe.
+Goal: prove unclear work is blocked and review timing remains explicit.
 
 BLOCKER path:
 
 ```bash
-orch ask work --wait -t TASK-BLOCKER-001 -m "Improve the parser broadly. I am not giving specific files, behavior, or acceptance criteria. Return BLOCKER if this is too unclear to scope safely."
+orch send work --wait -t TASK-BLOCKER-001 -m "Improve the parser broadly. I am not giving specific files, behavior, or acceptance criteria. Return BLOCKER if this is too unclear to scope safely."
 ```
 
-Review rejection through async send:
+Async review that becomes a later gate:
 
 ```bash
-orch send work -t TASK-REVIEW-REJECT-001 -m "Please review the previous change. Do not edit."
-```
-
-Explicit async review, only for non-gating checks:
-
-```bash
-orch send work --allow-async-review -t TASK-REVIEW-ASYNC-001 -m "Non-gating smoke review. Inspect no files and make no edits. Reply with no findings for TASK-REVIEW-ASYNC-001."
+orch send work -t TASK-REVIEW-ASYNC-001 -m "Smoke review. Inspect no files and make no edits. Reply with no findings for TASK-REVIEW-ASYNC-001."
+orch jobs --active
+# Continue only unrelated work here.
 orch jobs --wait TASK-REVIEW-ASYNC-001 --timeout 300
 ```
 
 Blocking review gate:
 
 ```bash
-orch ask work --wait -t TASK-REVIEW-GATE-001 -m "Please review only orch_task.py and tests/test_orch_task.py. Do not edit. Return verdict, risks, files inspected, and whether I can proceed."
+orch send work --wait -t TASK-REVIEW-GATE-001 -m "Please review only orch_task.py and tests/test_orch_task.py. Do not edit. Return verdict, risks, files inspected, and whether I can proceed."
 ```
 
 Pass criteria:
 
 - BLOCKER result asks one concrete clarifying question and edits no files.
-- `orch send` rejects REVIEW by default with guidance to use blocking `ask --wait`.
-- `--allow-async-review` works only when explicitly requested.
+- Async review submission succeeds without a special flag.
+- `jobs --wait` can turn that task into a later gate.
 - Blocking review completes before lead proceeds.
 
 ## 8. Edit-producing task plus real test run
@@ -372,7 +384,7 @@ python3 -m pytest tests/test_orch_task.py -v
 Then gate the change:
 
 ```bash
-orch ask work --wait -t TASK-EDIT-REVIEW-001 -m "Please review TASK-EDIT-001. Inspect only orch_task.py and tests/test_orch_task.py. Do not edit. You may run python3 -m pytest tests/test_orch_task.py -v. Return findings, risks, files inspected, tests run, and whether I can proceed."
+orch send work --wait -t TASK-EDIT-REVIEW-001 -m "Please review TASK-EDIT-001. Inspect only orch_task.py and tests/test_orch_task.py. Do not edit. You may run python3 -m pytest tests/test_orch_task.py -v. Return findings, risks, files inspected, tests run, and whether I can proceed."
 ```
 
 Pass criteria:
@@ -601,7 +613,7 @@ Pass criteria:
 Default review flow must not compact:
 
 ```bash
-orch ask work --wait -t TASK-NO-AUTO-COMPACT-001 -m "Please review only orch_task.py and tests/test_orch_task.py for the smoke compaction drill. Do not edit. You may run python3 -m pytest tests/test_orch_task.py -v. Return verdict, risks, files inspected, and tests run."
+orch send work --wait -t TASK-NO-AUTO-COMPACT-001 -m "Please review only orch_task.py and tests/test_orch_task.py for the smoke compaction drill. Do not edit. You may run python3 -m pytest tests/test_orch_task.py -v. Return verdict, risks, files inspected, and tests run."
 orch jobs --idle
 ```
 
@@ -873,7 +885,7 @@ In another terminal, with lead/work sessions attached to this broker:
 
 ```bash
 cd "$ORCH_SMOKE_ROOT"
-orch ask work --wait -t TASK-JSONL-001 -m "JSONL smoke. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-JSONL-001. I will restart the broker after this."
+orch send work --wait -t TASK-JSONL-001 -m "JSONL smoke. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-JSONL-001. I will restart the broker after this."
 orch jobs --result TASK-JSONL-001
 ```
 
@@ -909,7 +921,7 @@ In another terminal, with lead/work sessions attached to this foreground broker:
 
 ```bash
 cd "$ORCH_SMOKE_ROOT"
-orch ask work --wait -t TASK-CRASH-PERSIST-001 -m "Crash recovery smoke. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-CRASH-PERSIST-001."
+orch send work --wait -t TASK-CRASH-PERSIST-001 -m "Crash recovery smoke. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-CRASH-PERSIST-001."
 orch jobs --result TASK-CRASH-PERSIST-001
 ```
 
@@ -997,10 +1009,10 @@ In another terminal, before starting `orch work`:
 
 ```bash
 cd "$ORCH_SMOKE_ROOT"
-orch ask work --wait -t TASK-PEER-OFFLINE-001 -m "This should be rejected because the worker session is offline." || true
+orch send work --wait -t TASK-PEER-OFFLINE-001 -m "This should be rejected because the worker session is offline." || true
 orch work --new
 # In a third terminal after the worker registers:
-orch ask work --wait -t TASK-PEER-ONLINE-001 -m "Peer-online smoke. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-PEER-ONLINE-001."
+orch send work --wait -t TASK-PEER-ONLINE-001 -m "Peer-online smoke. Inspect no files and make no edits. Reply with a short acknowledgement for TASK-PEER-ONLINE-001."
 ```
 
 Pass criteria:

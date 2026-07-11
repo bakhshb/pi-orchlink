@@ -34,13 +34,14 @@ Do not use the worker for tiny mechanical edits, unclear requests that need a hu
 ## Command chooser
 
 1. Non-trivial coding or risky change? First decide whether worker review, challenge, verification, or implementation would tighten the loop.
-2. Need a short review, decision, critique, plan, or blocker answer before continuing safely? Use `orch ask work --wait`.
-3. Need long/heavy implementation, broad review, tests, or research while you work on a separate scope? Use `orch send`, record the task ID, continue only on non-conflicting lead-owned work, and keep ownership until you read the exact result with `orch jobs --result <task_id>` or report it pending. Use `orch jobs --wait <task_id>` only when that result now blocks your next safe step. Do not use `orch ask --wait` for heavy implementation.
-4. Need short peer discussion? Use Talk Mode: `orch talk`, `orch say`, `orch close`.
-5. Need a PRD/plan-driven run until acceptance criteria are verified? Use Goal Mode after reading `references/goal-mode.md`.
-6. Need to know whether it is safe to continue? Use `orch jobs --idle`.
-7. Need active work details? Use `orch jobs --active`.
-8. Need final output? Prefer `orch jobs --result T002` once terminal; use `orch jobs --wait T002` only if you must block now. Do not rely on the plain jobs list as the result.
+2. Need a short review, decision, critique, plan, or blocker answer before continuing safely? Use `orch send work --wait`.
+3. Need long/heavy implementation, broad review, tests, or research while you work on a separate scope? Use async `orch send`, record the task ID, continue only on non-conflicting lead-owned work, and keep ownership until you read the exact result with `orch jobs --result <task_id>` or report it pending. Use `orch jobs --wait <task_id>` only when that result now blocks your next safe step. Do not use `orch send --wait` for heavy implementation.
+4. Human wants to watch background workers inside Pi? Tell them to run `/orchlink`, select a worker, and press Enter or `f` to follow visible output. The panel supports mouse-wheel and keyboard scrolling, End-to-live, and Tab switching when multiple active workers exist.
+5. Need short peer discussion? Use Talk Mode: `orch talk`, `orch say`, `orch close`.
+6. Need a PRD/plan-driven run until acceptance criteria are verified? Use Goal Mode after reading `references/goal-mode.md`.
+7. Need to know whether it is safe to continue? Use `orch jobs --idle`.
+8. Need active work details? Use `orch jobs --active`.
+9. Need final output? Prefer `orch jobs --result T002` once terminal; use `orch jobs --wait T002` only if you must block now. Do not rely on the plain jobs list as the result.
 
 ## Task prompt shape
 

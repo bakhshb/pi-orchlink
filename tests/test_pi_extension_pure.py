@@ -151,12 +151,63 @@ def test_generated_ts_does_not_override_pi_compaction():
         assert needle not in ORCHLINK_PI_EXTENSION
 
 
+def test_generated_ts_captures_text_delta_only():
+    # G018: worker listens to message_update, accepts only text_delta, buffers,
+    # and posts assistant_delta events to the broker transcript endpoint.
+    assert 'pi.on("message_update"' in ORCHLINK_PI_EXTENSION
+    assert 'assistantEvent.type !== "text_delta"' in ORCHLINK_PI_EXTENSION
+    assert "appendTranscriptDelta" in ORCHLINK_PI_EXTENSION
+    assert "flushTranscriptBuffer" in ORCHLINK_PI_EXTENSION
+    assert "transcriptFlushTimer" in ORCHLINK_PI_EXTENSION
+    assert "assistant_delta" in ORCHLINK_PI_EXTENSION
+    assert '/v1/tasks/${encodeURIComponent(String(task.task_id || ""))}/transcript' in ORCHLINK_PI_EXTENSION
+    assert "x-orchlink-lease-epoch" in ORCHLINK_PI_EXTENSION
+    assert "x-orchlink-lease-holder" in ORCHLINK_PI_EXTENSION
+    assert "x-orchlink-session-lease-id" in ORCHLINK_PI_EXTENSION
+
+
+def test_generated_ts_drops_thinking_and_unknown_transcript_events():
+    # The worker must ignore thinking_delta and any non-text_delta event.
+    assert "thinking_delta" not in ORCHLINK_PI_EXTENSION
+    assert "message_update" in ORCHLINK_PI_EXTENSION
+    assert 'assistantEvent.type !== "text_delta"' in ORCHLINK_PI_EXTENSION
+
+
+def test_generated_ts_transcript_flush_boundaries():
+    # Flush timer and byte cap exist; flush runs before tool calls, message_end,
+    # and shutdown / cancellation / lease loss paths.
+    assert "TRANSCRIPT_FLUSH_MS" in ORCHLINK_PI_EXTENSION
+    assert "TRANSCRIPT_MAX_BYTES" in ORCHLINK_PI_EXTENSION
+    assert "Buffer.byteLength" in ORCHLINK_PI_EXTENSION
+    assert 'flushTranscriptBuffer(true)' in ORCHLINK_PI_EXTENSION
+    assert "resetTranscriptState" in ORCHLINK_PI_EXTENSION
+    assert "finalizeTranscript" in ORCHLINK_PI_EXTENSION
+
+
+def test_generated_ts_message_update_handler_does_not_use_send_message():
+    # Transcript capture must not inject user/assistant messages into Pi context.
+    follow_index = ORCHLINK_PI_EXTENSION.find('pi.on("message_update"')
+    assert follow_index > 0
+    block = ORCHLINK_PI_EXTENSION[follow_index:follow_index + 800]
+    assert "pi.sendUserMessage" not in block
+    assert "pi.sendMessage" not in block
+
+
+def test_generated_ts_transcript_post_failure_is_observability_only():
+    # Post failures are logged, not thrown, so task execution continues.
+    post_index = ORCHLINK_PI_EXTENSION.find("/v1/tasks/${encodeURIComponent(String(task.task_id")
+    assert post_index > 0
+    block = ORCHLINK_PI_EXTENSION[post_index:post_index + 600]
+    assert ".catch(" in block
+    assert "transcript post failed" in block
+
+
 # --- Thinking-default single source: Python client and generated TS ------------
 
 
 def test_python_client_uses_shared_thinking_defaults():
-    from orchlink.client.ask import MODE_THINKING_DEFAULTS as client_defaults
-    from orchlink.client.ask import THINKING_LEVELS as client_levels
+    from orchlink.client.messages import MODE_THINKING_DEFAULTS as client_defaults
+    from orchlink.client.messages import THINKING_LEVELS as client_levels
 
     assert client_defaults == MODE_THINKING_DEFAULTS
     assert client_levels == set(THINKING_LEVELS)

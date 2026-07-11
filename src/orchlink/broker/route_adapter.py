@@ -13,8 +13,9 @@ from fastapi import HTTPException
 
 from orchlink.broker.service import BrokerService
 from orchlink.broker.storage import MessageStoreBusy
-from orchlink.broker.storage.base import ActivityInput, AgentInput, LeaseConflictError, MessageInput, MessageStore, SessionAcquireInput, SessionHeartbeatInput
+from orchlink.broker.storage.base import ActivityInput, AgentInput, LeaseConflictError, MessageInput, MessageStore, SessionAcquireInput, SessionHeartbeatInput, TranscriptBatchInput
 from orchlink.core.envelope import MessageEnvelope
+from orchlink.core.models import TranscriptBatch
 
 
 class BrokerRouteAdapter:
@@ -172,5 +173,55 @@ class BrokerRouteAdapter:
 
     async def pending_reply_count(self) -> int:
         return await self.service.pending_reply_count()
+
+    # --- Transcript (G018) -------------------------------------------------
+
+    async def append_transcript_batch(
+        self,
+        task_id: str,
+        batch: TranscriptBatchInput,
+        project_id: str,
+        agent_id: str,
+        session_lease_id: str | None = None,
+        lease_epoch: int | None = None,
+        lease_holder: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            if isinstance(batch, dict):
+                batch = TranscriptBatch.from_wire(batch)
+            return await self.service.append_transcript_batch(
+                task_id,
+                batch,
+                project_id=project_id,
+                agent_id=agent_id,
+                session_lease_id=session_lease_id,
+                lease_epoch=lease_epoch,
+                lease_holder=lease_holder,
+            )
+        except LeaseConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    async def read_transcript_events(
+        self,
+        task_id: str,
+        project_id: str,
+        after: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        return await self.service.read_transcript_events(task_id, project_id, after=after, limit=limit)
+
+    async def wait_transcript_events(
+        self,
+        task_id: str,
+        project_id: str,
+        after: int = 0,
+        limit: int = 100,
+        wait_seconds: int = 0,
+    ) -> dict[str, Any]:
+        return await self.service.wait_transcript_events(
+            task_id, project_id, after=after, limit=limit, wait_seconds=wait_seconds
+        )
 
 __all__ = ["BrokerRouteAdapter"]

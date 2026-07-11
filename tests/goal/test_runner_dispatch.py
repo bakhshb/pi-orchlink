@@ -60,11 +60,11 @@ def test_goal_runner_work_uses_custom_maker_worker(tmp_path, monkeypatch):
     _ready_goal(config, tmp_path)
     calls = []
 
-    def fake_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         calls.append(kwargs)
         return _result(kwargs["task_id"])
 
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", fake_ask_worker_sync)
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", fake_send_worker_sync)
 
     result = GoalRunner(config, maker_worker="builder", verifier_worker="reviewer").work("G001", max_steps=1)
 
@@ -78,11 +78,11 @@ def test_goal_runner_audit_uses_custom_verifier_worker(tmp_path, monkeypatch):
     _ready_goal(config, tmp_path)
     calls = []
 
-    def fake_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         calls.append(kwargs)
         return _result(kwargs["task_id"])
 
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", fake_ask_worker_sync)
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", fake_send_worker_sync)
 
     result = GoalRunner(config, maker_worker="builder", verifier_worker="reviewer").audit("G001")
 
@@ -97,11 +97,11 @@ def test_goal_work_cli_valid_worker_names_still_dispatch(tmp_path, monkeypatch):
     _ready_goal(config, tmp_path)
     calls = []
 
-    def fake_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         calls.append(kwargs)
         return _result(kwargs["task_id"])
 
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", fake_ask_worker_sync)
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", fake_send_worker_sync)
 
     result = runner.invoke(
         cli_main.app,
@@ -119,10 +119,10 @@ def test_goal_runner_records_model_metadata_for_dispatch(tmp_path, monkeypatch):
     config = _init_goal_project(tmp_path, monkeypatch)
     _ready_goal(config, tmp_path)
 
-    def fake_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         return _result(kwargs["task_id"])
 
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", fake_ask_worker_sync)
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", fake_send_worker_sync)
     goal_runner = GoalRunner(config, maker_model="maker-model", verifier_model="verifier-model")
 
     goal_runner.work("G001", max_steps=1)
@@ -152,12 +152,28 @@ def test_goal_runner_default_worker_names_remain_work(tmp_path, monkeypatch):
     _ready_goal(config, tmp_path)
     calls = []
 
-    def fake_ask_worker_sync(**kwargs):
+    def fake_send_worker_sync(**kwargs):
         calls.append(kwargs)
         return _result(kwargs["task_id"])
 
-    monkeypatch.setattr("orchlink.goal.runner.ask_worker_sync", fake_ask_worker_sync)
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", fake_send_worker_sync)
 
     GoalRunner(config).work("G001", max_steps=1)
 
     assert calls[0]["worker"] == "work"
+
+
+def test_goal_dispatcher_calls_send_worker_sync_with_wait_true(tmp_path, monkeypatch):
+    config = _init_goal_project(tmp_path, monkeypatch)
+    _ready_goal(config, tmp_path)
+    calls = []
+
+    def fake_send_worker_sync(**kwargs):
+        calls.append(kwargs)
+        return _result(kwargs["task_id"])
+
+    monkeypatch.setattr("orchlink.goal.runner.send_worker_sync", fake_send_worker_sync)
+
+    GoalRunner(config).work("G001", max_steps=1)
+
+    assert calls[0]["wait"] is True

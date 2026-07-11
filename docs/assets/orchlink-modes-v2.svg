@@ -1,10 +1,10 @@
 <svg width="980" height="520" viewBox="0 0 980 520" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
-  <title id="title">Orchlink modes: Ask/Send, Goal Mode, Loop Mode</title>
-  <desc id="desc">A flow chart showing how to choose between Ask/Send for one task, Goal Mode for PRD-driven work, and Loop Mode for recurring or parallel work with maker verifier separation and objective checks.</desc>
+  <title id="title">Orchlink modes: Task, Goal Mode, Loop Mode</title>
+  <desc id="desc">A flow chart showing how to choose between Send for one task, Goal Mode for PRD-driven work, and Loop Mode for recurring or parallel work with maker verifier separation and objective checks.</desc>
   <style>
     .bg { fill: #0f172a; }
     .panel { fill: #111827; stroke: #334155; stroke-width: 2; }
-    .panelAsk { fill: #172554; stroke: #3b82f6; }
+    .panelTask { fill: #172554; stroke: #3b82f6; }
     .panelGoal { fill: #3b2605; stroke: #f59e0b; }
     .panelLoop { fill: #052e2b; stroke: #14b8a6; }
     .title { fill: #f8fafc; font: 700 30px ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -41,9 +41,9 @@
   <line x1="490" y1="214" x2="490" y2="240" class="arrow" />
   <line x1="795" y1="214" x2="795" y2="240" class="arrow" />
 
-  <rect x="65" y="240" width="240" height="210" rx="22" class="panel panelAsk" filter="url(#shadow)" />
+  <rect x="65" y="240" width="240" height="210" rx="22" class="panel panelTask" filter="url(#shadow)" />
   <text x="185" y="276" text-anchor="middle" class="kicker">ONE TASK / ONE ANSWER</text>
-  <text x="185" y="307" text-anchor="middle" class="h">Ask / Send</text>
+  <text x="185" y="307" text-anchor="middle" class="h">Send</text>
   <rect x="105" y="326" width="160" height="28" rx="14" class="pill" />
   <text x="185" y="345" text-anchor="middle" class="pillText">Prompt the lead Pi</text>
   <text x="90" y="380" class="body">• quick review or decision</text>

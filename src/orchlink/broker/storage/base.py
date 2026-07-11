@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, Union
 
 from orchlink.core.envelope import AgentRegistration, MessageEnvelope
-from orchlink.core.models import Agent, SessionAcquire, SessionHeartbeat, StoredMessage, WorkerActivityInput
+from orchlink.core.models import Agent, SessionAcquire, SessionHeartbeat, StoredMessage, WorkerActivityInput, TranscriptBatch
 
 
 # Storage inputs are typed inside the broker. Wire dictionaries are decoded at
@@ -12,6 +12,7 @@ AgentInput = Union[AgentRegistration, Agent]
 SessionAcquireInput = SessionAcquire
 SessionHeartbeatInput = SessionHeartbeat
 ActivityInput = WorkerActivityInput
+TranscriptBatchInput = Union[TranscriptBatch, dict[str, Any]]
 
 
 class MessageStoreBusy(RuntimeError):
@@ -22,7 +23,6 @@ class MessageStoreBusy(RuntimeError):
 
 class LeaseConflictError(RuntimeError):
     """Raised when a lease operation conflicts (stale epoch/holder, or reclaim of a non-expired lease)."""
-
 
 
 class MessageStore(ABC):
@@ -190,3 +190,42 @@ class MessageStore(ABC):
     @abstractmethod
     async def list_events(self, since: int = 0, limit: int = 100, project_id: str | None = None) -> list[dict[str, Any]]:
         raise NotImplementedError
+
+    # --- Transcript (G018) -------------------------------------------------
+
+    @abstractmethod
+    async def append_transcript_batch(
+        self,
+        batch: TranscriptBatchInput,
+        task_id: str,
+        project_id: str,
+        agent_id: str,
+        session_lease_id: str | None = None,
+        lease_epoch: int | None = None,
+        lease_holder: str | None = None,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def read_transcript_events(
+        self,
+        task_id: str,
+        project_id: str,
+        after: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def wait_transcript_events(
+        self,
+        task_id: str,
+        project_id: str,
+        after: int = 0,
+        limit: int = 100,
+        wait_seconds: int = 0,
+    ) -> dict[str, Any]:
+        raise NotImplementedError
+
+
+__all__ = ["ActivityInput", "AgentInput", "LeaseConflictError", "MessageInput", "MessageStore", "MessageStoreBusy", "SessionAcquireInput", "SessionHeartbeatInput", "TranscriptBatchInput"]

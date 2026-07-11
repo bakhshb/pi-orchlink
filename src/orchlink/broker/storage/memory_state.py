@@ -164,6 +164,12 @@ class InMemoryBrokerState:
     sessions: dict[str, Session] = field(default_factory=dict)
     next_event_id: int = 1
     next_activity_id: int = 1
+    # G018 transcript: per-task key -> ordered events.
+    transcripts: dict[str, list[Any]] = field(default_factory=dict)
+    transcript_next_seq: dict[str, int] = field(default_factory=dict)
+    transcript_batch_ids: dict[str, set[str]] = field(default_factory=dict)
+    transcript_waiters: dict[str, list[Any]] = field(default_factory=dict)
+    transcript_truncated_before: dict[str, int] = field(default_factory=dict)
 
 
 __all__ = [

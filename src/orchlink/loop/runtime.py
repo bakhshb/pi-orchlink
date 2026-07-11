@@ -138,7 +138,7 @@ class HttpLoopWorkerGateway(WorkerGateway, MakerWorktreeResolverPort):
         return await self._dispatch(verifier_assignment.worker_name, verifier_assignment.task_id, prompt)
 
     async def _dispatch(self, worker_name: str, task_id: str, prompt: str) -> VerifierHandle:
-        from orchlink.client.ask import build_task_envelope
+        from orchlink.client.messages import build_task_envelope
         from orchlink.core.envelope import envelope_to_dict
 
         envelope = build_task_envelope(

@@ -44,7 +44,7 @@ def test_init_project_creates_project_config_and_skills(tmp_path):
     assert "worker input would tighten the loop" in lead_skill
     assert "## Task prompt shape" in lead_skill
     assert "## Non-negotiable safety rules" in lead_skill
-    assert "orch ask work --wait" in lead_skill
+    assert "orch send work --wait" in lead_skill
     assert "orch send" in lead_skill
     assert "orch jobs --wait" in lead_skill
     assert "orch jobs --result" in lead_skill
@@ -256,7 +256,7 @@ def test_chat_envelope_summarizes_topic_without_duplicating_full_message(tmp_pat
     assert any("Do not read every file" in item for item in wire["payload"]["constraints"])
 
 
-def test_project_ask_envelope_resolves_named_worker_alias_without_yaml_registry(tmp_path):
+def test_task_envelope_resolves_named_worker_alias_without_yaml_registry(tmp_path):
     paths = init_project(tmp_path, project_id="demo")
     config = load_project_config(tmp_path)
     data = yaml.safe_load(paths["config"].read_text(encoding="utf-8"))
@@ -271,7 +271,7 @@ def test_project_ask_envelope_resolves_named_worker_alias_without_yaml_registry(
     assert "workers" not in data
 
 
-def test_project_ask_envelope_resolves_work_alias(tmp_path):
+def test_task_envelope_resolves_work_alias(tmp_path):
     init_project(tmp_path, project_id="demo")
     config = load_project_config(tmp_path)
 

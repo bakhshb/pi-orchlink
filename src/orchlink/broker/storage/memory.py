@@ -16,6 +16,8 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from pathlib import Path
+
 from orchlink.broker.state import (
     BUSY_MESSAGE_STATUSES,
     TERMINAL_MESSAGE_STATUSES,
@@ -41,6 +43,7 @@ from orchlink.broker.storage.memory_state import (
     InMemoryBrokerState,
     MessageProjectionContext,
 )
+from orchlink.broker.storage.memory_transcript_store import MemoryTranscriptStore
 from orchlink.broker.storage.memory_work_queue import MemoryWorkQueue
 from orchlink.core.job_lifecycle import BrokerJobLifecycle
 from orchlink.core.models import (
@@ -53,6 +56,7 @@ from orchlink.core.models import (
     StoredMessage,
     TalkJobPayload,
     TaskResult,
+    TranscriptEvent,
     WaitBlocker,
 )
 from orchlink.core.views import (
@@ -71,6 +75,7 @@ from orchlink.core.views import (
     wait_blocker_to_wire,
     worker_activity_from_wire,
 )
+from orchlink.core.views import transcript_event_to_wire
 
 
 # Backward-compat re-exports: historic imports and tests reference these
@@ -85,6 +90,7 @@ __all__ = [
     "MemoryJobProjector",
     "MemoryMessageStore",
     "MemorySessionStore",
+    "MemoryTranscriptStore",
     "MemoryWorkQueue",
     "MessageProjectionContext",
 ]
@@ -130,7 +136,14 @@ class MemoryMessageStore(MessageStore):
             self._job_projector,
             require_peer_sessions,
         )
+        self._transcript_store = MemoryTranscriptStore(
+            self._state,
+            self._now,
+            self._session_store,
+            self._job_projector,
+        )
         self._lock = asyncio.Lock()
+        self._transcript_path: str | None = None
 
     def _now(self) -> str:
         return datetime.now(timezone.utc).isoformat()
@@ -753,6 +766,113 @@ class MemoryMessageStore(MessageStore):
         async with self._lock:
             return self._event_log.list_events_locked(since=since, limit=limit, project_id=project_id)
 
+    # ------------------------------------------------------------------
+    # Transcript (G018)
+    # ------------------------------------------------------------------
+
+    async def append_transcript_batch(
+        self,
+        batch: Any,
+        task_id: str,
+        project_id: str,
+        agent_id: str,
+        session_lease_id: str | None = None,
+        lease_epoch: int | None = None,
+        lease_holder: str | None = None,
+    ) -> dict[str, Any]:
+        from orchlink.core.models import TranscriptBatch
+
+        if isinstance(batch, dict):
+            batch = TranscriptBatch.from_wire(batch)
+        async with self._lock:
+            self._expire_timed_out_messages_locked()
+            return self._transcript_store.append_transcript_batch_locked(
+                batch,
+                task_id,
+                project_id,
+                agent_id,
+                session_lease_id=session_lease_id,
+                lease_epoch=lease_epoch,
+                lease_holder=lease_holder,
+            )
+
+    async def read_transcript_events(
+        self,
+        task_id: str,
+        project_id: str,
+        after: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        async with self._lock:
+            return self._transcript_store.read_transcript_events_locked(task_id, project_id, after=after, limit=limit)
+
+    async def wait_transcript_events(
+        self,
+        task_id: str,
+        project_id: str,
+        after: int = 0,
+        limit: int = 100,
+        wait_seconds: int = 0,
+    ) -> dict[str, Any]:
+        return await self._transcript_store.wait_transcript_events(
+            task_id, project_id, after=after, limit=limit, wait_seconds=wait_seconds
+        )
+
     async def pending_reply_count(self) -> int:
         async with self._lock:
             return self._work_queue.pending_reply_count_locked()
+
+    def attach_transcript_journal(self, path: str) -> None:
+        """Wire the dedicated G018 transcript JSONL journal path."""
+        self._transcript_path = str(path)
+
+    def _transcript_journal_path(self) -> str | None:
+        return self._transcript_path
+
+    def _transcript_path_for(self, journal_path: str) -> str:
+        path = Path(journal_path)
+        return str(path.parent / (path.stem + ".transcript.jsonl"))
+
+    def _load_transcript_snapshot(self, data: dict[str, Any]) -> None:
+        """Restore per-task transcript state from a JSON snapshot."""
+        for key, events in (data.get("transcripts") or {}).items():
+            self._state.transcripts[key] = [
+                TranscriptEvent(
+                    seq=int(event["seq"]),
+                    time=str(event["time"]),
+                    project_id=str(event["project_id"]),
+                    task_id=str(event["task_id"]),
+                    agent_id=str(event["agent_id"]) if event.get("agent_id") is not None else None,
+                    worker_name=str(event["worker_name"]) if event.get("worker_name") is not None else None,
+                    kind=str(event["kind"]),
+                    text=str(event["text"]),
+                    tool_name=str(event["tool_name"]) if event.get("tool_name") is not None else None,
+                )
+                for event in events
+            ]
+        for key, value in (data.get("transcript_next_seq") or {}).items():
+            self._state.transcript_next_seq[key] = int(value)
+        for key, value in (data.get("transcript_batch_ids") or {}).items():
+            self._state.transcript_batch_ids[key] = set(value)
+        for key, value in (data.get("transcript_truncated_before") or {}).items():
+            if value is None:
+                self._state.transcript_truncated_before.pop(key, None)
+                continue
+            self._state.transcript_truncated_before[key] = int(value)
+
+    def _snapshot_transcripts(self) -> dict[str, Any]:
+        """Capture per-task transcript state for JSONL snapshot/compaction."""
+        snapshot: dict[str, Any] = {
+            "transcripts": {
+                key: [transcript_event_to_wire(event) for event in events]
+                for key, events in self._state.transcripts.items()
+            },
+            "transcript_next_seq": dict(self._state.transcript_next_seq),
+            "transcript_batch_ids": {
+                key: list(ids) for key, ids in self._state.transcript_batch_ids.items()
+            },
+        }
+        truncated = {key: int(value) for key, value in self._state.transcript_truncated_before.items() if value is not None}
+        if truncated:
+            snapshot["transcript_truncated_before"] = truncated
+        return snapshot

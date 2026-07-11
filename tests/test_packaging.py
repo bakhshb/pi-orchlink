@@ -245,7 +245,6 @@ def test_cli_imports_from_installable_package_and_exposes_required_commands():
 
     assert result.exit_code == 0
     assert "broker" in result.output
-    assert "ask" in result.output
     assert "send" in result.output
     assert "talk" in result.output
     assert "say" in result.output
@@ -388,6 +387,7 @@ def test_pi_extension_keeps_current_task_during_recoverable_transport_error():
 
     clearRecoveryTimer();
     currentTask = undefined;
+    resetTranscriptState();
     clearCancelCheck();
     clearActivityHeartbeat();""" in ORCHLINK_PI_EXTENSION
 

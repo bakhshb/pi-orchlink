@@ -254,6 +254,49 @@ class BrokerService:
             return 0
         return int(await count_pending())
 
+    # --- Transcript (G018) -------------------------------------------------
+
+    async def append_transcript_batch(
+        self,
+        task_id: str,
+        batch: Any,
+        project_id: str,
+        agent_id: str,
+        session_lease_id: str | None = None,
+        lease_epoch: int | None = None,
+        lease_holder: str | None = None,
+    ) -> dict[str, Any]:
+        return await self.store.append_transcript_batch(
+            batch,
+            task_id=task_id,
+            project_id=project_id,
+            agent_id=agent_id,
+            session_lease_id=session_lease_id,
+            lease_epoch=lease_epoch,
+            lease_holder=lease_holder,
+        )
+
+    async def read_transcript_events(
+        self,
+        task_id: str,
+        project_id: str,
+        after: int = 0,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        return await self.store.read_transcript_events(task_id, project_id, after=after, limit=limit)
+
+    async def wait_transcript_events(
+        self,
+        task_id: str,
+        project_id: str,
+        after: int = 0,
+        limit: int = 100,
+        wait_seconds: int = 0,
+    ) -> dict[str, Any]:
+        return await self.store.wait_transcript_events(
+            task_id, project_id, after=after, limit=limit, wait_seconds=wait_seconds
+        )
+
     # ------------------------------------------------------------------
     # Checkpoint ordering seam
     # ------------------------------------------------------------------
